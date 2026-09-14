@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # legacy-peer-deps comes from .npmrc — npm 10 has an arborist bug
+      # resolving vitest 5's peer set without it.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Build control plane
+        run: npm run build:web
+        env:
+          # Build-time placeholders only. The control plane holds no real
+          # credentials; the engine does, on a static-IP host.
+          TF_MODE: PAPER
+          UPSTOX_API_KEY: build-placeholder-key
+          UPSTOX_REDIRECT_URI: https://example.com/api/auth/callback
+          TF_WEBHOOK_SECRET: '0000000000000000000000000000000000000000000000000000000000000000'
+          TF_ENGINE_URL: https://engine.invalid
+          TF_ENGINE_TOKEN: '00000000000000000000000000000000'
