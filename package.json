@@ -1,0 +1,28 @@
+{
+  "name": "tradeforger",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:web": "npm run dev -w @tradeforger/web",
+    "build:web": "npm run build -w @tradeforger/web",
+    "migrate": "npm run migrate -w @tradeforger/db",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "probe": "node --experimental-strip-types scripts/probe.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "typescript": "^7.0.2",
+    "vite": "^7.0.0",
+    "vitest": "^5.0.0"
+  }
+}

@@ -1,0 +1,21 @@
+node_modules/
+.next/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# secrets — never commit
+.env
+.env.local
+.env.*.local
+.secrets.local
+*.secret
+secrets/
+.vercel
+*.pem
+tokens/
+
+# data
+data/
+*.json.gz
+!docs/upstox-openapi-v2.json
