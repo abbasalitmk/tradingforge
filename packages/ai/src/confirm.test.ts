@@ -92,3 +92,27 @@ describe('timeout behaviour', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe('provider failover', () => {
+  const dead = { apiKey: 'x', baseUrl: 'http://127.0.0.1:9', model: 'dead', timeoutMs: 100 };
+
+  it('falls back to the second provider when the first is unreachable', async () => {
+    // Both dead here — the point is that it TRIES the second and reports so.
+    const c = new Confirmer(dead, { ...dead, model: 'dead-2' });
+    const d = await c.review(signal);
+    expect(d.fellBack).toBe(true);
+    expect(d.rationale).toContain('both providers unavailable');
+    // Still never blocks: an AI outage costs a review, not a trade.
+    expect(d.blocked).toBe(false);
+    expect(d.sizeMultiplier).toBe(1);
+  });
+
+  it('does not consult the fallback when the primary answered', async () => {
+    // A REJECT is a real answer. Retrying it on another provider would let the
+    // system shop for a permissive verdict, defeating the safety layer.
+    const c = new Confirmer(dead, null);
+    const d = await c.review(signal);
+    expect(d.fellBack).toBe(true);
+    expect(d.rationale).not.toContain('both providers');
+  });
+});

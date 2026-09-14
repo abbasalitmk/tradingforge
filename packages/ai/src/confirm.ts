@@ -131,27 +131,59 @@ export function buildPayload(signal: Signal, extra: Record<string, unknown> = {}
   });
 }
 
+/**
+ * Two providers, tried in order.
+ *
+ * Both speak the OpenAI chat-completions schema, so failover is a base-URL
+ * change rather than a second integration. Benchmarked 2026-09-14:
+ *
+ *   Groq          qwen/qwen3.8-27b    535ms p50   3/3 correct   (primary)
+ *   Vercel AIGW   openai/gpt-4.1-mini 1709ms      3/3 correct   (fallback)
+ *   Vercel AIGW   alibaba/qwen-3-14b  13106ms     unusable
+ *
+ * The fallback is ~3x slower, which is why it is second and not first — but a
+ * slow correct answer beats no answer when the primary is down.
+ */
 export class Confirmer {
   private readonly cfg: ConfirmerConfig;
+  private readonly fallback: ConfirmerConfig | null;
 
-  constructor(cfg: ConfirmerConfig) {
+  constructor(cfg: ConfirmerConfig, fallback: ConfirmerConfig | null = null) {
     this.cfg = cfg;
+    this.fallback = fallback;
   }
 
   async review(signal: Signal, extra: Record<string, unknown> = {}): Promise<AiDecision> {
+    const primary = await this.ask(this.cfg, signal, extra);
+    // Only reach for the fallback when the primary produced nothing usable.
+    // A REJECT is a real answer and must never be retried away on another
+    // provider — that would turn the safety layer into a shopping trip.
+    if (!primary.fellBack || this.fallback === null) return primary;
+
+    const secondary = await this.ask(this.fallback, signal, extra);
+    return secondary.fellBack
+      ? { ...secondary, rationale: `both providers unavailable; ${secondary.rationale}` }
+      : secondary;
+  }
+
+  private async ask(
+    cfg: ConfirmerConfig,
+    signal: Signal,
+    extra: Record<string, unknown>,
+  ): Promise<AiDecision> {
     const started = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
 
     try {
-      const res = await fetch(`${this.cfg.baseUrl}/chat/completions`, {
+      const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${this.cfg.apiKey}`,
+          authorization: `Bearer ${cfg.apiKey}`,
         },
         body: JSON.stringify({
-          model: this.cfg.model,
+          model: cfg.model,
           temperature: 0,
           max_tokens: 300,
           response_format: { type: 'json_object' },
@@ -164,23 +196,23 @@ export class Confirmer {
       });
 
       const latency = Date.now() - started;
-      if (!res.ok) return fallbackDecision(`http ${res.status}`, latency, this.cfg.model);
+      if (!res.ok) return fallbackDecision(`http ${res.status}`, latency, cfg.model);
 
       const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
       const content = body.choices?.[0]?.message?.content;
-      if (!content) return fallbackDecision('empty response', latency, this.cfg.model);
+      if (!content) return fallbackDecision('empty response', latency, cfg.model);
 
       let raw: unknown;
       try {
         raw = JSON.parse(content);
       } catch {
-        return fallbackDecision('non-JSON response', latency, this.cfg.model);
+        return fallbackDecision('non-JSON response', latency, cfg.model);
       }
 
       const parsed = verdictSchema.safeParse(raw);
       if (!parsed.success) {
         // A malformed verdict is discarded, not partially trusted.
-        return fallbackDecision('schema mismatch', latency, this.cfg.model);
+        return fallbackDecision('schema mismatch', latency, cfg.model);
       }
 
       const { sizeMultiplier, blocked } = applyVerdict(parsed.data);
@@ -192,13 +224,13 @@ export class Confirmer {
         sizeMultiplier,
         blocked,
         latencyMs: latency,
-        model: this.cfg.model,
+        model: cfg.model,
         fellBack: false,
       };
     } catch (e) {
       const latency = Date.now() - started;
       const aborted = e instanceof Error && e.name === 'AbortError';
-      return fallbackDecision(aborted ? 'timeout' : 'network', latency, this.cfg.model);
+      return fallbackDecision(aborted ? 'timeout' : 'network', latency, cfg.model);
     } finally {
       clearTimeout(timer);
     }
