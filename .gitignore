@@ -19,3 +19,4 @@ tokens/
 data/
 *.json.gz
 !docs/upstox-openapi-v2.json
+apps/engine/.env.local

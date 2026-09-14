@@ -1,0 +1,14 @@
+{
+  "name": "@tradeforger/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node --experimental-strip-types src/main.ts" },
+  "dependencies": {
+    "@tradeforger/core": "*", "@tradeforger/db": "*", "@tradeforger/safety": "*",
+    "@tradeforger/upstox": "*", "@tradeforger/broker": "*", "@tradeforger/risk": "*",
+    "@tradeforger/feed": "*", "@tradeforger/data": "*", "@tradeforger/indicators": "*",
+    "@tradeforger/strategy": "*", "@tradeforger/execution": "*", "@tradeforger/ai": "*",
+    "zod": "^3.25.76"
+  }
+}

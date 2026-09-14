@@ -2,8 +2,10 @@
 
 Autonomous equity trading on Upstox. Personal, single-account.
 
-**Status: foundation complete, not trading.** Phases 0–3 of 12 are built and tested.
-There is no strategy engine, no data feed, and no live order path yet. See
+**Status: engine runs in PAPER, not trading.** The engine boots, passes preflight,
+connects to the live V3 feed and serves a control API — but it subscribes to no
+instruments yet (no scanner), so no signal is ever evaluated. There is no live order
+path. See
 [`docs/00-PLAN.md`](docs/00-PLAN.md) for the full plan and
 [Build status](#build-status) below for what exists.
 
@@ -63,7 +65,7 @@ createdb tradeforger
 cp .env.example .env.local         # fill in credentials
 
 DATABASE_URL=postgresql://$USER@localhost:5432/tradeforger npm run migrate
-npm test                           # 105 tests
+npm test                           # 203 tests
 npm run typecheck
 ```
 
@@ -129,13 +131,15 @@ on one stock and ₹75,000 on another.
 | 1 Safety layer | ✅ 47 tests |
 | 2 Upstox client, rate limiter, tokens | ✅ verified against live API |
 | 3 Broker port + paper simulator + sizing | ✅ 58 tests |
-| 4 Data plane: instruments, candles, protobuf feed | ❌ |
-| 5 Indicators (port from `stockwatch`) | ❌ |
-| 6 Strategy profiles | ❌ |
-| 7 Risk gate + execution state machine | ❌ |
-| 8 Backtest engine | ❌ |
-| 9 Groq AI confirmation layer | ❌ |
-| 10 Dashboard UI | ❌ |
+| 4 Data plane: protobuf V3 feed, portfolio feed, backfill, aggregator | ✅ live-verified |
+| 5 Indicators ported from `stockwatch` | ✅ 31 tests |
+| 6 Intraday strategy profile | ✅ 20 tests |
+| 7 Execution state machine + reconciler | ✅ 18 tests |
+| 9 Groq AI confirmation layer | ✅ benchmarked live |
+| — Engine process (boots, preflight, feed, control API, kill switch) | ✅ |
+| 4b Scanner + watchlist subscription | ❌ engine subscribes to nothing yet |
+| 8 Backtest / walk-forward engine | ❌ |
+| 10 Dashboard UI (beyond the status page) | ❌ |
 | 11 Chaos tests, hardening | ❌ |
 
 Before any real capital: unit tests → tick replay → walk-forward backtest →
