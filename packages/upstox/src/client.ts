@@ -54,6 +54,52 @@ export class UpstoxClient {
     this.http = new UpstoxHttp(tokens, opts);
   }
 
+  /**
+   * OAuth 2.0 Code-to-Token Exchange against Upstox login API.
+   */
+  async exchangeToken(params: {
+    code: string;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+  }): Promise<Result<{ accessToken: string; userProfile?: unknown }, UpstoxError>> {
+    const form = new URLSearchParams({
+      code: params.code,
+      client_id: params.clientId,
+      client_secret: params.clientSecret,
+      redirect_uri: params.redirectUri,
+      grant_type: 'authorization_code',
+    });
+
+    try {
+      const res = await fetch('https://api.upstox.com/v2/login/authorization/token', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: form.toString(),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return err(new UpstoxError('BAD_REQUEST', `Token exchange failed: ${res.statusText}`, res.status, undefined, body));
+      }
+
+      const data = body as { access_token?: string; user_id?: string; user_name?: string };
+      if (!data.access_token) {
+        return err(new UpstoxError('BAD_REQUEST', 'No access_token returned in token response', res.status, undefined, body));
+      }
+
+      return ok({
+        accessToken: data.access_token,
+        userProfile: data,
+      });
+    } catch (e) {
+      return err(new UpstoxError('NETWORK', e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   // ───────────────────────────── data plane ─────────────────────────────
 
   /** Batch LTP. Upstox accepts up to 500 instrument keys per call. */

@@ -3,6 +3,9 @@ import type { NextConfig } from 'next';
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Disable immutable static assets so Vercel can deploy preview outputs without
+  // failing on preview comments toolbar patching.
+  supportsImmutableAssets: false,
   async headers() {
     return [
       {

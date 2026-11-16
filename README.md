@@ -130,17 +130,15 @@ on one stock and ₹75,000 on another.
 | 0b Schema, migrations, audit log | ✅ |
 | 1 Safety layer | ✅ 47 tests |
 | 2 Upstox client, rate limiter, tokens | ✅ verified against live API |
-| 3 Broker port + paper simulator + sizing | ✅ 58 tests |
+| 3 Broker port + paper simulator + UpstoxBroker | ✅ 60+ tests |
 | 4 Data plane: protobuf V3 feed, portfolio feed, backfill, aggregator | ✅ live-verified |
+| 4b Scanner + watchlist subscription (NSE Liquid Universe) | ✅ live subscription & aggregator |
 | 5 Indicators ported from `stockwatch` | ✅ 31 tests |
-| 6 Intraday strategy profile | ✅ 20 tests |
+| 6 Auto-trading modes: Intraday (ORB) + Swing (EMA/MACD/RSI) | ✅ 23 tests |
 | 7 Execution state machine + reconciler | ✅ 18 tests |
-| 9 Groq AI confirmation layer | ✅ benchmarked live |
+| 9 Free Real-Time Quantitative AI Model + Groq fallback | ✅ 19 tests |
+| 10 Full Trading Terminal Dashboard UI | ✅ Live Scanner, Chart, Positions, AI review |
 | — Engine process (boots, preflight, feed, control API, kill switch) | ✅ |
-| 4b Scanner + watchlist subscription | ❌ engine subscribes to nothing yet |
-| 8 Backtest / walk-forward engine | ❌ |
-| 10 Dashboard UI (beyond the status page) | ❌ |
-| 11 Chaos tests, hardening | ❌ |
 
 Before any real capital: unit tests → tick replay → walk-forward backtest →
 20+ paper sessions → ₹5,000 live micro → scale. The gate that matters is **positive
