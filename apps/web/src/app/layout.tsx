@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'TradeForger',
-  description: 'Autonomous equity trading control plane',
+  description: 'Autonomous trading control plane (equity intraday, swing, F&O)',
   robots: { index: false, follow: false },
 };
 

@@ -40,6 +40,8 @@ export async function fire(
   sql: Sql,
   mode: string,
   actor: 'user' | 'watchdog' | 'engine' = 'user',
+  /** Every segment the engine trades. Missing one leaves it live after a nuke. */
+  segments: readonly string[] = ['NSE_EQ', 'NSE_FO'],
 ): Promise<KillResult> {
   const errors: string[] = [];
   let ordersCancelled = 0;
@@ -64,10 +66,12 @@ export async function fire(
   }
 
   if (level === 'NUCLEAR') {
-    await step('disableSegment', async () => {
-      await actions.disableSegment('NSE_EQ');
-      segmentDisabled = true;
-    });
+    for (const seg of segments) {
+      await step(`disableSegment:${seg}`, async () => {
+        await actions.disableSegment(seg);
+        segmentDisabled = true;
+      });
+    }
   }
 
   const result: KillResult = { level, ordersCancelled, gttCancelled, positionsExited, segmentDisabled, errors };

@@ -3,3 +3,7 @@ export * from './intraday.ts';
 export * from './swing.ts';
 export * from './manager.ts';
 export * from './scanner.ts';
+export * from './catalog.ts';
+export * from './ensemble.ts';
+export * from './screener.ts';
+export { resample15 } from './strategies/gmma.ts';

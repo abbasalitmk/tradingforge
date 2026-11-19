@@ -205,6 +205,14 @@ describe('Opening Range Breakout', () => {
     expect(r.bars).toBe(3); // 09:15, 09:20, 09:25
   });
 
+  it('uses only the current session when prior days are passed for warmup', () => {
+    // Yesterday opened at 500; today opens at 100. Yesterday's range must not leak in.
+    const yesterday = mk(Array.from({ length: 6 }, () => 500), '2026-09-13T03:45:00Z');
+    const r = openingRange([...yesterday, ...session(6)], 15)!;
+    expect(r.high).toBeLessThan(200);
+    expect(r.bars).toBe(3);
+  });
+
   it('classifies breakouts against the range', () => {
     const r = openingRange(session(6), 15)!;
     expect(orbState(r, r.high + 1)).toBe('ABOVE');

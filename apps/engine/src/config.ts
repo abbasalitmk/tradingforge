@@ -9,6 +9,11 @@ const schema = z.object({
   LIVE_TRADING: z.string().default('false'),
 
   TF_AUTO_TRADING_MODE: z.enum(['INTRADAY', 'SWING', 'BOTH']).default('BOTH'),
+  /** Autonomous entries at boot. Off unless asked for: analysis runs regardless. */
+  TF_AUTO_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  TF_AUTO_MIN_QUALITY: z.coerce.number().min(40).max(100).default(70),
+  TF_AUTO_MIN_RR: z.coerce.number().min(1).max(10).default(1.5),
+  TF_ANALYSIS_INTERVAL_MS: z.coerce.number().int().min(1000).max(60_000).default(2000),
 
   UPSTOX_API_KEY: z.string().min(10),
   UPSTOX_API_SECRET: z.string().min(4),
@@ -23,7 +28,8 @@ const schema = z.object({
   GROQ_MODEL: z.string().default('qwen/qwen3.8-27b'),
   GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
 
-  TF_ENGINE_TOKEN: z.string().min(32).default('3f12ecde83de8626901893e42201ccfa4f1ea578e4675ac3751e4f25ed5fdf9d'),
+  // No default: a token in source is a token everyone with the repo holds.
+  TF_ENGINE_TOKEN: z.string().min(32),
   TF_ENGINE_PORT: z.coerce.number().default(4000),
 
   TF_MAX_SPEND_PER_TRADE: z.coerce.number().default(10_000),
@@ -34,7 +40,24 @@ const schema = z.object({
   TF_FIXED_QTY: z.coerce.number().optional(),
   TF_BUDGET: z.coerce.number().default(10_000),
   TF_RISK_PCT: z.coerce.number().default(1),
+
+  // ── F&O (see docs/04-FNO.md). Off by default; long options unless FUTURES chosen.
+  TF_FNO_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  TF_FNO_UNDERLYINGS: z.string().default('NIFTY,BANKNIFTY')
+    .transform((v) => v.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean)),
+  TF_FNO_INSTRUMENT: z.enum(['OPTIONS', 'FUTURES']).default('OPTIONS'),
+  TF_FNO_MIN_DTE: z.coerce.number().int().min(0).default(1),
+  TF_FNO_TARGET_DELTA: z.coerce.number().min(0.2).max(0.9).default(0.5),
+  TF_FNO_MAX_SPREAD_PCT: z.coerce.number().positive().default(3),
+  TF_FNO_MAX_PREMIUM_LOSS_PCT: z.coerce.number().min(5).max(80).default(35),
+  TF_FNO_MAX_IV: z.coerce.number().positive().default(60),
+  TF_FNO_MAX_LOTS: z.coerce.number().int().min(1).default(2),
+  TF_FNO_TIME_STOP_MIN: z.coerce.number().int().min(0).default(30),
+  TF_FNO_CHAIN_REFRESH_SEC: z.coerce.number().int().min(15).default(60),
 });
+
+/** Typed exactly to arm LIVE. Deliberately awkward to type by accident. */
+export const LIVE_CONFIRMATION = 'I UNDERSTAND THIS USES REAL MONEY';
 
 export type EngineConfig = z.infer<typeof schema> & { limits: Limits };
 

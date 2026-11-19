@@ -66,6 +66,11 @@ export class UpstoxHttp {
     const plane = o.plane ?? 'trading';
     const limiter = category === 'order' ? this.orderLimiter : this.standardLimiter;
     const maxRetries = this.opts.maxRetries ?? 2;
+    // A timed-out or 5xx order write has an UNKNOWN outcome — the exchange may
+    // have accepted it. Retrying would risk a duplicate order, so such calls
+    // retry only on 429 (definitely not processed) and otherwise surface the
+    // error for the caller to reconcile against the order book.
+    const ambiguousIfFailed = category === 'order' && (o.method ?? 'GET') !== 'GET';
 
     const token = plane === 'data'
       ? (this.tokens.data() ?? this.tokens.trading())
@@ -113,6 +118,7 @@ export class UpstoxHttp {
           return err(lastError);
         }
         if (!lastError.retryable || attempt === maxRetries) return err(lastError);
+        if (ambiguousIfFailed && lastError.kind !== 'RATE_LIMITED') return err(lastError);
 
         await this.backoff(attempt);
       } catch (e) {
@@ -121,7 +127,7 @@ export class UpstoxHttp {
           aborted ? 'TIMEOUT' : 'NETWORK',
           e instanceof Error ? e.message : String(e),
         );
-        if (attempt === maxRetries) return err(lastError);
+        if (attempt === maxRetries || ambiguousIfFailed) return err(lastError);
         await this.backoff(attempt);
       } finally {
         clearTimeout(timer);

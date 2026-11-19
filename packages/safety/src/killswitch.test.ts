@@ -49,6 +49,12 @@ describe('NUCLEAR', () => {
     expect(a.disableSegment).toHaveBeenCalledWith('NSE_EQ');
     expect(r.segmentDisabled).toBe(true);
   });
+
+  it('disables the F&O segment too — a nuke that leaves options live is not a nuke', async () => {
+    const a = actions();
+    await fire('NUCLEAR', a, sqlStub, 'LIVE');
+    expect(a.disableSegment).toHaveBeenCalledWith('NSE_FO');
+  });
 });
 
 describe('partial failure', () => {
@@ -75,7 +81,7 @@ describe('partial failure', () => {
       disableSegment: vi.fn(boom),
     });
     const r = await fire('NUCLEAR', a, sqlStub, 'LIVE');
-    expect(r.errors).toHaveLength(5);
+    expect(r.errors).toHaveLength(6); // 4 steps + one disable per segment (NSE_EQ, NSE_FO)
     expect(r.segmentDisabled).toBe(false);
   });
 });

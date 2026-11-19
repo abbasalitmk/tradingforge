@@ -15,8 +15,8 @@ secrets/
 *.pem
 tokens/
 
-# data
-data/
+# data — root-level market-data dumps only; packages/data is source
+/data/
 *.json.gz
 !docs/upstox-openapi-v2.json
 apps/engine/.env.local

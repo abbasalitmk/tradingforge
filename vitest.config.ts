@@ -19,6 +19,8 @@ export default defineConfig({
       '@tradeforger/execution': new URL('./packages/execution/src/index.ts', import.meta.url).pathname,
       '@tradeforger/ai': new URL('./packages/ai/src/index.ts', import.meta.url).pathname,
       '@tradeforger/safety': new URL('./packages/safety/src/index.ts', import.meta.url).pathname,
+      '@tradeforger/backtest': new URL('./packages/backtest/src/index.ts', import.meta.url).pathname,
+      '@tradeforger/fno': new URL('./packages/fno/src/index.ts', import.meta.url).pathname,
     },
   },
 });

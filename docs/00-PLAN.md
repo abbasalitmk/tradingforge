@@ -520,6 +520,7 @@ tradeforger/
 | Capital | Not a fixed constant. Derived from live funds + the user's configured ceilings. |
 | Live gating | **Full ladder** (§7), enforced in code. `LIVE` unreachable until paper sessions show positive expectancy after costs. |
 | Hosting | Split — see §12. Vercel for UI only. |
+| F&O (2026-11-18) | **Added**: long index/stock options by default, futures opt-in, no option writing. See `docs/04-FNO.md`. Same breakers, sizing and paper→live ladder as equity. |
 
 ---
 
