@@ -157,6 +157,26 @@ interface FnoAnalyzeResult {
   rejected: string[];
 }
 
+interface MarketSession {
+  kind: 'today' | 'previous';
+  date: string;
+}
+
+/** GET /api/market/overview: computed by the dashboard itself, no engine involved. */
+interface MarketOverview {
+  asOf: number;
+  session: MarketSession | null;
+  watchlist: WatchlistItem[];
+  rankedStocks: ScoredStockItem[];
+  topStock: ScoredStockItem | null;
+}
+
+interface MarketFno {
+  asOf: number;
+  instrument: 'OPTIONS' | 'FUTURES';
+  underlyings: FnoUnderlying[];
+}
+
 type ApiResult<T = Record<string, unknown>> =
   | { ok: true; status: number; data: T }
   | { ok: false; status: number; error: string; offline: boolean };
@@ -198,6 +218,19 @@ async function postEngine<T = Record<string, unknown>>(path: string, body: unkno
     offline: isOffline,
     error: isOffline ? 'Engine offline — action NOT executed' : `${errText} (HTTP ${res.status})`,
   };
+}
+
+/** POST to a market route. These never touch the engine, so there is no engine-offline case. */
+async function postMarket<T = Record<string, unknown>>(path: string, body: unknown): Promise<ApiResult<T>> {
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (res.ok && data) return { ok: true, status: res.status, data: data as T };
+    const msg = typeof data?.['message'] === 'string' ? data['message'] : typeof data?.['error'] === 'string' ? data['error'] : 'Request failed';
+    return { ok: false, status: res.status, offline: false, error: `${msg} (HTTP ${res.status})` };
+  } catch (e) {
+    return { ok: false, status: 0, offline: true, error: `Dashboard server unreachable: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 const fmt = (n: number | null | undefined, d = 2): string =>
@@ -397,6 +430,10 @@ export default function Dashboard() {
   const [armPhrase, setArmPhrase] = useState('');
   const [armPending, setArmPending] = useState(false);
   const [armError, setArmError] = useState<string | null>(null);
+  const [market, setMarket] = useState<MarketOverview | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketFno, setMarketFno] = useState<MarketFno | null>(null);
+  const [marketFnoError, setMarketFnoError] = useState<string | null>(null);
 
   const showToast = (text: string, kind: 'ok' | 'error' = 'ok') => {
     setToast({ text, kind });
@@ -441,8 +478,45 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Market data comes from the dashboard's own routes and never needs the engine.
+  useEffect(() => {
+    let mounted = true;
+    const load = async <T,>(path: string, set: (v: T) => void, setError: (e: string | null) => void) => {
+      try {
+        const res = await fetch(path, { cache: 'no-store' });
+        const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+        if (!mounted) return;
+        if (res.ok && body) {
+          set(body as T);
+          setError(null);
+        } else {
+          setError(typeof body?.['message'] === 'string' ? body['message'] : `HTTP ${res.status}`);
+        }
+      } catch {
+        if (mounted) setError('Dashboard server unreachable');
+      }
+    };
+    const overview = () => load<MarketOverview>('/api/market/overview', setMarket, setMarketError);
+    const fno = () => load<MarketFno>('/api/market/fno', setMarketFno, setMarketFnoError);
+    overview();
+    fno();
+    const a = setInterval(overview, 10_000);
+    const b = setInterval(fno, 60_000);
+    return () => {
+      mounted = false;
+      clearInterval(a);
+      clearInterval(b);
+    };
+  }, []);
+
   const handleToggleAutoTrading = async () => {
     if (!state) return;
+    if (
+      !state.autoTrading &&
+      !window.confirm(`Turn ON automated trading in ${state.mode} mode?\n\nThe engine will enter trades on its own using approved strategies.`)
+    ) {
+      return;
+    }
     const r = await postEngine<{ autoTrading?: boolean }>('/strategy/autotrade', { enabled: !state.autoTrading });
     if (!r.ok) return showToast(`Auto-trading toggle FAILED: ${r.error}`, 'error');
     const next = typeof r.data.autoTrading === 'boolean' ? r.data.autoTrading : !state.autoTrading;
@@ -489,8 +563,10 @@ export default function Dashboard() {
     setDeepAnalysisVotes(null);
     setDeepAnalysisError(null);
 
-    const r = await postEngine<{ consensus?: { votes?: MultiModelVote[] }; votes?: MultiModelVote[] }>('/scanner/analyze', {
+    const style = state && !offlineReason && state.strategyMode === 'SWING' ? 'SWING' : 'INTRADAY';
+    const r = await postMarket<{ consensus?: { votes?: MultiModelVote[] }; votes?: MultiModelVote[] }>('/api/market/analyze', {
       symbol: stock.symbol,
+      style,
     });
     if (r.ok) {
       setDeepAnalysisVotes(r.data.consensus?.votes ?? r.data.votes ?? []);
@@ -537,7 +613,7 @@ export default function Dashboard() {
       ...prev,
       [symbol]: { loading: true, error: null, analytics: prev[symbol]?.analytics ?? null, plan: null, rejected: [] },
     }));
-    const r = await postEngine<{ analytics?: FnoAnalytics | null; plan?: FnoPlanView | null; rejected?: string[] }>('/fno/analyze', { symbol });
+    const r = await postMarket<{ analytics?: FnoAnalytics | null; plan?: FnoPlanView | null; rejected?: string[] }>('/api/market/fno/analyze', { symbol });
     setFnoResults((prev) => ({
       ...prev,
       [symbol]: r.ok
@@ -574,9 +650,9 @@ export default function Dashboard() {
   };
 
   const selectedStock = useMemo(() => {
-    if (!state) return null;
-    return state.watchlist.find((w) => w.symbol === selectedSymbol) ?? state.watchlist[0] ?? null;
-  }, [state, selectedSymbol]);
+    const list = market?.watchlist ?? state?.watchlist ?? [];
+    return list.find((w) => w.symbol === selectedSymbol) ?? list[0] ?? null;
+  }, [market, state, selectedSymbol]);
 
   const isOffline = offlineReason !== null;
 
@@ -596,13 +672,15 @@ export default function Dashboard() {
       }}
     >
       <div>
-        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--danger)' }}>⛔ Engine offline — no live data</div>
+        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--danger)' }}>⛔ Trading engine offline — market analysis above is still live</div>
         <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
           {offlineReason}.{' '}
           {lastLiveAt
-            ? `Everything below is a stale snapshot from ${agoSec(lastLiveAt, now)} and is NOT live. Actions cannot be confirmed until the engine is back.`
+            ? `The trading panels below are a stale snapshot from ${agoSec(lastLiveAt, now)} and are NOT live. Actions cannot be confirmed until the engine is back.`
             : 'No state has been received from the engine yet.'}{' '}
-          Check open positions directly on Upstox.
+          {state && state.positions.length > 0
+            ? `The last snapshot had ${state.positions.length} open position${state.positions.length === 1 ? '' : 's'}: check them directly on Upstox.`
+            : 'Check open positions directly on Upstox.'}
         </div>
       </div>
       <button
@@ -777,31 +855,161 @@ export default function Dashboard() {
     );
   }
 
-  if (!state) {
-    return (
-      <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {toastEl}
-        {offlineBanner}
-        <div style={{ textAlign: 'center', padding: '100px 0', color: 'var(--muted)' }}>
-          <div style={{ fontSize: 24, marginBottom: 12 }}>⚡ TradeForger Terminal</div>
-          <div>{isOffline ? 'Waiting for the engine to come online...' : 'Connecting to engine...'}</div>
-        </div>
-        {killModalOpen && renderKillModal()}
-      </div>
-    );
-  }
 
   const s = state;
-  const isPnlPositive = s.pnl.total >= 0;
-  const isRealMoney = s.mode === 'LIVE' || s.mode === 'LIVE_ARMED' || s.isArmed;
-  const topStock = s.topStock ?? s.rankedStocks?.[0] ?? null;
+  const topStock = market?.topStock ?? null;
+  const rankedStocks = market?.rankedStocks ?? [];
+  const fnoUnderlyings = marketFno?.underlyings ?? s?.fno?.underlyings ?? null;
+  const fnoInstrument = s?.fno?.instrument ?? marketFno?.instrument ?? null;
+  const autoOn = !!s && !isOffline && s.autoTrading;
 
-  return (
-    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {toastEl}
+  const sessionBadge = market?.session ? (
+    <span
+      style={{
+        fontSize: 10.5,
+        padding: '1px 6px',
+        borderRadius: 4,
+        fontWeight: 600,
+        background: market.session.kind === 'today' ? 'rgba(63,185,80,0.15)' : 'rgba(210,153,34,0.15)',
+        color: market.session.kind === 'today' ? 'var(--ok)' : 'var(--warn)',
+      }}
+    >
+      {market.session.kind === 'today' ? 'Today' : `Last session · ${market.session.date}`}
+    </span>
+  ) : null;
+
+  const dot = (color: string) => <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />;
+
+  const statusStrip = (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 10,
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        background: 'var(--panel)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        padding: '10px 16px',
+        fontSize: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        {dot(marketError ? 'var(--danger)' : market ? 'var(--ok)' : 'var(--muted)')}
+        <span style={{ fontWeight: 600 }}>Market data</span>
+        <span style={{ color: 'var(--muted)' }}>
+          {marketError ?? (market ? `live from Upstox · updated ${agoSec(market.asOf, now)}` : 'loading…')}
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {dot(!s || isOffline ? 'var(--danger)' : 'var(--ok)')}
+        <span style={{ fontWeight: 600 }}>Trading engine</span>
+        <span style={{ color: 'var(--muted)' }}>{isOffline ? 'offline' : s ? 'online' : 'connecting…'}</span>
+      </div>
+    </div>
+  );
+
+  const killAttemptButton = (
+    <button
+      onClick={() => {
+        setKillError(null);
+        setKillModalOpen(true);
+      }}
+      style={{
+        background: 'rgba(248,81,73,0.15)',
+        border: '1px solid var(--danger)',
+        color: 'var(--danger)',
+        padding: '7px 14px',
+        borderRadius: 6,
+        fontWeight: 700,
+        fontSize: 12,
+        cursor: 'pointer',
+      }}
+    >
+      🛑 KILL SWITCH (attempt)
+    </button>
+  );
+
+  // The one switch that lets the engine place orders on its own. The engine is
+  // the source of truth; with no engine there is nothing that could trade.
+  const tradingHeader = (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 12,
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        background: 'var(--panel)',
+        border: `1px solid ${autoOn ? 'var(--ok)' : 'var(--line)'}`,
+        borderRadius: 10,
+        padding: '14px 18px',
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Automated trading</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3, maxWidth: 760, lineHeight: 1.45 }}>
+          {!s
+            ? 'Unavailable: the trading engine is not running. Everything above works without it; placing orders needs the engine.'
+            : isOffline
+              ? 'Engine unreachable: the switch is locked until it is back.'
+              : s.autoTrading
+                ? `ON: the engine enters trades on its own in ${s.mode} mode.`
+                : 'OFF: no automatic entries. Exits and the kill switch still work.'}
+        </div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={autoOn}
+        disabled={!s || isOffline}
+        onClick={handleToggleAutoTrading}
+        style={{
+          minWidth: 132,
+          background: autoOn ? 'var(--ok)' : 'rgba(255,255,255,0.06)',
+          border: `1px solid ${autoOn ? 'var(--ok)' : 'var(--line)'}`,
+          color: autoOn ? '#0b0e11' : !s || isOffline ? 'var(--muted)' : 'var(--fg)',
+          borderRadius: 999,
+          padding: '8px 16px',
+          fontSize: 12.5,
+          fontWeight: 700,
+          cursor: !s || isOffline ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {!s || isOffline ? 'UNAVAILABLE' : autoOn ? '● ON' : '○ OFF'}
+      </button>
+    </div>
+  );
+
+  const tradingUnavailable = (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 12,
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        background: 'var(--panel)',
+        border: '1px dashed var(--line)',
+        borderRadius: 10,
+        padding: '16px 18px',
+      }}
+    >
+      <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5, maxWidth: 820 }}>
+        Positions, orders, P&L, live arming, sizing and circuit breakers appear here once the engine is running and connected.
+        {isOffline && ' If the engine might still be running with open positions, check them directly on Upstox.'}
+      </div>
+      {isOffline && killAttemptButton}
+    </div>
+  );
+
+  function renderTrading(s: EngineState) {
+    const isPnlPositive = s.pnl.total >= 0;
+    const isRealMoney = s.mode === 'LIVE' || s.mode === 'LIVE_ARMED' || s.isArmed;
+    return (
+      <>
       {offlineBanner}
-
-      {/* Everything below reflects engine state; greyed out and inert when not live. */}
+      {/* Engine state; greyed out and inert when not live. */}
       <div
         aria-disabled={isOffline}
         style={{
@@ -991,81 +1199,6 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
-
-      {/* Top Stock Spotlight Banner (Best Stock of the Session) */}
-      {topStock && (
-        <div
-          style={{
-            background: 'linear-gradient(90deg, rgba(74,158,255,0.12) 0%, rgba(63,185,80,0.08) 100%)',
-            border: '1px solid rgba(74,158,255,0.3)',
-            borderRadius: 10,
-            padding: '14px 20px',
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 8,
-                background: 'var(--accent)',
-                color: '#fff',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: 14,
-              }}
-            >
-              <span>#1</span>
-              <span style={{ fontSize: 9 }}>TOP</span>
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 16, fontWeight: 700 }}>{topStock.symbol}</span>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>{topStock.name}</span>
-                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.2)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
-                  BREAKOUT SCORE {topStock.score}/100
-                </span>
-                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(74,158,255,0.2)', color: 'var(--accent)', fontSize: 11 }}>
-                  {topStock.rvol}x RVOL
-                </span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--fg)', marginTop: 4, fontFamily: 'monospace' }}>
-                LTP ₹{topStock.ltp.toFixed(2)} | Target 1: ₹{topStock.tradeSetup.target1.toFixed(2)} (+{((topStock.tradeSetup.target1 - topStock.tradeSetup.entry) / topStock.tradeSetup.entry * 100).toFixed(1)}%) | Stop Loss: ₹{topStock.tradeSetup.stopLoss.toFixed(2)} | R:R 1.5:1
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button
-              onClick={() => handleAnalyzeStock(topStock)}
-              style={{
-                background: 'var(--accent)',
-                border: 'none',
-                color: '#fff',
-                padding: '8px 16px',
-                borderRadius: 6,
-                fontWeight: 700,
-                fontSize: 12,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span>🤖</span>
-              <span>Deep Multi-Model AI Analysis</span>
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* KPI Overview Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
@@ -1343,206 +1476,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Main Grid: Watchlist Scanner & Chart on Left, Signals & Positions on Right */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.15fr) minmax(340px, 1.25fr)', gap: 18 }}>
-        {/* Left Column: Watchlist Scanner & Ranked Stocks */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Watchlist Scanner Table */}
-          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
-            <div
-              style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid var(--line)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span>Autonomous Stock Breakout Scanner</span>
-                <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Sorted by Breakout Score</span>
-              </div>
-            </div>
-
-            <div style={{ overflowX: 'auto', maxHeight: 400 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12.5 }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
-                    <th style={{ padding: '8px 12px' }}>Rank</th>
-                    <th style={{ padding: '8px 12px' }}>Symbol</th>
-                    <th style={{ padding: '8px 12px' }}>LTP (₹)</th>
-                    <th style={{ padding: '8px 12px' }}>Change</th>
-                    <th style={{ padding: '8px 12px' }}>RVOL</th>
-                    <th style={{ padding: '8px 12px' }}>Score</th>
-                    <th style={{ padding: '8px 12px' }}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(s.rankedStocks ?? []).map((item) => {
-                    const isPos = item.changePct >= 0;
-                    const isSelected = item.symbol === selectedStock?.symbol;
-                    return (
-                      <tr
-                        key={item.instrumentKey}
-                        onClick={() => setSelectedSymbol(item.symbol)}
-                        style={{
-                          borderBottom: '1px solid rgba(255,255,255,0.04)',
-                          cursor: 'pointer',
-                          background: isSelected ? 'rgba(74,158,255,0.08)' : 'transparent',
-                        }}
-                      >
-                        <td style={{ padding: '9px 12px', fontWeight: 700, color: item.rank <= 2 ? 'var(--ok)' : 'var(--muted)' }}>
-                          #{item.rank}
-                        </td>
-                        <td style={{ padding: '9px 12px', fontWeight: 600 }}>
-                          <div>{item.symbol}</div>
-                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{item.name.slice(0, 16)}</div>
-                        </td>
-                        <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontWeight: 600 }}>
-                          ₹{item.ltp.toFixed(2)}
-                        </td>
-                        <td style={{ padding: '9px 12px' }}>
-                          <span
-                            style={{
-                              padding: '2px 6px',
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: 600,
-                              background: isPos ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)',
-                              color: isPos ? 'var(--ok)' : 'var(--danger)',
-                            }}
-                          >
-                            {isPos ? '+' : ''}{item.changePct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontSize: 11 }}>
-                          {item.rvol}x
-                        </td>
-                        <td style={{ padding: '9px 12px' }}>
-                          <span
-                            style={{
-                              padding: '2px 6px',
-                              borderRadius: 4,
-                              fontWeight: 700,
-                              fontSize: 11,
-                              background: item.score >= 80 ? 'rgba(63,185,80,0.2)' : 'rgba(74,158,255,0.15)',
-                              color: item.score >= 80 ? 'var(--ok)' : 'var(--accent)',
-                            }}
-                          >
-                            {item.score}
-                          </span>
-                        </td>
-                        <td style={{ padding: '9px 12px' }}>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleAnalyzeStock(item);
-                            }}
-                            style={{
-                              background: 'rgba(74,158,255,0.15)',
-                              border: '1px solid var(--accent)',
-                              color: 'var(--accent)',
-                              borderRadius: 4,
-                              padding: '3px 8px',
-                              fontSize: 10,
-                              fontWeight: 600,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            Analyze
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {(s.rankedStocks ?? []).length === 0 && (
-                <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
-                  Engine has not published ranked stocks yet.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Interactive Chart Preview for Selected Symbol */}
-          {selectedStock && (
-            <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <div>
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>{selectedStock.symbol}</span>
-                  <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>₹{selectedStock.ltp.toFixed(2)}</span>
-                </div>
-                <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>EMA20/50</span>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: 'var(--warn)' }}>VWAP</span>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: 'var(--ok)' }}>Supertrend</span>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.05)', color: 'var(--muted)' }}>illustrative only — not live candles</span>
-                </div>
-              </div>
-
-              {/* Graphical Candlestick & Overlays Visualization */}
-              <div
-                style={{
-                  height: 180,
-                  background: '#0e1115',
-                  borderRadius: 6,
-                  border: '1px solid rgba(255,255,255,0.06)',
-                  position: 'relative',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <svg viewBox="0 0 400 160" style={{ width: '100%', height: '100%' }}>
-                  <line x1="0" y1="40" x2="400" y2="40" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
-                  <line x1="0" y1="80" x2="400" y2="80" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
-                  <line x1="0" y1="120" x2="400" y2="120" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
-
-                  {/* VWAP Yellow Line */}
-                  <path d="M 0 100 Q 100 85, 200 80 T 400 70" fill="none" stroke="#d29922" strokeWidth="1.5" strokeDasharray="3" />
-                  {/* EMA 20 Blue Line */}
-                  <path d="M 0 110 Q 120 70, 220 60 T 400 45" fill="none" stroke="#4a9eff" strokeWidth="2" />
-
-                  {/* Candlesticks */}
-                  <rect x="50" y="70" width="8" height="24" fill="#3fb950" />
-                  <line x1="54" y1="58" x2="54" y2="102" stroke="#3fb950" strokeWidth="1" />
-
-                  <rect x="90" y="65" width="8" height="20" fill="#3fb950" />
-                  <line x1="94" y1="55" x2="94" y2="92" stroke="#3fb950" strokeWidth="1" />
-
-                  <rect x="130" y="72" width="8" height="18" fill="#f85149" />
-                  <line x1="134" y1="62" x2="134" y2="98" stroke="#f85149" strokeWidth="1" />
-
-                  <rect x="170" y="60" width="8" height="25" fill="#3fb950" />
-                  <line x1="174" y1="48" x2="174" y2="92" stroke="#3fb950" strokeWidth="1" />
-
-                  <rect x="210" y="52" width="8" height="30" fill="#3fb950" />
-                  <line x1="214" y1="40" x2="214" y2="88" stroke="#3fb950" strokeWidth="1" />
-
-                  <rect x="250" y="48" width="8" height="20" fill="#3fb950" />
-                  <line x1="254" y1="36" x2="254" y2="76" stroke="#3fb950" strokeWidth="1" />
-
-                  <rect x="290" y="55" width="8" height="15" fill="#f85149" />
-                  <line x1="294" y1="45" x2="294" y2="78" stroke="#f85149" strokeWidth="1" />
-
-                  <rect x="330" y="40" width="8" height="28" fill="#3fb950" />
-                  <line x1="334" y1="30" x2="334" y2="74" stroke="#3fb950" strokeWidth="1" />
-
-                  {/* Current LTP marker */}
-                  <circle cx="334" cy="40" r="4" fill="#3fb950" />
-                  <text x="345" y="44" fill="#3fb950" fontSize="10" fontFamily="monospace" fontWeight="bold">
-                    ₹{selectedStock.ltp.toFixed(1)}
-                  </text>
-                </svg>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Positions and Live Signals */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Positions and the engine's signal journal */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 18 }}>
           {/* Active Positions Table */}
           <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
             <div
@@ -1784,256 +1719,6 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* F&O Desk */}
-      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
-        <div
-          style={{
-            padding: '12px 16px',
-            borderBottom: '1px solid var(--line)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 10,
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>F&O Desk</span>
-            {s.fno && (
-              <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>
-                {s.fno.instrument}
-              </span>
-            )}
-            <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Index options / futures · option-chain analytics</span>
-          </div>
-          {s.fno && (
-            <button
-              onClick={handleFnoToggle}
-              disabled={fnoTogglePending}
-              style={{
-                background: s.fno.enabled ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
-                border: `1px solid ${s.fno.enabled ? 'var(--ok)' : 'var(--danger)'}`,
-                color: s.fno.enabled ? 'var(--ok)' : 'var(--danger)',
-                borderRadius: 6,
-                padding: '6px 14px',
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: fnoTogglePending ? 'wait' : 'pointer',
-              }}
-            >
-              {fnoTogglePending ? '… updating' : s.fno.enabled ? '● F&O TRADING ENABLED' : '○ F&O TRADING DISABLED'}
-            </button>
-          )}
-        </div>
-
-        {!s.fno ? (
-          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
-            Engine is not reporting F&O state (engine build may predate the F&O desk).
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 14 }}>
-            {s.fno.underlyings.length === 0 ? (
-              <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No F&O underlyings configured.</div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-                {s.fno.underlyings.map((u) => {
-                  const result = fnoResults[u.symbol];
-                  const a = u.analytics ?? result?.analytics ?? null;
-                  const biasColor = a?.bias === 'BULLISH' ? 'var(--ok)' : a?.bias === 'BEARISH' ? 'var(--danger)' : 'var(--muted)';
-                  const biasRgb = a?.bias === 'BULLISH' ? '63,185,80' : a?.bias === 'BEARISH' ? '248,81,73' : '139,150,165';
-                  return (
-                    <div
-                      key={u.symbol}
-                      style={{
-                        background: 'rgba(255,255,255,0.02)',
-                        border: '1px solid var(--line)',
-                        borderRadius: 8,
-                        padding: '12px 14px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 8,
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ fontWeight: 700, fontSize: 14 }}>{u.symbol}</span>
-                            <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600 }}>{fmt(u.spot ?? a?.spot ?? null)}</span>
-                            {a && (
-                              <span
-                                style={{
-                                  padding: '1px 6px',
-                                  borderRadius: 4,
-                                  fontSize: 10,
-                                  fontWeight: 700,
-                                  background: `rgba(${biasRgb},0.15)`,
-                                  color: biasColor,
-                                  border: `1px solid ${biasColor}`,
-                                }}
-                              >
-                                {a.bias} {a.biasScore > 0 ? '+' : ''}
-                                {a.biasScore}
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
-                            Exp {u.expiry ?? '—'} · Lot {u.lotSize ?? '—'} · signals from <span className="mono" style={{ fontSize: 10.5 }}>{u.signalKey}</span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleFnoAnalyze(u.symbol)}
-                          disabled={result?.loading}
-                          style={{
-                            background: 'rgba(74,158,255,0.15)',
-                            border: '1px solid var(--accent)',
-                            color: 'var(--accent)',
-                            borderRadius: 4,
-                            padding: '3px 8px',
-                            fontSize: 10,
-                            fontWeight: 600,
-                            cursor: result?.loading ? 'wait' : 'pointer',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {result?.loading ? 'Analyzing…' : 'Analyze'}
-                        </button>
-                      </div>
-
-                      {u.error && (
-                        <div style={{ fontSize: 11.5, color: 'var(--danger)', background: 'rgba(248,81,73,0.1)', borderRadius: 6, padding: '6px 10px' }}>
-                          {u.error}
-                        </div>
-                      )}
-
-                      {a ? (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-                            <Metric label="ATM" value={fmt(a.atmStrike, 0)} />
-                            <Metric label="PCR OI / VOL" value={`${fmt(a.pcrOi)} / ${fmt(a.pcrVolume)}`} />
-                            <Metric label="MAX PAIN" value={fmt(a.maxPain, 0)} />
-                            <Metric label="CALL WALL" value={fmt(a.callWall, 0)} color="var(--danger)" />
-                            <Metric label="PUT WALL" value={fmt(a.putWall, 0)} color="var(--ok)" />
-                            <Metric label="ATM IV" value={a.atmIv === null ? '—' : `${fmt(a.atmIv, 1)}%`} />
-                            <Metric label="IV SKEW" value={a.ivSkew === null ? '—' : `${fmt(a.ivSkew, 1)}`} />
-                            <Metric label="STRADDLE" value={fmt(a.straddle)} />
-                            <Metric label="EXP. MOVE" value={a.expectedMovePct === null ? '—' : `±${fmt(a.expectedMovePct)}%`} />
-                          </div>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 10 }}>
-                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.callBuildup]}`, color: BUILDUP_COLOR[a.callBuildup] }}>
-                              CE: {a.callBuildup.replace('_', ' ')}
-                            </span>
-                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.putBuildup]}`, color: BUILDUP_COLOR[a.putBuildup] }}>
-                              PE: {a.putBuildup.replace('_', ' ')}
-                            </span>
-                            <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>updated {agoSec(a.updatedAt, now)}</span>
-                          </div>
-                          {a.notes.length > 0 && (
-                            <div style={{ fontSize: 11, color: '#c9d1d9', lineHeight: 1.4 }}>
-                              {a.notes.map((n, i) => (
-                                <div key={i}>• {n}</div>
-                              ))}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        !u.error && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No option-chain analytics yet.</div>
-                      )}
-
-                      {result && !result.loading && (
-                        <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>Analyze result</div>
-                          {result.error && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>{result.error}</div>}
-                          {result.plan && <FnoPlanDetail plan={result.plan} />}
-                          {!result.error && !result.plan && result.rejected.length === 0 && (
-                            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No setup generated.</div>
-                          )}
-                          {result.rejected.length > 0 && (
-                            <div style={{ fontSize: 11.5, color: 'var(--warn)', lineHeight: 1.4 }}>
-                              <div style={{ fontWeight: 600 }}>No trade — rejected:</div>
-                              {result.rejected.map((r, i) => (
-                                <div key={i}>• {r}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Recent F&O plans */}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--muted)' }}>Recent F&O plans</div>
-              {s.fno.plans.length === 0 ? (
-                <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No plans yet.</div>
-              ) : (
-                <div style={{ overflowX: 'auto', maxHeight: 360 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
-                        <th style={{ padding: '8px 12px' }}>Time</th>
-                        <th style={{ padding: '8px 12px' }}>Contract</th>
-                        <th style={{ padding: '8px 12px' }}>Side / Lots</th>
-                        <th style={{ padding: '8px 12px' }}>Entry / SL / Target</th>
-                        <th style={{ padding: '8px 12px' }}>Cost / Max loss</th>
-                        <th style={{ padding: '8px 12px' }}>Conf</th>
-                        <th style={{ padding: '8px 12px' }}>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {s.fno.plans.map((p) => (
-                        <tr key={p.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                          <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                            {new Date(p.createdAt).toLocaleTimeString('en-IN', { hour12: false })}
-                          </td>
-                          <td style={{ padding: '8px 12px', fontWeight: 600 }}>
-                            <div style={{ fontFamily: 'monospace' }}>{p.contract.tradingSymbol}</div>
-                            <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-                              {p.symbol} · exp {p.contract.expiry}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span style={{ fontWeight: 700, color: p.side === 'BUY' ? 'var(--ok)' : 'var(--danger)' }}>{p.side}</span> {p.lots}L
-                            <span style={{ fontSize: 10, color: 'var(--muted)' }}> ({p.quantity})</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
-                            {fmt(p.premium.entry)} / <span style={{ color: 'var(--danger)' }}>{fmt(p.premium.stopLoss)}</span> /{' '}
-                            <span style={{ color: 'var(--ok)' }}>{fmt(p.premium.target)}</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
-                            {inr(p.costRupees, 0)} / <span style={{ color: 'var(--danger)' }}>{inr(p.maxLossRupees, 0)}</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontSize: 11 }}>{p.confidence}%</td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span
-                              title={p.rejectReason ?? undefined}
-                              style={{
-                                padding: '2px 6px',
-                                borderRadius: 4,
-                                fontSize: 10,
-                                fontWeight: 700,
-                                background: PLAN_STATUS_STYLE[p.status].bg,
-                                color: PLAN_STATUS_STYLE[p.status].fg,
-                              }}
-                            >
-                              {p.status}
-                            </span>
-                            {p.rejectReason && <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{p.rejectReason}</div>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Safety & Circuit Breakers Full Panel */}
@@ -2142,6 +1827,546 @@ export default function Dashboard() {
         </div>
       </div>
       </div>
+      </>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {toastEl}
+      {statusStrip}
+
+      {/* ── Market analysis: computed by the dashboard, works without the engine ── */}
+      {/* Top Stock Spotlight Banner (Best Stock of the Session) */}
+      {topStock && (
+        <div
+          style={{
+            background: 'linear-gradient(90deg, rgba(74,158,255,0.12) 0%, rgba(63,185,80,0.08) 100%)',
+            border: '1px solid rgba(74,158,255,0.3)',
+            borderRadius: 10,
+            padding: '14px 20px',
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 8,
+                background: 'var(--accent)',
+                color: '#fff',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 800,
+                fontSize: 14,
+              }}
+            >
+              <span>#1</span>
+              <span style={{ fontSize: 9 }}>TOP</span>
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16, fontWeight: 700 }}>{topStock.symbol}</span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>{topStock.name}</span>
+                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.2)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
+                  BREAKOUT SCORE {topStock.score}/100
+                </span>
+                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(74,158,255,0.2)', color: 'var(--accent)', fontSize: 11 }}>
+                  {topStock.rvol}x RVOL
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--fg)', marginTop: 4, fontFamily: 'monospace' }}>
+                LTP ₹{topStock.ltp.toFixed(2)} | Target 1: ₹{topStock.tradeSetup.target1.toFixed(2)} (+{((topStock.tradeSetup.target1 - topStock.tradeSetup.entry) / topStock.tradeSetup.entry * 100).toFixed(1)}%) | Stop Loss: ₹{topStock.tradeSetup.stopLoss.toFixed(2)} | R:R 1.5:1
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              onClick={() => handleAnalyzeStock(topStock)}
+              style={{
+                background: 'var(--accent)',
+                border: 'none',
+                color: '#fff',
+                padding: '8px 16px',
+                borderRadius: 6,
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              <span>🤖</span>
+              <span>Deep Multi-Model AI Analysis</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
+          {/* Watchlist Scanner Table */}
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+            <div
+              style={{
+                padding: '12px 16px',
+                borderBottom: '1px solid var(--line)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>Autonomous Stock Breakout Scanner</span>
+                <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Sorted by Breakout Score</span>
+                {sessionBadge}
+              </div>
+            </div>
+
+            <div style={{ overflowX: 'auto', maxHeight: 400 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
+                    <th style={{ padding: '8px 12px' }}>Rank</th>
+                    <th style={{ padding: '8px 12px' }}>Symbol</th>
+                    <th style={{ padding: '8px 12px' }}>LTP (₹)</th>
+                    <th style={{ padding: '8px 12px' }}>Change</th>
+                    <th style={{ padding: '8px 12px' }}>RVOL</th>
+                    <th style={{ padding: '8px 12px' }}>Score</th>
+                    <th style={{ padding: '8px 12px' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankedStocks.map((item) => {
+                    const isPos = item.changePct >= 0;
+                    const isSelected = item.symbol === selectedStock?.symbol;
+                    return (
+                      <tr
+                        key={item.instrumentKey}
+                        onClick={() => setSelectedSymbol(item.symbol)}
+                        style={{
+                          borderBottom: '1px solid rgba(255,255,255,0.04)',
+                          cursor: 'pointer',
+                          background: isSelected ? 'rgba(74,158,255,0.08)' : 'transparent',
+                        }}
+                      >
+                        <td style={{ padding: '9px 12px', fontWeight: 700, color: item.rank <= 2 ? 'var(--ok)' : 'var(--muted)' }}>
+                          #{item.rank}
+                        </td>
+                        <td style={{ padding: '9px 12px', fontWeight: 600 }}>
+                          <div>{item.symbol}</div>
+                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{item.name.slice(0, 16)}</div>
+                        </td>
+                        <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontWeight: 600 }}>
+                          ₹{item.ltp.toFixed(2)}
+                        </td>
+                        <td style={{ padding: '9px 12px' }}>
+                          <span
+                            style={{
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: isPos ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)',
+                              color: isPos ? 'var(--ok)' : 'var(--danger)',
+                            }}
+                          >
+                            {isPos ? '+' : ''}{item.changePct.toFixed(2)}%
+                          </span>
+                        </td>
+                        <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                          {item.rvol}x
+                        </td>
+                        <td style={{ padding: '9px 12px' }}>
+                          <span
+                            style={{
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              fontWeight: 700,
+                              fontSize: 11,
+                              background: item.score >= 80 ? 'rgba(63,185,80,0.2)' : 'rgba(74,158,255,0.15)',
+                              color: item.score >= 80 ? 'var(--ok)' : 'var(--accent)',
+                            }}
+                          >
+                            {item.score}
+                          </span>
+                        </td>
+                        <td style={{ padding: '9px 12px' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAnalyzeStock(item);
+                            }}
+                            style={{
+                              background: 'rgba(74,158,255,0.15)',
+                              border: '1px solid var(--accent)',
+                              color: 'var(--accent)',
+                              borderRadius: 4,
+                              padding: '3px 8px',
+                              fontSize: 10,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Analyze
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {rankedStocks.length === 0 && (
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+                  {marketError ? `Market data unavailable: ${marketError}` : market ? 'No stock has enough 5-minute bars to rank yet.' : 'Loading market data…'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Interactive Chart Preview for Selected Symbol */}
+          {selectedStock && (
+            <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div>
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>{selectedStock.symbol}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>₹{selectedStock.ltp.toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
+                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>EMA20/50</span>
+                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: 'var(--warn)' }}>VWAP</span>
+                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: 'var(--ok)' }}>Supertrend</span>
+                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.05)', color: 'var(--muted)' }}>illustrative only — not live candles</span>
+                </div>
+              </div>
+
+              {/* Graphical Candlestick & Overlays Visualization */}
+              <div
+                style={{
+                  height: 180,
+                  background: '#0e1115',
+                  borderRadius: 6,
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  position: 'relative',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <svg viewBox="0 0 400 160" style={{ width: '100%', height: '100%' }}>
+                  <line x1="0" y1="40" x2="400" y2="40" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
+                  <line x1="0" y1="80" x2="400" y2="80" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
+                  <line x1="0" y1="120" x2="400" y2="120" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
+
+                  {/* VWAP Yellow Line */}
+                  <path d="M 0 100 Q 100 85, 200 80 T 400 70" fill="none" stroke="#d29922" strokeWidth="1.5" strokeDasharray="3" />
+                  {/* EMA 20 Blue Line */}
+                  <path d="M 0 110 Q 120 70, 220 60 T 400 45" fill="none" stroke="#4a9eff" strokeWidth="2" />
+
+                  {/* Candlesticks */}
+                  <rect x="50" y="70" width="8" height="24" fill="#3fb950" />
+                  <line x1="54" y1="58" x2="54" y2="102" stroke="#3fb950" strokeWidth="1" />
+
+                  <rect x="90" y="65" width="8" height="20" fill="#3fb950" />
+                  <line x1="94" y1="55" x2="94" y2="92" stroke="#3fb950" strokeWidth="1" />
+
+                  <rect x="130" y="72" width="8" height="18" fill="#f85149" />
+                  <line x1="134" y1="62" x2="134" y2="98" stroke="#f85149" strokeWidth="1" />
+
+                  <rect x="170" y="60" width="8" height="25" fill="#3fb950" />
+                  <line x1="174" y1="48" x2="174" y2="92" stroke="#3fb950" strokeWidth="1" />
+
+                  <rect x="210" y="52" width="8" height="30" fill="#3fb950" />
+                  <line x1="214" y1="40" x2="214" y2="88" stroke="#3fb950" strokeWidth="1" />
+
+                  <rect x="250" y="48" width="8" height="20" fill="#3fb950" />
+                  <line x1="254" y1="36" x2="254" y2="76" stroke="#3fb950" strokeWidth="1" />
+
+                  <rect x="290" y="55" width="8" height="15" fill="#f85149" />
+                  <line x1="294" y1="45" x2="294" y2="78" stroke="#f85149" strokeWidth="1" />
+
+                  <rect x="330" y="40" width="8" height="28" fill="#3fb950" />
+                  <line x1="334" y1="30" x2="334" y2="74" stroke="#3fb950" strokeWidth="1" />
+
+                  {/* Current LTP marker */}
+                  <circle cx="334" cy="40" r="4" fill="#3fb950" />
+                  <text x="345" y="44" fill="#3fb950" fontSize="10" fontFamily="monospace" fontWeight="bold">
+                    ₹{selectedStock.ltp.toFixed(1)}
+                  </text>
+                </svg>
+              </div>
+            </div>
+          )}
+      </div>
+
+      {/* F&O Desk */}
+      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+        <div
+          style={{
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--line)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 10,
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>F&O Desk</span>
+            {fnoInstrument && (
+              <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>
+                {fnoInstrument}
+              </span>
+            )}
+            <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Index options / futures · option-chain analytics</span>
+          </div>
+          {s?.fno && !isOffline && (
+            <button
+              onClick={handleFnoToggle}
+              disabled={fnoTogglePending}
+              style={{
+                background: s.fno.enabled ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
+                border: `1px solid ${s.fno.enabled ? 'var(--ok)' : 'var(--danger)'}`,
+                color: s.fno.enabled ? 'var(--ok)' : 'var(--danger)',
+                borderRadius: 6,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: fnoTogglePending ? 'wait' : 'pointer',
+              }}
+            >
+              {fnoTogglePending ? '… updating' : s.fno.enabled ? '● F&O TRADING ENABLED' : '○ F&O TRADING DISABLED'}
+            </button>
+          )}
+        </div>
+
+        {!fnoUnderlyings ? (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+            {marketFnoError ? `Option-chain data unavailable: ${marketFnoError}` : 'Loading option chains…'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 14 }}>
+            {fnoUnderlyings.length === 0 ? (
+              <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No F&O underlyings configured.</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+                {fnoUnderlyings.map((u) => {
+                  const result = fnoResults[u.symbol];
+                  const a = u.analytics ?? result?.analytics ?? null;
+                  const biasColor = a?.bias === 'BULLISH' ? 'var(--ok)' : a?.bias === 'BEARISH' ? 'var(--danger)' : 'var(--muted)';
+                  const biasRgb = a?.bias === 'BULLISH' ? '63,185,80' : a?.bias === 'BEARISH' ? '248,81,73' : '139,150,165';
+                  return (
+                    <div
+                      key={u.symbol}
+                      style={{
+                        background: 'rgba(255,255,255,0.02)',
+                        border: '1px solid var(--line)',
+                        borderRadius: 8,
+                        padding: '12px 14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: 700, fontSize: 14 }}>{u.symbol}</span>
+                            <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600 }}>{fmt(u.spot ?? a?.spot ?? null)}</span>
+                            {a && (
+                              <span
+                                style={{
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  background: `rgba(${biasRgb},0.15)`,
+                                  color: biasColor,
+                                  border: `1px solid ${biasColor}`,
+                                }}
+                              >
+                                {a.bias} {a.biasScore > 0 ? '+' : ''}
+                                {a.biasScore}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
+                            Exp {u.expiry ?? '—'} · Lot {u.lotSize ?? '—'} · signals from <span className="mono" style={{ fontSize: 10.5 }}>{u.signalKey}</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleFnoAnalyze(u.symbol)}
+                          disabled={result?.loading}
+                          style={{
+                            background: 'rgba(74,158,255,0.15)',
+                            border: '1px solid var(--accent)',
+                            color: 'var(--accent)',
+                            borderRadius: 4,
+                            padding: '3px 8px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                            cursor: result?.loading ? 'wait' : 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {result?.loading ? 'Analyzing…' : 'Analyze'}
+                        </button>
+                      </div>
+
+                      {u.error && (
+                        <div style={{ fontSize: 11.5, color: 'var(--danger)', background: 'rgba(248,81,73,0.1)', borderRadius: 6, padding: '6px 10px' }}>
+                          {u.error}
+                        </div>
+                      )}
+
+                      {a ? (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                            <Metric label="ATM" value={fmt(a.atmStrike, 0)} />
+                            <Metric label="PCR OI / VOL" value={`${fmt(a.pcrOi)} / ${fmt(a.pcrVolume)}`} />
+                            <Metric label="MAX PAIN" value={fmt(a.maxPain, 0)} />
+                            <Metric label="CALL WALL" value={fmt(a.callWall, 0)} color="var(--danger)" />
+                            <Metric label="PUT WALL" value={fmt(a.putWall, 0)} color="var(--ok)" />
+                            <Metric label="ATM IV" value={a.atmIv === null ? '—' : `${fmt(a.atmIv, 1)}%`} />
+                            <Metric label="IV SKEW" value={a.ivSkew === null ? '—' : `${fmt(a.ivSkew, 1)}`} />
+                            <Metric label="STRADDLE" value={fmt(a.straddle)} />
+                            <Metric label="EXP. MOVE" value={a.expectedMovePct === null ? '—' : `±${fmt(a.expectedMovePct)}%`} />
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 10 }}>
+                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.callBuildup]}`, color: BUILDUP_COLOR[a.callBuildup] }}>
+                              CE: {a.callBuildup.replace('_', ' ')}
+                            </span>
+                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.putBuildup]}`, color: BUILDUP_COLOR[a.putBuildup] }}>
+                              PE: {a.putBuildup.replace('_', ' ')}
+                            </span>
+                            <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>updated {agoSec(a.updatedAt, now)}</span>
+                          </div>
+                          {a.notes.length > 0 && (
+                            <div style={{ fontSize: 11, color: '#c9d1d9', lineHeight: 1.4 }}>
+                              {a.notes.map((n, i) => (
+                                <div key={i}>• {n}</div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        !u.error && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No option-chain analytics yet.</div>
+                      )}
+
+                      {result && !result.loading && (
+                        <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>Analyze result</div>
+                          {result.error && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>{result.error}</div>}
+                          {result.plan && <FnoPlanDetail plan={result.plan} />}
+                          {result.plan && (
+                            <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
+                              Sized at 1 lot for reference. The engine sizes real trades from your capital and limits.
+                            </div>
+                          )}
+                          {!result.error && !result.plan && result.rejected.length === 0 && (
+                            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No setup generated.</div>
+                          )}
+                          {result.rejected.length > 0 && (
+                            <div style={{ fontSize: 11.5, color: 'var(--warn)', lineHeight: 1.4 }}>
+                              <div style={{ fontWeight: 600 }}>No trade — rejected:</div>
+                              {result.rejected.map((r, i) => (
+                                <div key={i}>• {r}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Recent F&O plans: the engine's journal */}
+            {s?.fno && (
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--muted)' }}>Recent F&O plans</div>
+              {s.fno.plans.length === 0 ? (
+                <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No plans yet.</div>
+              ) : (
+                <div style={{ overflowX: 'auto', maxHeight: 360 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
+                        <th style={{ padding: '8px 12px' }}>Time</th>
+                        <th style={{ padding: '8px 12px' }}>Contract</th>
+                        <th style={{ padding: '8px 12px' }}>Side / Lots</th>
+                        <th style={{ padding: '8px 12px' }}>Entry / SL / Target</th>
+                        <th style={{ padding: '8px 12px' }}>Cost / Max loss</th>
+                        <th style={{ padding: '8px 12px' }}>Conf</th>
+                        <th style={{ padding: '8px 12px' }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {s.fno.plans.map((p) => (
+                        <tr key={p.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                            {new Date(p.createdAt).toLocaleTimeString('en-IN', { hour12: false })}
+                          </td>
+                          <td style={{ padding: '8px 12px', fontWeight: 600 }}>
+                            <div style={{ fontFamily: 'monospace' }}>{p.contract.tradingSymbol}</div>
+                            <div style={{ fontSize: 10, color: 'var(--muted)' }}>
+                              {p.symbol} · exp {p.contract.expiry}
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span style={{ fontWeight: 700, color: p.side === 'BUY' ? 'var(--ok)' : 'var(--danger)' }}>{p.side}</span> {p.lots}L
+                            <span style={{ fontSize: 10, color: 'var(--muted)' }}> ({p.quantity})</span>
+                          </td>
+                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                            {fmt(p.premium.entry)} / <span style={{ color: 'var(--danger)' }}>{fmt(p.premium.stopLoss)}</span> /{' '}
+                            <span style={{ color: 'var(--ok)' }}>{fmt(p.premium.target)}</span>
+                          </td>
+                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                            {inr(p.costRupees, 0)} / <span style={{ color: 'var(--danger)' }}>{inr(p.maxLossRupees, 0)}</span>
+                          </td>
+                          <td style={{ padding: '8px 12px', fontSize: 11 }}>{p.confidence}%</td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span
+                              title={p.rejectReason ?? undefined}
+                              style={{
+                                padding: '2px 6px',
+                                borderRadius: 4,
+                                fontSize: 10,
+                                fontWeight: 700,
+                                background: PLAN_STATUS_STYLE[p.status].bg,
+                                color: PLAN_STATUS_STYLE[p.status].fg,
+                              }}
+                            >
+                              {p.status}
+                            </span>
+                            {p.rejectReason && <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{p.rejectReason}</div>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Trading: everything that can place or manage orders lives in the engine ── */}
+      {tradingHeader}
+      {s ? renderTrading(s) : tradingUnavailable}
 
       {/* Single Stock Deep AI Analysis Modal */}
       {deepAnalysisStock && (

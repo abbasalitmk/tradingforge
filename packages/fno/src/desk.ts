@@ -1,10 +1,9 @@
 import { type Clock, type Signal, type Side, istDateKey, paiseToRupees } from '@tradeforger/core';
 import type { UpstoxClient } from '@tradeforger/upstox';
-import {
-  FnoUniverse, fetchMaster, chainFromUpstox, analyzeChain, pickExpiry, planOption, planFuture,
-  type DerivativeContract, type OptionChain, type ChainAnalytics, type FnoPlan,
-  type OptionPlanParams, type PlanResult,
-} from '@tradeforger/fno';
+import { FnoUniverse, fetchMaster, type DerivativeContract } from './contracts.ts';
+import { chainFromUpstox, analyzeChain, type OptionChain, type ChainAnalytics } from './chain.ts';
+import { pickExpiry } from './select.ts';
+import { planOption, planFuture, type FnoPlan, type OptionPlanParams, type PlanResult } from './plan.ts';
 
 export interface FnoSettings {
   readonly symbols: readonly string[];
@@ -65,6 +64,7 @@ export type DeskPlan = { ok: true; plan: FnoPlan; volume: number } | { ok: false
  * Owns the instrument master, the option-chain cache and the recent-plans
  * journal. It never places orders — it hands a fully-specified plan back to the
  * engine, which runs it through the same breakers, sizing and Trader as equity.
+ * The dashboard also runs one read-only, with only the analytics token.
  */
 export class FnoDesk {
   universe: FnoUniverse | null = null;

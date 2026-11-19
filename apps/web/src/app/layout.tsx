@@ -32,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {MODE}
           </span>
           <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>
-            control plane · no credentials held here
+            read-only market data here · orders only from the engine
           </span>
         </header>
 

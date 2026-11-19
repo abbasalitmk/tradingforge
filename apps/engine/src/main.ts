@@ -16,18 +16,17 @@ import { CandleAggregator } from '@tradeforger/data';
 import { size as sizePosition } from '@tradeforger/risk';
 import { PositionMachine } from '@tradeforger/execution';
 import {
-  StrategyManager, type AutoTradingStrategyMode, IntradayProfile, SwingProfile, StockScanner,
+  StrategyManager, type AutoTradingStrategyMode, IntradayProfile, SwingProfile, StockScanner, DEFAULT_UNIVERSE,
 } from '@tradeforger/strategy';
 import { AiReviewer, type AiDecision } from '@tradeforger/ai';
 import {
-  DEFAULT_OPTION_PLAN, DEFAULT_STRIKE_PARAMS, fetchMasterRows, parseMaster, parseEquities,
-  type FnoPlan, type DerivativeContract, type EquityInstrument,
+  DEFAULT_OPTION_PLAN, DEFAULT_STRIKE_PARAMS, fetchMasterRows, parseMaster, parseEquities, FnoDesk,
+  type FnoPlan, type FnoPlanView, type DerivativeContract, type EquityInstrument,
 } from '@tradeforger/fno';
 import { STRATEGY_CATALOG, type ScanFilters } from '@tradeforger/strategy';
 import { loadConfig, LIVE_CONFIRMATION, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
 import { Trader, type ManagedPosition } from './trader.ts';
-import { FnoDesk, type FnoPlanView } from './fno.ts';
 import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
 import { LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, type AutoConfig, type LiveAnalysis, type LiveSetup, type Target } from './live.ts';
@@ -142,19 +141,6 @@ export interface WatchlistStock {
   lastUpdated: number;
 }
 
-const DEFAULT_UNIVERSE: Array<{ instrumentKey: string; symbol: string; name: string }> = [
-  { instrumentKey: 'NSE_EQ|INE002A01018', symbol: 'RELIANCE', name: 'Reliance Industries' },
-  { instrumentKey: 'NSE_EQ|INE467B01029', symbol: 'TCS', name: 'Tata Consultancy Services' },
-  { instrumentKey: 'NSE_EQ|INE009A01021', symbol: 'INFY', name: 'Infosys Ltd' },
-  { instrumentKey: 'NSE_EQ|INE040A01034', symbol: 'HDFCBANK', name: 'HDFC Bank Ltd' },
-  { instrumentKey: 'NSE_EQ|INE090A01021', symbol: 'ICICIBANK', name: 'ICICI Bank Ltd' },
-  { instrumentKey: 'NSE_EQ|INE062A01020', symbol: 'SBIN', name: 'State Bank of India' },
-  { instrumentKey: 'NSE_EQ|INE397D01024', symbol: 'BHARTIARTL', name: 'Bharti Airtel Ltd' },
-  { instrumentKey: 'NSE_EQ|INE018A01030', symbol: 'LT', name: 'Larsen & Toubro Ltd' },
-  { instrumentKey: 'NSE_EQ|INE154A01025', symbol: 'ITC', name: 'ITC Ltd' },
-  { instrumentKey: 'NSE_EQ|INE238A01034', symbol: 'KOTAKBANK', name: 'Kotak Mahindra Bank' },
-  { instrumentKey: 'NSE_EQ|INE155A01022', symbol: 'TATAMOTORS', name: 'Tata Motors Ltd' },
-];
 
 const watchlist = new Map<string, WatchlistStock>();
 for (const s of DEFAULT_UNIVERSE) {
