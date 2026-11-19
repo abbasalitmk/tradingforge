@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   type Catalog, type SetupView, type Side, Panel, Chip, Pill, Stat, Note, api, num, rupees, pct,
   sideColor, qualityColor, inputStyle, buttonStyle,
@@ -270,9 +270,20 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
   // AI: on a new stock, and again whenever the leading setup changes side or strategy.
   const best = view ? [view.best.INTRADAY, view.best.SWING].filter((s): s is SetupView => s !== null).sort((a, b) => b.quality - a.quality)[0] ?? null : null;
   const aiKey = `${symbol}|${strategyParam}|${best ? `${best.style}|${best.side}|${best.primaryStrategyId}` : 'none'}`;
-  const askAi = async () => {
+  const aiKeyRef = useRef(aiKey);
+  aiKeyRef.current = aiKey;
+  const askAi = async (attempt = 0) => {
+    const key = aiKey;
     setAiLoading(true);
     const r = await api<AiView>(`/api/market/stock/ai?symbol=${encodeURIComponent(symbol)}${strategyParam}`);
+    if (key !== aiKeyRef.current) return; // another stock or setup since; its own request owns the panel
+    if (!r.ok && r.status === 0 && attempt < 3) {
+      // No response at all means the connection dropped, not that the AI failed.
+      // The verdict is only re-requested when the setup changes, so retry here.
+      setAi({ setup: null, consensus: null, reason: 'Connection dropped; retrying…' });
+      setTimeout(() => void askAi(attempt + 1), 4_000);
+      return;
+    }
     setAiLoading(false);
     setAi(r.ok ? r.data : { setup: null, consensus: null, reason: r.error });
   };
@@ -378,7 +389,7 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
           <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ fontSize: 12.5, fontWeight: 650 }}>AI verdict on the best setup</div>
-              <button type="button" onClick={askAi} disabled={aiLoading} style={{ ...buttonStyle, padding: '5px 10px', fontSize: 11.5, opacity: aiLoading ? 0.6 : 1 }}>
+              <button type="button" onClick={() => void askAi()} disabled={aiLoading} style={{ ...buttonStyle, padding: '5px 10px', fontSize: 11.5, opacity: aiLoading ? 0.6 : 1 }}>
                 {aiLoading ? 'Asking…' : 'Ask again'}
               </button>
             </div>
