@@ -14,6 +14,8 @@ const config: NextConfig = {
     '@tradeforger/fno',
     '@tradeforger/upstox',
     '@tradeforger/ai',
+    '@tradeforger/backtest',
+    '@tradeforger/data',
   ],
   async headers() {
     return [

@@ -1,6 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import StockAnalysis from './components/StockAnalysis.tsx';
+import MarketScanner from './components/MarketScanner.tsx';
+import type { Catalog } from './components/ui.tsx';
 
 interface WatchlistItem {
   instrumentKey: string;
@@ -434,6 +437,9 @@ export default function Dashboard() {
   const [marketError, setMarketError] = useState<string | null>(null);
   const [marketFno, setMarketFno] = useState<MarketFno | null>(null);
   const [marketFnoError, setMarketFnoError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [focusSymbol, setFocusSymbol] = useState('RELIANCE');
+  const analysisRef = useRef<HTMLDivElement | null>(null);
 
   const showToast = (text: string, kind: 'ok' | 'error' = 'ok') => {
     setToast({ text, kind });
@@ -500,6 +506,7 @@ export default function Dashboard() {
     const fno = () => load<MarketFno>('/api/market/fno', setMarketFno, setMarketFnoError);
     overview();
     fno();
+    void load<Catalog>('/api/market/catalog', setCatalog, () => undefined);
     const a = setInterval(overview, 10_000);
     const b = setInterval(fno, 60_000);
     return () => {
@@ -1837,6 +1844,16 @@ export default function Dashboard() {
       {statusStrip}
 
       {/* ── Market analysis: computed by the dashboard, works without the engine ── */}
+      <div ref={analysisRef} style={{ scrollMarginTop: 12 }}>
+        <StockAnalysis symbol={focusSymbol} onSymbolChange={setFocusSymbol} catalog={catalog} />
+      </div>
+      <MarketScanner
+        catalog={catalog}
+        onAnalyze={(symbol) => {
+          setFocusSymbol(symbol);
+          analysisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }}
+      />
       {/* Top Stock Spotlight Banner (Best Stock of the Session) */}
       {topStock && (
         <div
@@ -1951,7 +1968,10 @@ export default function Dashboard() {
                     return (
                       <tr
                         key={item.instrumentKey}
-                        onClick={() => setSelectedSymbol(item.symbol)}
+                        onClick={() => {
+                          setSelectedSymbol(item.symbol);
+                          setFocusSymbol(item.symbol);
+                        }}
                         style={{
                           borderBottom: '1px solid rgba(255,255,255,0.04)',
                           cursor: 'pointer',

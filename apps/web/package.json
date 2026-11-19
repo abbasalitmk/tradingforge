@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@tradeforger/ai": "*",
+    "@tradeforger/backtest": "*",
     "@tradeforger/core": "*",
+    "@tradeforger/data": "*",
     "@tradeforger/fno": "*",
     "@tradeforger/indicators": "*",
     "@tradeforger/strategy": "*",

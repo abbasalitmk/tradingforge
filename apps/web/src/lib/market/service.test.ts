@@ -39,7 +39,7 @@ function service(client: ReturnType<typeof fakeClient>, t = { t: NOW }) {
     client: client as unknown as UpstoxClient,
     clock: clockAt(t),
     ai: new AiReviewer({ groqConfig: null }),
-    loadContracts: async () => [],
+    loadMasterRows: async () => [],
   });
 }
 
