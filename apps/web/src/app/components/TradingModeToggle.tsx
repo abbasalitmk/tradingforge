@@ -63,26 +63,19 @@ export default function TradingModeToggle({
     }
 
     setSwitching(true);
-    setMode(target);
-    localStorage.setItem(STORAGE_KEY, target);
-    onChange?.(target);
-    window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: target } }));
 
     try {
-      // Persist to server cookie
-      await fetch('/api/mode', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: target }),
-      });
-
-      // Also notify engine if reachable
+      // 1. Notify engine
       if (target === 'LIVE') {
-        await fetch('/api/proxy/mode/arm', {
+        const res = await fetch('/api/proxy/mode/arm', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'LIVE' }),
-        }).catch(() => undefined);
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Engine rejected switch to LIVE mode (HTTP ${res.status})`);
+        }
       } else {
         await fetch('/api/proxy/mode/disarm', {
           method: 'POST',
@@ -90,8 +83,25 @@ export default function TradingModeToggle({
           body: JSON.stringify({ mode: 'PAPER' }),
         }).catch(() => undefined);
       }
-    } catch {
-      // Ignore network errors in offline/preview
+
+      // 2. Persist to server cookie
+      await fetch('/api/mode', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: target }),
+      }).catch(() => undefined);
+
+      // 3. Update state & broadcast sync
+      setMode(target);
+      localStorage.setItem(STORAGE_KEY, target);
+      onChange?.(target);
+      window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: target } }));
+    } catch (err) {
+      setMode('PAPER');
+      localStorage.setItem(STORAGE_KEY, 'PAPER');
+      onChange?.('PAPER');
+      window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'PAPER' } }));
+      alert(`⚠️ Could not switch to LIVE Trading:\n\n${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSwitching(false);
     }

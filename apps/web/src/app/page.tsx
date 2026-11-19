@@ -444,6 +444,19 @@ export default function Dashboard() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [focusSymbol, setFocusSymbol] = useState('RELIANCE');
   const analysisRef = useRef<HTMLDivElement | null>(null);
+  const [customSizingInput, setCustomSizingInput] = useState<string>('');
+
+  useEffect(() => {
+    const handleSync = (e: Event) => {
+      const custom = e as CustomEvent<{ mode: 'PAPER' | 'LIVE' }>;
+      if (custom.detail?.mode) {
+        const target = custom.detail.mode;
+        setState((prev) => (prev ? { ...prev, mode: target, isArmed: target === 'LIVE' } : null));
+      }
+    };
+    window.addEventListener('tf:mode-change', handleSync);
+    return () => window.removeEventListener('tf:mode-change', handleSync);
+  }, []);
 
   type TabId = 'overview' | 'scanner' | 'breakouts' | 'analysis' | 'positions' | 'fno';
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -570,6 +583,54 @@ export default function Dashboard() {
       clearInterval(b);
     };
   }, []);
+
+  const handleCentralModeSwitch = async (target: 'PAPER' | 'LIVE') => {
+    if (!state) return;
+    if (target === state.mode) return;
+
+    if (target === 'LIVE') {
+      if (!state.auth?.hasTradingToken) {
+        const proceed = window.confirm(
+          '⚠️ Upstox Trading Token is not authenticated yet.\n\n' +
+          'Would you like to open the Upstox login dialog now to authorize live trading?'
+        );
+        if (proceed && state.auth?.loginUrl) {
+          window.location.href = state.auth.loginUrl;
+        }
+        return;
+      }
+
+      const confirmed = window.confirm(
+        '⚠️ SWITCH TO LIVE TRADING WITH REAL MONEY?\n\n' +
+        '• Real orders will be routed directly to your Upstox account.\n' +
+        '• Sizing limits, risk guards and stop losses are active.\n\n' +
+        'Click OK to activate LIVE TRADING.'
+      );
+      if (!confirmed) return;
+
+      const r = await postEngine<{ mode?: string; error?: string }>('/mode/arm', { mode: 'LIVE' });
+      if (!r.ok) {
+        showToast(`❌ Live switch rejected: ${r.error}`, 'error');
+        return;
+      }
+      setState((prev) => (prev ? { ...prev, mode: 'LIVE', isArmed: true } : null));
+      localStorage.setItem('tf_trading_mode', 'LIVE');
+      window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'LIVE' } }));
+      showToast('🔴 LIVE TRADING ARMED — Real orders active');
+    } else {
+      const r = await postEngine<{ mode?: string; error?: string }>('/mode/disarm', { mode: 'PAPER' });
+      setState((prev) => (prev ? { ...prev, mode: 'PAPER', isArmed: false } : null));
+      localStorage.setItem('tf_trading_mode', 'PAPER');
+      window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'PAPER' } }));
+      showToast('🟢 Switched to PAPER MODE — Zero-risk simulation');
+    }
+
+    fetch('/api/mode', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: target }),
+    }).catch(() => undefined);
+  };
 
   const handleToggleAutoTrading = async () => {
     if (!state) return;
@@ -1324,132 +1385,104 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Trading Mode & Live Arming */}
+      {/* Centralized Master Trading Mode Switcher */}
       <div
         style={{
+          background: isRealMoney ? 'rgba(248,81,73,0.06)' : 'rgba(63,185,80,0.06)',
+          border: `2px solid ${isRealMoney ? 'var(--danger)' : 'var(--ok)'}`,
+          borderRadius: 12,
+          padding: '16px 20px',
           display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          background: 'var(--panel)',
-          border: `1px solid ${isRealMoney ? 'var(--danger)' : 'var(--line)'}`,
-          borderRadius: 10,
-          padding: '12px 18px',
+          flexDirection: 'column',
           gap: 12,
+          transition: 'all 0.2s ease',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
-          <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Active Trading Mode:</span>
-          <TradingModeToggle
-            onChange={(m) => {
-              if (state) {
-                setState({
-                  ...state,
-                  mode: m === 'LIVE' ? 'LIVE' : 'PAPER',
-                  isArmed: m === 'LIVE',
-                });
-              }
-              showToast(
-                m === 'LIVE'
-                  ? '🔴 Switched to LIVE TRADING (Real Money Orders Active)'
-                  : '🟢 Switched to PAPER MODE (Simulated Risk-Free Trading)'
-              );
-            }}
-          />
-          <Hint
-            term="Paper vs Live"
-            explanation="PAPER MODE uses virtual simulated funds with real Upstox market data (zero risk). LIVE TRADING routes real orders with real money directly through your Upstox account."
-          />
-        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 16, fontWeight: 800, color: isRealMoney ? 'var(--danger)' : 'var(--ok)' }}>
+                {isRealMoney ? '🔴 LIVE TRADING ACTIVE' : '🟢 PAPER TRADING ACTIVE'}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: '2px 8px',
+                  borderRadius: 999,
+                  fontWeight: 700,
+                  background: isRealMoney ? 'var(--danger)' : 'var(--ok)',
+                  color: '#ffffff',
+                }}
+              >
+                {isRealMoney ? 'REAL MONEY ORDERS' : 'SIMULATION MODE'}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+              {isRealMoney
+                ? 'Real orders are routed directly to your Upstox account. Risk limits and stop losses are enforced.'
+                : 'Zero risk. Uses real-time live market ticks from Upstox with simulated paper execution.'}
+            </div>
+          </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span
+          {/* Centralized Switcher Buttons */}
+          <div
             style={{
-              fontSize: 11,
-              padding: '2px 8px',
-              borderRadius: 4,
-              fontWeight: 700,
-              background: s.isArmed || s.mode === 'LIVE' ? 'var(--danger-subtle)' : 'var(--ok-subtle)',
-              border: `1px solid ${s.isArmed || s.mode === 'LIVE' ? 'var(--danger)' : 'var(--ok)'}`,
-              color: s.isArmed || s.mode === 'LIVE' ? 'var(--danger)' : 'var(--ok)',
+              display: 'inline-flex',
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 999,
+              padding: 4,
+              gap: 6,
             }}
           >
-            {s.isArmed || s.mode === 'LIVE' ? '🔴 LIVE ARMED — REAL MONEY' : '🟢 PAPER — SIMULATED'}
-          </span>
-        </div>
+            <button
+              type="button"
+              onClick={() => handleCentralModeSwitch('PAPER')}
+              style={{
+                border: 'none',
+                background: !isRealMoney ? 'var(--ok)' : 'transparent',
+                color: !isRealMoney ? '#ffffff' : 'var(--muted)',
+                fontWeight: 750,
+                fontSize: 12.5,
+                padding: '8px 18px',
+                borderRadius: 999,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                transition: 'all 0.15s ease',
+                boxShadow: !isRealMoney ? '0 2px 8px rgba(63,185,80,0.35)' : 'none',
+              }}
+            >
+              <span>🟢 PAPER MODE</span>
+            </button>
 
-        {armOpen && (
-          <div style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-              Arming lets the engine place <strong style={{ color: 'var(--danger)' }}>real orders with real money</strong>. Type{' '}
-              <span className="mono" style={{ color: 'var(--fg)' }}>{ARM_PHRASE}</span> to confirm.
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <input
-                value={armPhrase}
-                onChange={(e) => setArmPhrase(e.target.value)}
-                placeholder={ARM_PHRASE}
-                autoFocus
-                spellCheck={false}
-                autoComplete="off"
-                style={{
-                  flex: '1 1 300px',
-                  background: 'var(--panel-subtle)',
-                  border: '1px solid var(--line)',
-                  borderRadius: 6,
-                  color: 'var(--fg)',
-                  padding: '6px 10px',
-                  fontSize: 12,
-                  fontFamily: 'monospace',
-                }}
-              />
-              <button
-                onClick={handleArm}
-                disabled={armPending || armPhrase !== ARM_PHRASE}
-                style={{
-                  background: armPhrase === ARM_PHRASE ? 'var(--danger)' : 'var(--danger-subtle)',
-                  border: '1px solid var(--danger)',
-                  color: armPhrase === ARM_PHRASE ? '#ffffff' : 'var(--danger)',
-                  borderRadius: 6,
-                  padding: '6px 14px',
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: armPending ? 'wait' : armPhrase === ARM_PHRASE ? 'pointer' : 'not-allowed',
-                  opacity: armPhrase === ARM_PHRASE ? 1 : 0.6,
-                }}
-              >
-                {armPending ? 'Arming…' : 'Confirm ARM'}
-              </button>
-              <button
-                onClick={() => {
-                  setArmOpen(false);
-                  setArmPhrase('');
-                  setArmError(null);
-                }}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--line)',
-                  color: 'var(--muted)',
-                  borderRadius: 6,
-                  padding: '6px 12px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-            {armError && (
-              <div role="alert" style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>
-                Arm failed: {armError}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => handleCentralModeSwitch('LIVE')}
+              style={{
+                border: 'none',
+                background: isRealMoney ? 'var(--danger)' : 'transparent',
+                color: isRealMoney ? '#ffffff' : 'var(--muted)',
+                fontWeight: 750,
+                fontSize: 12.5,
+                padding: '8px 18px',
+                borderRadius: 999,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                transition: 'all 0.15s ease',
+                boxShadow: isRealMoney ? '0 2px 8px rgba(248,81,73,0.35)' : 'none',
+              }}
+            >
+              <span>🔴 LIVE TRADING</span>
+            </button>
           </div>
-        )}
+        </div>
       </div>
 
-      {/* Auto-Trading Control Bar */}
+      {/* Strategy Mode & Auto-Trading Master Switch */}
       <div
         style={{
           display: 'flex',
@@ -1459,11 +1492,11 @@ export default function Dashboard() {
           background: 'var(--panel)',
           border: '1px solid var(--line)',
           borderRadius: 10,
-          padding: '12px 18px',
+          padding: '14px 18px',
           gap: 12,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Strategy Mode:</span>
           {(['INTRADAY', 'SWING', 'BOTH'] as const).map((m) => (
             <button
@@ -1474,7 +1507,7 @@ export default function Dashboard() {
                 color: s.strategyMode === m ? '#ffffff' : 'var(--fg)',
                 border: `1px solid ${s.strategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
                 borderRadius: 6,
-                padding: '6px 12px',
+                padding: '6px 14px',
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: 'pointer',
@@ -1486,43 +1519,316 @@ export default function Dashboard() {
           ))}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Sizing:</span>
-          {(['FIXED_BUDGET', 'FIXED_QTY', 'RISK_BASED'] as const).map((sm) => (
-            <button
-              key={sm}
-              onClick={() => handleSetSizing(sm, sm === 'FIXED_BUDGET' ? 10000 : sm === 'FIXED_QTY' ? 10 : 1)}
-              style={{
-                background: s.sizing.mode === sm ? 'rgba(74,158,255,0.2)' : 'transparent',
-                color: s.sizing.mode === sm ? 'var(--accent)' : 'var(--muted)',
-                border: `1px solid ${s.sizing.mode === sm ? 'var(--accent)' : 'var(--line)'}`,
-                borderRadius: 6,
-                padding: '5px 10px',
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              {sm}
-            </button>
-          ))}
+        <button
+          onClick={handleToggleAutoTrading}
+          style={{
+            background: s.autoTrading ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
+            border: `1px solid ${s.autoTrading ? 'var(--ok)' : 'var(--danger)'}`,
+            color: s.autoTrading ? 'var(--ok)' : 'var(--danger)',
+            borderRadius: 6,
+            padding: '7px 18px',
+            fontSize: 12.5,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          {s.autoTrading ? '● AUTO-TRADING ACTIVE' : '○ AUTO-TRADING PAUSED'}
+        </button>
+      </div>
 
-          <button
-            onClick={handleToggleAutoTrading}
-            style={{
-              marginLeft: 8,
-              background: s.autoTrading ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
-              border: `1px solid ${s.autoTrading ? 'var(--ok)' : 'var(--danger)'}`,
-              color: s.autoTrading ? 'var(--ok)' : 'var(--danger)',
-              borderRadius: 6,
-              padding: '6px 14px',
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            {s.autoTrading ? '● AUTO-TRADING ACTIVE' : '○ AUTO-TRADING PAUSED'}
-          </button>
+      {/* Position Sizing Control Panel */}
+      <div
+        style={{
+          background: 'var(--panel)',
+          border: '1px solid var(--line)',
+          borderRadius: 10,
+          padding: '16px 18px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Position Sizing Options</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+              Set how much capital or quantity to allocate per trade.
+            </div>
+          </div>
+
+          {/* Sizing Mode Switcher */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[
+              { id: 'FIXED_BUDGET', label: '💰 Fixed Amount (₹)' },
+              { id: 'FIXED_QTY', label: '📦 Fixed Quantity' },
+              { id: 'RISK_BASED', label: '🛡️ Risk % per Trade' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() =>
+                  handleSetSizing(
+                    t.id as any,
+                    t.id === 'FIXED_BUDGET'
+                      ? s.sizing.budget || 10000
+                      : t.id === 'FIXED_QTY'
+                        ? s.sizing.fixedQty || 10
+                        : s.sizing.riskPct || 1,
+                  )
+                }
+                style={{
+                  background: s.sizing.mode === t.id ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: s.sizing.mode === t.id ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${s.sizing.mode === t.id ? 'var(--accent)' : 'var(--line)'}`,
+                  borderRadius: 6,
+                  padding: '6px 12px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Detailed Sizing Configurator */}
+        <div
+          style={{
+            background: 'var(--panel-subtle)',
+            borderRadius: 8,
+            padding: '14px 16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+          }}
+        >
+          {s.sizing.mode === 'FIXED_BUDGET' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
+                Active: Fixed Capital Budget · ₹{s.sizing.budget?.toLocaleString('en-IN') || '10,000'} per trade
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                {[5000, 10000, 25000, 50000, 100000].map((amt) => (
+                  <button
+                    key={amt}
+                    onClick={() => {
+                      setCustomSizingInput(String(amt));
+                      handleSetSizing('FIXED_BUDGET', amt);
+                    }}
+                    style={{
+                      border: `1px solid ${s.sizing.budget === amt ? 'var(--accent)' : 'var(--line)'}`,
+                      background: s.sizing.budget === amt ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
+                      color: s.sizing.budget === amt ? 'var(--accent)' : 'var(--fg)',
+                      borderRadius: 4,
+                      padding: '5px 12px',
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ₹{amt.toLocaleString('en-IN')}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Amount: ₹</span>
+                <input
+                  type="number"
+                  placeholder={String(s.sizing.budget || 10000)}
+                  value={customSizingInput}
+                  onChange={(e) => setCustomSizingInput(e.target.value)}
+                  style={{
+                    width: 150,
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 4,
+                    padding: '6px 10px',
+                    color: 'var(--fg)',
+                    fontSize: 12.5,
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const val = Number(customSizingInput);
+                    if (val > 0) {
+                      handleSetSizing('FIXED_BUDGET', val);
+                      setCustomSizingInput('');
+                    }
+                  }}
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 4,
+                    padding: '6px 14px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Apply Amount
+                </button>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                  (Shares allocated = Budget ÷ Stock Entry Price)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {s.sizing.mode === 'FIXED_QTY' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
+                Active: Fixed Quantity · {s.sizing.fixedQty || 10} shares/lots per trade
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                {[5, 10, 25, 50, 100, 250].map((qty) => (
+                  <button
+                    key={qty}
+                    onClick={() => {
+                      setCustomSizingInput(String(qty));
+                      handleSetSizing('FIXED_QTY', qty);
+                    }}
+                    style={{
+                      border: `1px solid ${s.sizing.fixedQty === qty ? 'var(--accent)' : 'var(--line)'}`,
+                      background: s.sizing.fixedQty === qty ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
+                      color: s.sizing.fixedQty === qty ? 'var(--accent)' : 'var(--fg)',
+                      borderRadius: 4,
+                      padding: '5px 12px',
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {qty} shares
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Quantity:</span>
+                <input
+                  type="number"
+                  placeholder={String(s.sizing.fixedQty || 10)}
+                  value={customSizingInput}
+                  onChange={(e) => setCustomSizingInput(e.target.value)}
+                  style={{
+                    width: 120,
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 4,
+                    padding: '6px 10px',
+                    color: 'var(--fg)',
+                    fontSize: 12.5,
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const val = Number(customSizingInput);
+                    if (val > 0) {
+                      handleSetSizing('FIXED_QTY', val);
+                      setCustomSizingInput('');
+                    }
+                  }}
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 4,
+                    padding: '6px 14px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Apply Quantity
+                </button>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                  (Orders exactly this number of shares or lots every trade)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {s.sizing.mode === 'RISK_BASED' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
+                Active: Risk-Based Sizing · {s.sizing.riskPct || 1}% capital risk per trade
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                {[0.5, 1.0, 1.5, 2.0, 3.0].map((pct) => (
+                  <button
+                    key={pct}
+                    onClick={() => {
+                      setCustomSizingInput(String(pct));
+                      handleSetSizing('RISK_BASED', pct);
+                    }}
+                    style={{
+                      border: `1px solid ${s.sizing.riskPct === pct ? 'var(--accent)' : 'var(--line)'}`,
+                      background: s.sizing.riskPct === pct ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
+                      color: s.sizing.riskPct === pct ? 'var(--accent)' : 'var(--fg)',
+                      borderRadius: 4,
+                      padding: '5px 12px',
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Risk %:</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  max="5"
+                  min="0.1"
+                  placeholder={String(s.sizing.riskPct || 1)}
+                  value={customSizingInput}
+                  onChange={(e) => setCustomSizingInput(e.target.value)}
+                  style={{
+                    width: 110,
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 4,
+                    padding: '6px 10px',
+                    color: 'var(--fg)',
+                    fontSize: 12.5,
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const val = Number(customSizingInput);
+                    if (val > 0 && val <= 5) {
+                      handleSetSizing('RISK_BASED', val);
+                      setCustomSizingInput('');
+                    } else if (val > 5) {
+                      showToast('Risk % above 5% per trade is refused for risk safety', 'error');
+                    }
+                  }}
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 4,
+                    padding: '6px 14px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Apply Risk %
+                </button>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                  (Sizing = Capital × Risk% ÷ StopLoss distance. Max 5% safety limit)
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       </div>
