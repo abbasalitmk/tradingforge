@@ -1,15 +1,337 @@
-*, *::before, *::after { box-sizing: border-box; }
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Design Tokens & Theming System (Dark + Light White Mode)                   */
+/* -------------------------------------------------------------------------- */
+
 :root {
-  --bg: #0b0d10; --panel: #14181d; --line: #232a32;
-  --fg: #e6eaef; --muted: #8b96a5;
-  --ok: #3fb950; --warn: #d29922; --danger: #f85149; --accent: #4a9eff;
+  /* Default: System preference base (Light defaults with dark media query) */
+  color-scheme: light dark;
+
+  /* Surface Canvas & Panels */
+  --bg: #f8fafc;
+  --bg-subtle: #f1f5f9;
+  --panel: #ffffff;
+  --panel-hover: #f8fafc;
+  --panel-active: #f1f5f9;
+  --panel-subtle: #f1f5f9;
+  --panel-overlay: rgba(15, 23, 42, 0.45);
+
+  /* Lines & Dividers */
+  --line: #e2e8f0;
+  --line-subtle: rgba(15, 23, 42, 0.06);
+  --line-strong: #cbd5e1;
+
+  /* Typography */
+  --fg: #0f172a;
+  --fg-secondary: #334155;
+  --muted: #64748b;
+  --muted-subtle: #94a3b8;
+
+  /* Primary Brand & Accents (Blue / Indigo) */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-subtle: rgba(37, 99, 235, 0.08);
+  --accent-fg: #1d4ed8;
+
+  /* Semantic Feedback & Trading Direction */
+  --ok: #059669;
+  --ok-hover: #047857;
+  --ok-subtle: rgba(5, 150, 105, 0.1);
+  --ok-fg: #047857;
+
+  --warn: #d97706;
+  --warn-hover: #b45309;
+  --warn-subtle: rgba(217, 119, 6, 0.1);
+  --warn-fg: #b45309;
+
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-subtle: rgba(220, 38, 38, 0.1);
+  --danger-fg: #b91c1c;
+
+  /* Card Shadows & Elevation */
+  --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+  --card-shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  --modal-shadow: 0 20px 40px -10px rgba(15, 23, 42, 0.2);
+
+  /* Glassmorphism & Header */
+  --glass-bg: rgba(255, 255, 255, 0.88);
+  --glass-border: rgba(226, 232, 240, 0.85);
+
+  /* Chart & Telemetry Canvas */
+  --chart-bg: #f8fafc;
+  --chart-grid: rgba(15, 23, 42, 0.06);
+  --chart-text: #64748b;
+  --chart-crosshair: #94a3b8;
+
+  /* Native UI Scrollbars & Accents */
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-track: #f1f5f9;
+}
+
+/* System Dark Preference (when not explicitly pinned to light) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #090d16;
+    --bg-subtle: #0d131f;
+    --panel: #111827;
+    --panel-hover: #162032;
+    --panel-active: #1c283f;
+    --panel-subtle: rgba(255, 255, 255, 0.04);
+    --panel-overlay: rgba(0, 0, 0, 0.7);
+
+    --line: #1e293b;
+    --line-subtle: rgba(255, 255, 255, 0.06);
+    --line-strong: #334155;
+
+    --fg: #f8fafc;
+    --fg-secondary: #cbd5e1;
+    --muted: #94a3b8;
+    --muted-subtle: #64748b;
+
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-subtle: rgba(59, 130, 246, 0.14);
+    --accent-fg: #93c5fd;
+
+    --ok: #10b981;
+    --ok-hover: #34d399;
+    --ok-subtle: rgba(16, 185, 129, 0.14);
+    --ok-fg: #6ee7b7;
+
+    --warn: #f59e0b;
+    --warn-hover: #fbbf24;
+    --warn-subtle: rgba(245, 158, 11, 0.14);
+    --warn-fg: #fcd34d;
+
+    --danger: #ef4444;
+    --danger-hover: #f87171;
+    --danger-subtle: rgba(239, 68, 68, 0.14);
+    --danger-fg: #fca5a5;
+
+    --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+    --card-shadow-lg: 0 14px 34px -4px rgba(0, 0, 0, 0.5);
+    --modal-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
+
+    --glass-bg: rgba(17, 24, 39, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.08);
+
+    --chart-bg: #0b0f19;
+    --chart-grid: rgba(255, 255, 255, 0.06);
+    --chart-text: #94a3b8;
+    --chart-crosshair: #475569;
+
+    --scrollbar-thumb: #334155;
+    --scrollbar-track: #0f172a;
+  }
+}
+
+/* Explicit Dark Mode Override */
+:root[data-theme="dark"],
+:root:has(> head > meta[name="color-scheme"][content="dark"]) {
   color-scheme: dark;
+
+  --bg: #090d16;
+  --bg-subtle: #0d131f;
+  --panel: #111827;
+  --panel-hover: #162032;
+  --panel-active: #1c283f;
+  --panel-subtle: rgba(255, 255, 255, 0.04);
+  --panel-overlay: rgba(0, 0, 0, 0.7);
+
+  --line: #1e293b;
+  --line-subtle: rgba(255, 255, 255, 0.06);
+  --line-strong: #334155;
+
+  --fg: #f8fafc;
+  --fg-secondary: #cbd5e1;
+  --muted: #94a3b8;
+  --muted-subtle: #64748b;
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-subtle: rgba(59, 130, 246, 0.14);
+  --accent-fg: #93c5fd;
+
+  --ok: #10b981;
+  --ok-hover: #34d399;
+  --ok-subtle: rgba(16, 185, 129, 0.14);
+  --ok-fg: #6ee7b7;
+
+  --warn: #f59e0b;
+  --warn-hover: #fbbf24;
+  --warn-subtle: rgba(245, 158, 11, 0.14);
+  --warn-fg: #fcd34d;
+
+  --danger: #ef4444;
+  --danger-hover: #f87171;
+  --danger-subtle: rgba(239, 68, 68, 0.14);
+  --danger-fg: #fca5a5;
+
+  --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+  --card-shadow-lg: 0 14px 34px -4px rgba(0, 0, 0, 0.5);
+  --modal-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
+
+  --glass-bg: rgba(17, 24, 39, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.08);
+
+  --chart-bg: #0b0f19;
+  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-text: #94a3b8;
+  --chart-crosshair: #475569;
+
+  --scrollbar-thumb: #334155;
+  --scrollbar-track: #0f172a;
 }
-html, body { margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--fg);
-  font: 14px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+/* Explicit Light Mode Override */
+:root[data-theme="light"],
+:root:has(> head > meta[name="color-scheme"][content="light"]) {
+  color-scheme: light;
+
+  --bg: #f8fafc;
+  --bg-subtle: #f1f5f9;
+  --panel: #ffffff;
+  --panel-hover: #f8fafc;
+  --panel-active: #f1f5f9;
+  --panel-subtle: #f1f5f9;
+  --panel-overlay: rgba(15, 23, 42, 0.45);
+
+  --line: #e2e8f0;
+  --line-subtle: rgba(15, 23, 42, 0.06);
+  --line-strong: #cbd5e1;
+
+  --fg: #0f172a;
+  --fg-secondary: #334155;
+  --muted: #64748b;
+  --muted-subtle: #94a3b8;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-subtle: rgba(37, 99, 235, 0.08);
+  --accent-fg: #1d4ed8;
+
+  --ok: #059669;
+  --ok-hover: #047857;
+  --ok-subtle: rgba(5, 150, 105, 0.1);
+  --ok-fg: #047857;
+
+  --warn: #d97706;
+  --warn-hover: #b45309;
+  --warn-subtle: rgba(217, 119, 6, 0.1);
+  --warn-fg: #b45309;
+
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-subtle: rgba(220, 38, 38, 0.1);
+  --danger-fg: #b91c1c;
+
+  --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+  --card-shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  --modal-shadow: 0 20px 40px -10px rgba(15, 23, 42, 0.2);
+
+  --glass-bg: rgba(255, 255, 255, 0.88);
+  --glass-border: rgba(226, 232, 240, 0.85);
+
+  --chart-bg: #f8fafc;
+  --chart-grid: rgba(15, 23, 42, 0.06);
+  --chart-text: #64748b;
+  --chart-crosshair: #94a3b8;
+
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-track: #f1f5f9;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global Element Styles & Reset                                              */
+/* -------------------------------------------------------------------------- */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  accent-color: var(--accent);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
-code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
-a { color: var(--accent); }
+
+/* Tabular figures for numbers, currency, timestamps, and metrics */
+.tabular-nums, .num, td, th {
+  font-variant-numeric: tabular-nums;
+}
+
+code, .mono {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Subtle transitions for theme switching */
+body, header, footer, section, div, button, input {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+
+/* Animations */
+@keyframes tfPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.9); }
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: tfPulse 2s infinite ease-in-out;
+}

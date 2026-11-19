@@ -114,7 +114,7 @@ function SymbolSearch({ onPick }: { onPick: (symbol: string) => void }) {
           role="listbox"
           style={{
             position: 'absolute', zIndex: 20, top: '100%', left: 0, right: 0, marginTop: 4, background: 'var(--panel)',
-            border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden', boxShadow: 'var(--card-shadow-lg)',
           }}
         >
           {hits.map((h) => (
@@ -397,7 +397,7 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
                 <Note>{ai.consensus.rationale}</Note>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6 }}>
                   {ai.consensus.votes.map((v, i) => (
-                    <div key={i} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 6, padding: '7px 9px' }}>
+                    <div key={i} style={{ background: 'var(--panel-subtle)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 11 }}>
                         <span style={{ fontWeight: 650, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.model}</span>
                         <span style={{ color: v.verdict === 'CONFIRM' ? 'var(--ok)' : v.verdict === 'REJECT' ? 'var(--danger)' : 'var(--warn)' }}>
@@ -437,7 +437,7 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
                   {view.votes.map((v) => {
                     const e = edgeOf.get(v.strategyId);
                     return (
-                      <tr key={v.strategyId} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', verticalAlign: 'top' }}>
+                      <tr key={v.strategyId} style={{ borderBottom: '1px solid var(--line-subtle)', verticalAlign: 'top' }}>
                         <td style={{ padding: '7px 8px' }}>
                           <div style={{ fontWeight: 600 }}>{v.name}</div>
                           <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{v.style.toLowerCase()} · {v.timeframe}</div>

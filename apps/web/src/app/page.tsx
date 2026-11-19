@@ -253,16 +253,16 @@ const BUILDUP_COLOR: Record<Buildup, string> = {
 };
 
 const PLAN_STATUS_STYLE: Record<FnoPlanView['status'], { bg: string; fg: string }> = {
-  ANALYSIS: { bg: 'rgba(255,255,255,0.06)', fg: 'var(--muted)' },
-  PLANNED: { bg: 'rgba(74,158,255,0.15)', fg: 'var(--accent)' },
-  PLACED: { bg: 'rgba(63,185,80,0.2)', fg: 'var(--ok)' },
-  REJECTED: { bg: 'rgba(248,81,73,0.15)', fg: 'var(--danger)' },
+  ANALYSIS: { bg: 'var(--panel-subtle)', fg: 'var(--muted)' },
+  PLANNED: { bg: 'var(--accent-subtle)', fg: 'var(--accent-fg)' },
+  PLACED: { bg: 'var(--ok-subtle)', fg: 'var(--ok-fg)' },
+  REJECTED: { bg: 'var(--danger-subtle)', fg: 'var(--danger-fg)' },
 };
 
 function Metric({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.03)', padding: '6px 8px', borderRadius: 6 }}>
-      <div style={{ fontSize: 10, color: 'var(--muted)' }}>{label}</div>
+    <div style={{ background: 'var(--panel-subtle)', border: '1px solid var(--line)', padding: '6px 8px', borderRadius: 6 }}>
+      <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 1, fontFamily: 'monospace', color: color ?? 'var(--fg)' }}>{value}</div>
     </div>
   );
@@ -271,7 +271,7 @@ function Metric({ label, value, color }: { label: string; value: string; color?:
 function FnoPlanDetail({ plan }: { plan: FnoPlanView }) {
   const isLong = plan.side === 'BUY';
   return (
-    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--line)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{ background: 'var(--panel-subtle)', border: '1px solid var(--line)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>{plan.contract.tradingSymbol}</span>
         <span
@@ -307,7 +307,7 @@ function FnoPlanDetail({ plan }: { plan: FnoPlanView }) {
         Underlying {plan.underlying.side} @ {fmt(plan.underlying.entry)} · SL {fmt(plan.underlying.stopLoss)} · T {fmt(plan.underlying.target)}
       </div>
       {plan.reasons.length > 0 && (
-        <div style={{ fontSize: 11.5, color: '#c9d1d9', lineHeight: 1.4 }}>
+        <div style={{ fontSize: 11.5, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
           {plan.reasons.map((r, i) => (
             <div key={i}>• {r}</div>
           ))}
@@ -738,7 +738,9 @@ export default function Dashboard() {
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0,0,0,0.75)',
+          background: 'var(--panel-overlay)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -750,6 +752,7 @@ export default function Dashboard() {
             background: 'var(--panel)',
             border: '1px solid var(--danger)',
             borderRadius: 12,
+            boxShadow: 'var(--modal-shadow)',
             padding: 24,
             maxWidth: 480,
             width: '90%',
@@ -973,14 +976,16 @@ export default function Dashboard() {
         onClick={handleToggleAutoTrading}
         style={{
           minWidth: 132,
-          background: autoOn ? 'var(--ok)' : 'rgba(255,255,255,0.06)',
+          background: autoOn ? 'var(--ok)' : 'var(--panel-subtle)',
           border: `1px solid ${autoOn ? 'var(--ok)' : 'var(--line)'}`,
-          color: autoOn ? '#0b0e11' : !s || isOffline ? 'var(--muted)' : 'var(--fg)',
+          color: autoOn ? '#ffffff' : !s || isOffline ? 'var(--muted)' : 'var(--fg)',
           borderRadius: 999,
           padding: '8px 16px',
           fontSize: 12.5,
           fontWeight: 700,
           cursor: !s || isOffline ? 'not-allowed' : 'pointer',
+          boxShadow: autoOn ? '0 2px 8px rgba(16,185,129,0.25)' : 'none',
+          transition: 'all 0.15s ease',
         }}
       >
         {!s || isOffline ? 'UNAVAILABLE' : autoOn ? '● ON' : '○ OFF'}
@@ -1033,18 +1038,19 @@ export default function Dashboard() {
           flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
-          background: 'linear-gradient(90deg, #14181d 0%, #1a222c 100%)',
+          background: 'linear-gradient(90deg, var(--panel) 0%, var(--panel-subtle) 100%)',
           border: '1px solid var(--line)',
-          borderRadius: 10,
-          padding: '12px 18px',
+          borderRadius: 12,
+          padding: '14px 20px',
           gap: 12,
+          boxShadow: 'var(--card-shadow)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ fontSize: 20 }}>🇮🇳</div>
+          <div style={{ fontSize: 22 }}>🇮🇳</div>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span>Upstox Real-Time API Integration</span>
+            <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: 'var(--fg)' }}>Upstox Real-Time API Integration</span>
               {(() => {
                 const fresh = s.telemetry.feedStaleness !== null && s.telemetry.feedStaleness < 5000;
                 return (
@@ -1052,9 +1058,11 @@ export default function Dashboard() {
                     style={{
                       fontSize: 11,
                       padding: '2px 8px',
-                      borderRadius: 4,
-                      background: fresh ? 'rgba(63,185,80,0.15)' : 'rgba(210,153,34,0.15)',
+                      borderRadius: 999,
+                      background: fresh ? 'var(--ok-subtle)' : 'var(--warn-subtle)',
+                      border: `1px solid ${fresh ? 'var(--ok)' : 'var(--warn)'}`,
                       color: fresh ? 'var(--ok)' : 'var(--warn)',
+                      fontWeight: 600,
                     }}
                   >
                     {fresh ? '✓ Market data feed fresh' : '⚠ Market data feed stale / no ticks'}
@@ -1062,7 +1070,7 @@ export default function Dashboard() {
                 );
               })()}
             </div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 3 }}>
               Analytics Token:{' '}
               {s.auth?.hasAnalyticsToken ? (
                 <strong style={{ color: 'var(--ok)' }}>Loaded</strong>
@@ -1087,15 +1095,18 @@ export default function Dashboard() {
               rel="noopener noreferrer"
               style={{
                 textDecoration: 'none',
-                background: s.auth.hasTradingToken ? 'rgba(255,255,255,0.06)' : 'var(--accent)',
-                color: '#fff',
-                padding: '6px 14px',
-                borderRadius: 6,
+                background: s.auth.hasTradingToken ? 'var(--panel-subtle)' : 'var(--accent)',
+                border: s.auth.hasTradingToken ? '1px solid var(--line)' : 'none',
+                color: s.auth.hasTradingToken ? 'var(--fg)' : '#ffffff',
+                padding: '7px 16px',
+                borderRadius: 7,
                 fontSize: 12,
-                fontWeight: 600,
+                fontWeight: 650,
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
+                boxShadow: s.auth.hasTradingToken ? 'none' : '0 1px 3px rgba(37,99,235,0.3)',
+                transition: 'all 0.15s ease',
               }}
             >
               <span>🔑</span>
@@ -1151,7 +1162,7 @@ export default function Dashboard() {
               gap: 8,
               padding: '6px 12px',
               borderRadius: 6,
-              background: 'rgba(255,255,255,0.03)',
+              background: 'var(--panel-subtle)',
               border: '1px solid var(--line)',
               fontSize: 12,
             }}
@@ -1177,7 +1188,7 @@ export default function Dashboard() {
             style={{
               padding: '6px 12px',
               borderRadius: 6,
-              background: 'rgba(255,255,255,0.03)',
+              background: 'var(--panel-subtle)',
               border: '1px solid var(--line)',
               fontSize: 12,
             }}
@@ -1188,7 +1199,7 @@ export default function Dashboard() {
           <button
             onClick={() => setKillModalOpen(true)}
             style={{
-              background: 'rgba(248,81,73,0.15)',
+              background: 'var(--danger-subtle)',
               border: '1px solid var(--danger)',
               color: 'var(--danger)',
               padding: '7px 14px',
@@ -1289,7 +1300,8 @@ export default function Dashboard() {
               padding: '1px 6px',
               borderRadius: 4,
               fontWeight: 700,
-              background: s.isArmed ? 'rgba(248,81,73,0.15)' : 'rgba(255,255,255,0.05)',
+              background: s.isArmed ? 'var(--danger-subtle)' : 'var(--panel-subtle)',
+              border: `1px solid ${s.isArmed ? 'var(--danger)' : 'var(--line)'}`,
               color: s.isArmed ? 'var(--danger)' : 'var(--muted)',
             }}
           >
@@ -1352,7 +1364,7 @@ export default function Dashboard() {
                 autoComplete="off"
                 style={{
                   flex: '1 1 300px',
-                  background: '#0e1115',
+                  background: 'var(--panel-subtle)',
                   border: '1px solid var(--line)',
                   borderRadius: 6,
                   color: 'var(--fg)',
@@ -1365,9 +1377,9 @@ export default function Dashboard() {
                 onClick={handleArm}
                 disabled={armPending || armPhrase !== ARM_PHRASE}
                 style={{
-                  background: armPhrase === ARM_PHRASE ? 'var(--danger)' : 'rgba(248,81,73,0.15)',
+                  background: armPhrase === ARM_PHRASE ? 'var(--danger)' : 'var(--danger-subtle)',
                   border: '1px solid var(--danger)',
-                  color: '#fff',
+                  color: armPhrase === ARM_PHRASE ? '#ffffff' : 'var(--danger)',
                   borderRadius: 6,
                   padding: '6px 14px',
                   fontSize: 12,
@@ -1428,14 +1440,15 @@ export default function Dashboard() {
               key={m}
               onClick={() => handleSetStrategyMode(m)}
               style={{
-                background: s.strategyMode === m ? 'var(--accent)' : 'var(--line)',
-                color: s.strategyMode === m ? '#fff' : 'var(--fg)',
-                border: 'none',
+                background: s.strategyMode === m ? 'var(--accent)' : 'var(--panel-subtle)',
+                color: s.strategyMode === m ? '#ffffff' : 'var(--fg)',
+                border: `1px solid ${s.strategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
                 borderRadius: 6,
                 padding: '6px 12px',
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: 'pointer',
+                boxShadow: s.strategyMode === m ? '0 1px 3px rgba(37,99,235,0.25)' : 'none',
               }}
             >
               {m === 'BOTH' ? '⚡ DUAL (Intraday + Swing)' : m}
@@ -1501,10 +1514,12 @@ export default function Dashboard() {
                 <span
                   style={{
                     fontSize: 10,
-                    padding: '2px 6px',
+                    padding: '2px 8px',
                     borderRadius: 10,
-                    background: s.positions.length > 0 ? 'rgba(63,185,80,0.2)' : 'rgba(255,255,255,0.05)',
+                    background: s.positions.length > 0 ? 'var(--ok-subtle)' : 'var(--panel-subtle)',
+                    border: `1px solid ${s.positions.length > 0 ? 'var(--ok)' : 'var(--line)'}`,
                     color: s.positions.length > 0 ? 'var(--ok)' : 'var(--muted)',
+                    fontWeight: 700,
                   }}
                 >
                   {s.positions.length} active
@@ -1517,10 +1532,10 @@ export default function Dashboard() {
                 No active positions. Auto-trading engine scanning for qualified setups...
               </div>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
+              <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--line)' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12 }}>
                   <thead>
-                    <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
+                    <tr style={{ background: 'var(--panel-subtle)', borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
                       <th style={{ padding: '8px 12px' }}>Symbol</th>
                       <th style={{ padding: '8px 12px' }}>Side / Qty</th>
                       <th style={{ padding: '8px 12px' }}>Avg / LTP</th>
@@ -1535,7 +1550,7 @@ export default function Dashboard() {
                       const isFo = pos.segment === 'FO' || pos.contract !== undefined;
                       const d = isFo ? 2 : 1;
                       return (
-                        <tr key={pos.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <tr key={pos.id} style={{ borderBottom: '1px solid var(--line-subtle)' }}>
                           <td style={{ padding: '9px 12px', fontWeight: 600 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span style={isFo ? { fontFamily: 'monospace' } : undefined}>{pos.contract?.tradingSymbol ?? pos.symbol}</span>
@@ -1638,7 +1653,7 @@ export default function Dashboard() {
                     <div
                       key={sig.id}
                       style={{
-                        background: 'rgba(255,255,255,0.02)',
+                        background: 'var(--panel-subtle)',
                         border: '1px solid var(--line)',
                         borderRadius: 8,
                         padding: '12px 14px',
@@ -1693,7 +1708,7 @@ export default function Dashboard() {
                                 fontSize: 10,
                                 padding: '2px 6px',
                                 borderRadius: 4,
-                                background: 'rgba(255,255,255,0.04)',
+                                background: 'var(--panel-subtle)',
                                 border: `1px solid ${v.verdict === 'CONFIRM' ? 'var(--ok)' : 'var(--warn)'}`,
                                 color: v.verdict === 'CONFIRM' ? 'var(--ok)' : 'var(--warn)',
                               }}
@@ -1710,11 +1725,11 @@ export default function Dashboard() {
                           marginTop: 2,
                           padding: '6px 10px',
                           borderRadius: 6,
-                          background: 'rgba(0,0,0,0.3)',
+                          background: 'var(--panel-subtle)',
                           borderLeft: `3px solid ${verdictColor}`,
                           fontSize: 11.5,
                           lineHeight: 1.4,
-                          color: '#d0d7de',
+                          color: 'var(--fg-secondary)',
                         }}
                       >
                         <span style={{ color: 'var(--muted)', fontWeight: 600 }}>🤖 AI Consensus: </span>
@@ -1820,10 +1835,10 @@ export default function Dashboard() {
             <div
               key={i}
               style={{
-                background: 'rgba(255,255,255,0.02)',
+                background: 'var(--panel-subtle)',
                 border: '1px solid var(--line)',
-                borderRadius: 6,
-                padding: '8px 12px',
+                borderRadius: 8,
+                padding: '10px 14px',
                 fontSize: 12,
               }}
             >
@@ -1858,48 +1873,50 @@ export default function Dashboard() {
       {topStock && (
         <div
           style={{
-            background: 'linear-gradient(90deg, rgba(74,158,255,0.12) 0%, rgba(63,185,80,0.08) 100%)',
-            border: '1px solid rgba(74,158,255,0.3)',
-            borderRadius: 10,
-            padding: '14px 20px',
+            background: 'linear-gradient(90deg, var(--accent-subtle) 0%, var(--ok-subtle) 100%)',
+            border: '1px solid var(--line)',
+            borderRadius: 12,
+            padding: '16px 22px',
             display: 'flex',
             flexWrap: 'wrap',
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 16,
+            boxShadow: 'var(--card-shadow)',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div
               style={{
-                width: 44,
-                height: 44,
-                borderRadius: 8,
+                width: 48,
+                height: 48,
+                borderRadius: 10,
                 background: 'var(--accent)',
-                color: '#fff',
+                color: '#ffffff',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontWeight: 800,
                 fontSize: 14,
+                boxShadow: '0 2px 8px rgba(37,99,235,0.3)',
               }}
             >
               <span>#1</span>
-              <span style={{ fontSize: 9 }}>TOP</span>
+              <span style={{ fontSize: 9, letterSpacing: '0.05em' }}>TOP</span>
             </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 16, fontWeight: 700 }}>{topStock.symbol}</span>
+                <span style={{ fontSize: 17, fontWeight: 800, color: 'var(--fg)' }}>{topStock.symbol}</span>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>{topStock.name}</span>
-                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.2)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
+                <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--ok-subtle)', border: '1px solid var(--ok)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
                   BREAKOUT SCORE {topStock.score}/100
                 </span>
-                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(74,158,255,0.2)', color: 'var(--accent)', fontSize: 11 }}>
+                <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--accent-subtle)', border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
                   {topStock.rvol}x RVOL
                 </span>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--fg)', marginTop: 4, fontFamily: 'monospace' }}>
+              <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4, fontFamily: 'monospace' }}>
                 LTP ₹{topStock.ltp.toFixed(2)} | Target 1: ₹{topStock.tradeSetup.target1.toFixed(2)} (+{((topStock.tradeSetup.target1 - topStock.tradeSetup.entry) / topStock.tradeSetup.entry * 100).toFixed(1)}%) | Stop Loss: ₹{topStock.tradeSetup.stopLoss.toFixed(2)} | R:R 1.5:1
               </div>
             </div>
@@ -1911,19 +1928,21 @@ export default function Dashboard() {
               style={{
                 background: 'var(--accent)',
                 border: 'none',
-                color: '#fff',
-                padding: '8px 16px',
-                borderRadius: 6,
+                color: '#ffffff',
+                padding: '9px 18px',
+                borderRadius: 7,
                 fontWeight: 700,
-                fontSize: 12,
+                fontSize: 12.5,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
+                boxShadow: '0 2px 6px rgba(37,99,235,0.25)',
+                transition: 'all 0.15s ease',
               }}
             >
-              <span>🤖</span>
-              <span>Deep Multi-Model AI Analysis</span>
+              <span>⚡</span>
+              <span>Deep AI Analysis</span>
             </button>
           </div>
         </div>
@@ -1973,17 +1992,18 @@ export default function Dashboard() {
                           setFocusSymbol(item.symbol);
                         }}
                         style={{
-                          borderBottom: '1px solid rgba(255,255,255,0.04)',
+                          borderBottom: '1px solid var(--line-subtle)',
                           cursor: 'pointer',
-                          background: isSelected ? 'rgba(74,158,255,0.08)' : 'transparent',
+                          background: isSelected ? 'var(--accent-subtle)' : 'transparent',
+                          transition: 'background-color 0.1s ease',
                         }}
                       >
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: item.rank <= 2 ? 'var(--ok)' : 'var(--muted)' }}>
                           #{item.rank}
                         </td>
-                        <td style={{ padding: '9px 12px', fontWeight: 600 }}>
-                          <div>{item.symbol}</div>
-                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{item.name.slice(0, 16)}</div>
+                        <td style={{ padding: '9px 12px', fontWeight: 650 }}>
+                          <div style={{ color: 'var(--fg)' }}>{item.symbol}</div>
+                          <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{item.name.slice(0, 16)}</div>
                         </td>
                         <td style={{ padding: '9px 12px', fontFamily: 'monospace', fontWeight: 600 }}>
                           ₹{item.ltp.toFixed(2)}
@@ -1991,11 +2011,11 @@ export default function Dashboard() {
                         <td style={{ padding: '9px 12px' }}>
                           <span
                             style={{
-                              padding: '2px 6px',
+                              padding: '2px 8px',
                               borderRadius: 4,
                               fontSize: 11,
-                              fontWeight: 600,
-                              background: isPos ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)',
+                              fontWeight: 700,
+                              background: isPos ? 'var(--ok-subtle)' : 'var(--danger-subtle)',
                               color: isPos ? 'var(--ok)' : 'var(--danger)',
                             }}
                           >
@@ -2008,11 +2028,12 @@ export default function Dashboard() {
                         <td style={{ padding: '9px 12px' }}>
                           <span
                             style={{
-                              padding: '2px 6px',
-                              borderRadius: 4,
+                              padding: '2px 8px',
+                              borderRadius: 999,
                               fontWeight: 700,
                               fontSize: 11,
-                              background: item.score >= 80 ? 'rgba(63,185,80,0.2)' : 'rgba(74,158,255,0.15)',
+                              background: item.score >= 80 ? 'var(--ok-subtle)' : 'var(--accent-subtle)',
+                              border: `1px solid ${item.score >= 80 ? 'var(--ok)' : 'var(--accent)'}`,
                               color: item.score >= 80 ? 'var(--ok)' : 'var(--accent)',
                             }}
                           >
@@ -2026,13 +2047,13 @@ export default function Dashboard() {
                               handleAnalyzeStock(item);
                             }}
                             style={{
-                              background: 'rgba(74,158,255,0.15)',
+                              background: 'var(--accent-subtle)',
                               border: '1px solid var(--accent)',
-                              color: 'var(--accent)',
-                              borderRadius: 4,
-                              padding: '3px 8px',
-                              fontSize: 10,
-                              fontWeight: 600,
+                              color: 'var(--accent-fg)',
+                              borderRadius: 6,
+                              padding: '4px 10px',
+                              fontSize: 11,
+                              fontWeight: 650,
                               cursor: 'pointer',
                             }}
                           >
@@ -2064,7 +2085,7 @@ export default function Dashboard() {
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>EMA20/50</span>
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: 'var(--warn)' }}>VWAP</span>
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: 'var(--ok)' }}>Supertrend</span>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.05)', color: 'var(--muted)' }}>illustrative only — not live candles</span>
+                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--panel-subtle)', border: '1px solid var(--line)', color: 'var(--muted)' }}>illustrative only — not live candles</span>
                 </div>
               </div>
 
@@ -2072,9 +2093,9 @@ export default function Dashboard() {
               <div
                 style={{
                   height: 180,
-                  background: '#0e1115',
-                  borderRadius: 6,
-                  border: '1px solid rgba(255,255,255,0.06)',
+                  background: 'var(--chart-bg)',
+                  borderRadius: 8,
+                  border: '1px solid var(--line)',
                   position: 'relative',
                   overflow: 'hidden',
                   display: 'flex',
@@ -2083,43 +2104,43 @@ export default function Dashboard() {
                 }}
               >
                 <svg viewBox="0 0 400 160" style={{ width: '100%', height: '100%' }}>
-                  <line x1="0" y1="40" x2="400" y2="40" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
-                  <line x1="0" y1="80" x2="400" y2="80" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
-                  <line x1="0" y1="120" x2="400" y2="120" stroke="rgba(255,255,255,0.05)" strokeDasharray="4" />
+                  <line x1="0" y1="40" x2="400" y2="40" stroke="var(--chart-grid)" strokeDasharray="4" />
+                  <line x1="0" y1="80" x2="400" y2="80" stroke="var(--chart-grid)" strokeDasharray="4" />
+                  <line x1="0" y1="120" x2="400" y2="120" stroke="var(--chart-grid)" strokeDasharray="4" />
 
                   {/* VWAP Yellow Line */}
-                  <path d="M 0 100 Q 100 85, 200 80 T 400 70" fill="none" stroke="#d29922" strokeWidth="1.5" strokeDasharray="3" />
+                  <path d="M 0 100 Q 100 85, 200 80 T 400 70" fill="none" stroke="var(--warn)" strokeWidth="1.5" strokeDasharray="3" />
                   {/* EMA 20 Blue Line */}
-                  <path d="M 0 110 Q 120 70, 220 60 T 400 45" fill="none" stroke="#4a9eff" strokeWidth="2" />
+                  <path d="M 0 110 Q 120 70, 220 60 T 400 45" fill="none" stroke="var(--accent)" strokeWidth="2" />
 
                   {/* Candlesticks */}
-                  <rect x="50" y="70" width="8" height="24" fill="#3fb950" />
-                  <line x1="54" y1="58" x2="54" y2="102" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="50" y="70" width="8" height="24" fill="var(--ok)" />
+                  <line x1="54" y1="58" x2="54" y2="102" stroke="var(--ok)" strokeWidth="1" />
 
-                  <rect x="90" y="65" width="8" height="20" fill="#3fb950" />
-                  <line x1="94" y1="55" x2="94" y2="92" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="90" y="65" width="8" height="20" fill="var(--ok)" />
+                  <line x1="94" y1="55" x2="94" y2="92" stroke="var(--ok)" strokeWidth="1" />
 
-                  <rect x="130" y="72" width="8" height="18" fill="#f85149" />
-                  <line x1="134" y1="62" x2="134" y2="98" stroke="#f85149" strokeWidth="1" />
+                  <rect x="130" y="72" width="8" height="18" fill="var(--danger)" />
+                  <line x1="134" y1="62" x2="134" y2="98" stroke="var(--danger)" strokeWidth="1" />
 
-                  <rect x="170" y="60" width="8" height="25" fill="#3fb950" />
-                  <line x1="174" y1="48" x2="174" y2="92" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="170" y="60" width="8" height="25" fill="var(--ok)" />
+                  <line x1="174" y1="48" x2="174" y2="92" stroke="var(--ok)" strokeWidth="1" />
 
-                  <rect x="210" y="52" width="8" height="30" fill="#3fb950" />
-                  <line x1="214" y1="40" x2="214" y2="88" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="210" y="52" width="8" height="30" fill="var(--ok)" />
+                  <line x1="214" y1="40" x2="214" y2="88" stroke="var(--ok)" strokeWidth="1" />
 
-                  <rect x="250" y="48" width="8" height="20" fill="#3fb950" />
-                  <line x1="254" y1="36" x2="254" y2="76" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="250" y="48" width="8" height="20" fill="var(--ok)" />
+                  <line x1="254" y1="36" x2="254" y2="76" stroke="var(--ok)" strokeWidth="1" />
 
-                  <rect x="290" y="55" width="8" height="15" fill="#f85149" />
-                  <line x1="294" y1="45" x2="294" y2="78" stroke="#f85149" strokeWidth="1" />
+                  <rect x="290" y="55" width="8" height="15" fill="var(--danger)" />
+                  <line x1="294" y1="45" x2="294" y2="78" stroke="var(--danger)" strokeWidth="1" />
 
-                  <rect x="330" y="40" width="8" height="28" fill="#3fb950" />
-                  <line x1="334" y1="30" x2="334" y2="74" stroke="#3fb950" strokeWidth="1" />
+                  <rect x="330" y="40" width="8" height="28" fill="var(--ok)" />
+                  <line x1="334" y1="30" x2="334" y2="74" stroke="var(--ok)" strokeWidth="1" />
 
                   {/* Current LTP marker */}
-                  <circle cx="334" cy="40" r="4" fill="#3fb950" />
-                  <text x="345" y="44" fill="#3fb950" fontSize="10" fontFamily="monospace" fontWeight="bold">
+                  <circle cx="334" cy="40" r="4" fill="var(--ok)" />
+                  <text x="345" y="44" fill="var(--ok)" fontSize="10" fontFamily="monospace" fontWeight="bold">
                     ₹{selectedStock.ltp.toFixed(1)}
                   </text>
                 </svg>
@@ -2189,7 +2210,7 @@ export default function Dashboard() {
                     <div
                       key={u.symbol}
                       style={{
-                        background: 'rgba(255,255,255,0.02)',
+                        background: 'var(--panel-subtle)',
                         border: '1px solid var(--line)',
                         borderRadius: 8,
                         padding: '12px 14px',
@@ -2334,7 +2355,7 @@ export default function Dashboard() {
                     </thead>
                     <tbody>
                       {s.fno.plans.map((p) => (
-                        <tr key={p.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <tr key={p.id} style={{ borderBottom: '1px solid var(--line-subtle)' }}>
                           <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                             {new Date(p.createdAt).toLocaleTimeString('en-IN', { hour12: false })}
                           </td>
@@ -2394,7 +2415,9 @@ export default function Dashboard() {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.8)',
+            background: 'var(--panel-overlay)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -2404,22 +2427,24 @@ export default function Dashboard() {
           <div
             style={{
               background: 'var(--panel)',
-              border: '1px solid var(--accent)',
-              borderRadius: 12,
+              border: '1px solid var(--line)',
+              borderRadius: 14,
+              boxShadow: 'var(--modal-shadow)',
               padding: 24,
-              maxWidth: 620,
-              width: '90%',
+              maxWidth: 640,
+              width: '92%',
+              maxHeight: '90vh',
+              overflowY: 'auto',
               display: 'flex',
               flexDirection: 'column',
               gap: 16,
-              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 20, fontWeight: 700 }}>{deepAnalysisStock.symbol}</span>
+                <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--fg)' }}>{deepAnalysisStock.symbol}</span>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>{deepAnalysisStock.name}</span>
-                <span style={{ padding: '2px 8px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
+                <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--ok-subtle)', border: '1px solid var(--ok)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
                   SCORE {deepAnalysisStock.score}/100
                 </span>
               </div>
@@ -2432,30 +2457,30 @@ export default function Dashboard() {
             </div>
 
             {/* Calculated Trade Setup Geometry */}
-            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--line)', borderRadius: 8, padding: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)', marginBottom: 8 }}>
+            <div style={{ background: 'var(--panel-subtle)', border: '1px solid var(--line)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 650, color: 'var(--accent)', marginBottom: 8 }}>
                 Calculated Entry & Risk Geometry (1.5x ATR Intraday / 2.5x ATR Swing)
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center', fontFamily: 'monospace' }}>
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', padding: 8, borderRadius: 6 }}>
                   <div style={{ fontSize: 10, color: 'var(--muted)' }}>ENTRY PRICE</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', marginTop: 2 }}>
                     ₹{deepAnalysisStock.tradeSetup.entry.toFixed(2)}
                   </div>
                 </div>
-                <div style={{ background: 'rgba(248,81,73,0.1)', padding: 8, borderRadius: 6 }}>
+                <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', padding: 8, borderRadius: 6 }}>
                   <div style={{ fontSize: 10, color: 'var(--danger)' }}>STOP LOSS</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginTop: 2 }}>
                     ₹{deepAnalysisStock.tradeSetup.stopLoss.toFixed(2)}
                   </div>
                 </div>
-                <div style={{ background: 'rgba(63,185,80,0.1)', padding: 8, borderRadius: 6 }}>
+                <div style={{ background: 'var(--ok-subtle)', border: '1px solid var(--ok)', padding: 8, borderRadius: 6 }}>
                   <div style={{ fontSize: 10, color: 'var(--ok)' }}>TARGET 1 (1:1.5)</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ok)', marginTop: 2 }}>
                     ₹{deepAnalysisStock.tradeSetup.target1.toFixed(2)}
                   </div>
                 </div>
-                <div style={{ background: 'rgba(63,185,80,0.15)', padding: 8, borderRadius: 6 }}>
+                <div style={{ background: 'var(--ok-subtle)', border: '1px solid var(--ok)', padding: 8, borderRadius: 6 }}>
                   <div style={{ fontSize: 10, color: 'var(--ok)' }}>TARGET 2 (1:2.5)</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ok)', marginTop: 2 }}>
                     ₹{deepAnalysisStock.tradeSetup.target2.toFixed(2)}
@@ -2469,8 +2494,8 @@ export default function Dashboard() {
             </div>
 
             {/* 3 Free AI Models Voting Breakdown */}
-            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--line)', borderRadius: 8, padding: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ background: 'var(--panel-subtle)', border: '1px solid var(--line)', borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 650, color: 'var(--ok)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span>🤖 3 Free Real-Time AI Models Analysis</span>
                 {deepAnalysisLoading && <span style={{ fontSize: 11, color: 'var(--muted)' }}>(analyzing...)</span>}
               </div>
@@ -2481,20 +2506,21 @@ export default function Dashboard() {
                     <div
                       key={i}
                       style={{
-                        background: 'rgba(0,0,0,0.3)',
-                        borderRadius: 6,
-                        padding: '8px 12px',
+                        background: 'var(--panel)',
+                        border: '1px solid var(--line)',
+                        borderRadius: 8,
+                        padding: '10px 14px',
                         borderLeft: `3px solid ${v.verdict === 'CONFIRM' ? 'var(--ok)' : 'var(--warn)'}`,
                         fontSize: 11.5,
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, marginBottom: 2 }}>
-                        <span>Model: {v.model}</span>
+                        <span style={{ color: 'var(--fg)' }}>Model: {v.model}</span>
                         <span style={{ color: v.verdict === 'CONFIRM' ? 'var(--ok)' : 'var(--warn)' }}>
                           {v.verdict} ({v.confidence}%)
                         </span>
                       </div>
-                      <div style={{ color: '#c9d1d9', lineHeight: 1.4 }}>{v.rationale}</div>
+                      <div style={{ color: 'var(--fg-secondary)', lineHeight: 1.4 }}>{v.rationale}</div>
                     </div>
                   ))}
                 </div>
@@ -2514,11 +2540,12 @@ export default function Dashboard() {
               style={{
                 background: 'var(--accent)',
                 border: 'none',
-                color: '#fff',
+                color: '#ffffff',
                 padding: '10px',
-                borderRadius: 6,
+                borderRadius: 8,
                 fontWeight: 700,
                 cursor: 'pointer',
+                boxShadow: '0 2px 6px rgba(37,99,235,0.25)',
               }}
             >
               Done

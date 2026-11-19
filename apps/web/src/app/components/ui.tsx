@@ -69,20 +69,35 @@ export function Panel({ title, subtitle, right, children }: {
   title: string; subtitle?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <section style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden', minWidth: 0 }}>
+    <section
+      style={{
+        background: 'var(--panel)',
+        border: '1px solid var(--line)',
+        borderRadius: 12,
+        boxShadow: 'var(--card-shadow)',
+        overflow: 'hidden',
+        minWidth: 0,
+      }}
+    >
       <div
         style={{
-          padding: '12px 16px', borderBottom: '1px solid var(--line)', display: 'flex', flexWrap: 'wrap',
-          gap: 10, justifyContent: 'space-between', alignItems: 'center',
+          padding: '14px 18px',
+          borderBottom: '1px solid var(--line)',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 12,
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          background: 'var(--panel)',
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 650, fontSize: 14 }}>{title}</div>
+          <div style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--fg)', letterSpacing: '-0.01em' }}>{title}</div>
           {subtitle && <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{subtitle}</div>}
         </div>
         {right}
       </div>
-      <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>{children}</div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>{children}</div>
     </section>
   );
 }
@@ -95,10 +110,16 @@ export function Chip({ on, onClick, children, title }: { on: boolean; onClick: (
       onClick={onClick}
       aria-pressed={on}
       style={{
-        fontSize: 11.5, padding: '4px 9px', borderRadius: 999, cursor: 'pointer', whiteSpace: 'nowrap',
+        fontSize: 11.5,
+        fontWeight: on ? 600 : 500,
+        padding: '5px 11px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
         border: `1px solid ${on ? 'var(--accent)' : 'var(--line)'}`,
-        background: on ? 'rgba(74,158,255,0.15)' : 'transparent',
-        color: on ? 'var(--accent)' : 'var(--muted)',
+        background: on ? 'var(--accent-subtle)' : 'var(--panel-subtle)',
+        color: on ? 'var(--accent-fg)' : 'var(--muted)',
+        transition: 'all 0.15s ease',
       }}
     >
       {children}
@@ -108,7 +129,21 @@ export function Chip({ on, onClick, children, title }: { on: boolean; onClick: (
 
 export function Pill({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 7px', borderRadius: 4, border: `1px solid ${color}`, color, whiteSpace: 'nowrap' }}>
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        padding: '2px 8px',
+        borderRadius: 999,
+        border: `1px solid ${color}`,
+        color: color,
+        background: 'var(--panel-subtle)',
+        whiteSpace: 'nowrap',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+      }}
+    >
       {children}
     </span>
   );
@@ -116,21 +151,56 @@ export function Pill({ color, children }: { color: string; children: React.React
 
 export function Stat({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.03)', padding: '7px 9px', borderRadius: 6, minWidth: 0 }}>
-      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2, fontFamily: 'monospace', color: color ?? 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+    <div
+      style={{
+        background: 'var(--panel-subtle)',
+        border: '1px solid var(--line)',
+        padding: '8px 12px',
+        borderRadius: 8,
+        minWidth: 0,
+      }}
+    >
+      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600 }}>{label}</div>
+      <div
+        className="tabular-nums"
+        style={{
+          fontSize: 13.5,
+          fontWeight: 700,
+          marginTop: 3,
+          fontFamily: 'ui-monospace, monospace',
+          color: color ?? 'var(--fg)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
 
 export const inputStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.04)', border: '1px solid var(--line)', color: 'var(--fg)',
-  borderRadius: 6, padding: '6px 8px', fontSize: 12.5, minWidth: 0,
+  background: 'var(--panel-subtle)',
+  border: '1px solid var(--line)',
+  color: 'var(--fg)',
+  borderRadius: 7,
+  padding: '7px 10px',
+  fontSize: 12.5,
+  minWidth: 0,
+  transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
 };
 
 export const buttonStyle: React.CSSProperties = {
-  background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 6,
-  padding: '7px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+  background: 'var(--accent)',
+  border: 'none',
+  color: '#ffffff',
+  borderRadius: 7,
+  padding: '8px 16px',
+  fontSize: 12.5,
+  fontWeight: 700,
+  cursor: 'pointer',
+  boxShadow: '0 1px 3px rgba(37, 99, 235, 0.25)',
+  transition: 'background-color 0.15s ease, transform 0.05s ease',
 };
 
 export function Note({ kind = 'muted', children }: { kind?: 'muted' | 'warn' | 'danger'; children: React.ReactNode }) {

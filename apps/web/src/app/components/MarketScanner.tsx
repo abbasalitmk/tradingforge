@@ -199,53 +199,59 @@ export default function MarketScanner({ catalog, onAnalyze }: { catalog: Catalog
             <Note kind="warn">Outside 09:20–14:45 IST intraday strategies do not signal, so these are swing (daily) setups only.</Note>
           )}
           {result.warnings.map((w, i) => <Note key={i} kind="warn">⚠ {w}</Note>)}
-          <div style={{ overflowX: 'auto' }}>
+          <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--line)' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 900 }}>
               <thead>
-                <tr style={{ color: 'var(--muted)', fontSize: 10.5, textAlign: 'left', borderBottom: '1px solid var(--line)' }}>
-                  <th style={{ padding: '6px 8px' }}>#</th>
-                  <th style={{ padding: '6px 8px' }}>Stock</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>LTP</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>Change</th>
-                  <th style={{ padding: '6px 8px' }}>Setup</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>Quality</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>R:R</th>
-                  <th style={{ padding: '6px 8px' }}>Entry / Stop / Target</th>
-                  <th style={{ padding: '6px 8px' }}>Lead strategy</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right' }}>RVOL</th>
-                  <th style={{ padding: '6px 8px' }} />
+                <tr style={{ background: 'var(--panel-subtle)', color: 'var(--muted)', fontSize: 10.5, textAlign: 'left', borderBottom: '1px solid var(--line)' }}>
+                  <th style={{ padding: '8px 10px' }}>#</th>
+                  <th style={{ padding: '8px 10px' }}>Stock</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>LTP</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>Change</th>
+                  <th style={{ padding: '8px 10px' }}>Setup</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>Quality</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>R:R</th>
+                  <th style={{ padding: '8px 10px' }}>Entry / Stop / Target</th>
+                  <th style={{ padding: '8px 10px' }}>Lead strategy</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>RVOL</th>
+                  <th style={{ padding: '8px 10px' }} />
                 </tr>
               </thead>
               <tbody>
                 {result.results.map((r, i) => (
-                  <tr key={`${r.symbol}-${r.setup.style}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <td style={{ padding: '7px 8px', color: 'var(--muted)' }}>{i + 1}</td>
-                    <td style={{ padding: '7px 8px' }}>
-                      <div style={{ fontWeight: 700, fontFamily: 'monospace' }}>{r.symbol}</div>
+                  <tr
+                    key={`${r.symbol}-${r.setup.style}`}
+                    style={{
+                      borderBottom: '1px solid var(--line-subtle)',
+                      background: i % 2 === 1 ? 'var(--panel-subtle)' : 'transparent',
+                    }}
+                  >
+                    <td style={{ padding: '9px 10px', color: 'var(--muted)' }}>{i + 1}</td>
+                    <td style={{ padding: '9px 10px' }}>
+                      <div style={{ fontWeight: 700, fontFamily: 'monospace', color: 'var(--fg)' }}>{r.symbol}</div>
                       <div style={{ fontSize: 10.5, color: 'var(--muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {r.industry ?? r.name}
                       </div>
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{rupees(r.ltp)}</td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace', color: r.changePct >= 0 ? 'var(--ok)' : 'var(--danger)' }}>{pct(r.changePct)}</td>
-                    <td style={{ padding: '7px 8px', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{rupees(r.ltp)}</td>
+                    <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: r.changePct >= 0 ? 'var(--ok)' : 'var(--danger)' }}>{pct(r.changePct)}</td>
+                    <td style={{ padding: '9px 10px', whiteSpace: 'nowrap' }}>
                       <Pill color={sideColor(r.setup.side)}>{r.setup.side}</Pill>{' '}
                       <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{r.setup.style.toLowerCase()}</span>
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 700, color: qualityColor(r.setup.quality) }}>{r.setup.quality}</td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{num(r.setup.rewardRisk)}</td>
-                    <td style={{ padding: '7px 8px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 700, color: qualityColor(r.setup.quality) }}>{r.setup.quality}</td>
+                    <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{num(r.setup.rewardRisk)}</td>
+                    <td style={{ padding: '9px 10px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                       {num(r.setup.entry)} / <span style={{ color: 'var(--danger)' }}>{num(r.setup.stopLoss)}</span> / <span style={{ color: 'var(--ok)' }}>{num(r.setup.target)}</span>
                     </td>
-                    <td style={{ padding: '7px 8px', fontSize: 11.5 }}>
-                      <div>{names.get(r.setup.primaryStrategyId) ?? r.setup.primaryStrategyId}</div>
+                    <td style={{ padding: '9px 10px', fontSize: 11.5 }}>
+                      <div style={{ fontWeight: 600 }}>{names.get(r.setup.primaryStrategyId) ?? r.setup.primaryStrategyId}</div>
                       <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
                         {r.setup.agreeing.length} agree · {r.setup.conflicting.length} disagree
                       </div>
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.rvol === null ? '—' : `${num(r.rvol)}x`}</td>
-                    <td style={{ padding: '7px 8px' }}>
-                      <button type="button" onClick={() => onAnalyze(r.symbol)} style={{ ...buttonStyle, padding: '4px 9px', fontSize: 11 }}>
+                    <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{r.rvol === null ? '—' : `${num(r.rvol)}x`}</td>
+                    <td style={{ padding: '9px 10px' }}>
+                      <button type="button" onClick={() => onAnalyze(r.symbol)} style={{ ...buttonStyle, padding: '4px 10px', fontSize: 11 }}>
                         Analyse
                       </button>
                     </td>
