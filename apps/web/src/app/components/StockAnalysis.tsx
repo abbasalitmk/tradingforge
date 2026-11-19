@@ -1,10 +1,13 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   type Catalog, type SetupView, type Side, Panel, Chip, Pill, Stat, Note, api, num, rupees, pct,
   sideColor, qualityColor, inputStyle, buttonStyle,
 } from './ui.tsx';
+
+/** A realtime request with no answer after this long is given up on and retried. */
+const STALL_MS = 15_000;
 
 interface Vote {
   strategyId: string;
@@ -205,7 +208,6 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
   const [ai, setAi] = useState<AiView | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const inFlight = useRef(false);
 
   const names = useMemo(() => new Map((catalog?.strategies ?? []).map((s) => [s.id, s.name])), [catalog]);
   const strategyParam = selected.length ? `&strategies=${selected.join(',')}` : '';
@@ -213,13 +215,22 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
   // Realtime: every 5 s while the market is open, every minute otherwise.
   useEffect(() => {
     let alive = true;
+    // Per effect, not per component: a request still pending for the previous
+    // stock must never hold up the one just picked.
+    let busySince = 0;
+    let latest = 0;
     setView((v) => (v && v.symbol === symbol ? v : null));
     setError(null);
     const load = async () => {
-      if (inFlight.current) return;
-      inFlight.current = true;
+      // One request at a time, but a fetch that never answers (dropped
+      // connection, laptop asleep) is abandoned after STALL_MS instead of
+      // stopping the refresh for good.
+      if (busySince && Date.now() - busySince < STALL_MS) return;
+      const id = ++latest;
+      busySince = Date.now();
       const r = await api<StockView>(`/api/market/stock?symbol=${encodeURIComponent(symbol)}${strategyParam}`);
-      inFlight.current = false;
+      if (id !== latest) return;
+      busySince = 0;
       if (!alive) return;
       if (r.ok) {
         setView(r.data);
