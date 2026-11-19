@@ -32,7 +32,7 @@ if [[ -f .env ]]; then
   source .env
 fi
 
-UPSTOX_API_KEY="${UPSTOX_API_KEY:-${UPSTOCK_API_KEY:-b08b0b88-0e9b-4f44-894f-a68d17d20465}}"
+UPSTOX_API_KEY="${UPSTOX_API_KEY:-${UPSTOCK_API_KEY:?set UPSTOX_API_KEY in .env}}"
 : "${TF_ENGINE_URL:=https://engine.invalid}"   # replace with your Cloudflare Tunnel hostname
 
 echo "→ Linking project '$PROJECT'…"
