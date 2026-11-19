@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import StockAnalysis from './components/StockAnalysis.tsx';
 import MarketScanner from './components/MarketScanner.tsx';
+import Hint from './components/Hint.tsx';
+import BeginnerCard from './components/BeginnerCard.tsx';
+import LiveStatusBar from './components/LiveStatusBar.tsx';
 import type { Catalog } from './components/ui.tsx';
 
 interface WatchlistItem {
@@ -441,9 +444,60 @@ export default function Dashboard() {
   const [focusSymbol, setFocusSymbol] = useState('RELIANCE');
   const analysisRef = useRef<HTMLDivElement | null>(null);
 
+  type TabId = 'overview' | 'scanner' | 'breakouts' | 'analysis' | 'positions' | 'fno';
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+
+  const handleSelectAndAnalyze = (symbol: string) => {
+    setFocusSymbol(symbol);
+    setSelectedSymbol(symbol);
+    setActiveTab('analysis');
+    analysisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const showToast = (text: string, kind: 'ok' | 'error' = 'ok') => {
     setToast({ text, kind });
     setTimeout(() => setToast((cur) => (cur && cur.text === text ? null : cur)), kind === 'error' ? 8000 : 3000);
+  };
+
+  const handleManualRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await Promise.allSettled([
+        fetch('/api/proxy/state', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((body) => {
+            if (body && !body.error && !body.offline) {
+              setState(body);
+              setOfflineReason(null);
+              setLastLiveAt(Date.now());
+            }
+          }),
+        fetch('/api/market/overview', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((body) => {
+            if (body) {
+              setMarket(body);
+              setMarketError(null);
+              setLastLiveAt(Date.now());
+            }
+          }),
+        fetch('/api/market/fno', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((body) => {
+            if (body) {
+              setMarketFno(body);
+              setMarketFnoError(null);
+            }
+          }),
+      ]);
+      setNow(Date.now());
+      showToast('Market & engine data refreshed', 'ok');
+    } catch {
+      showToast('Refresh encountered an error', 'error');
+    } finally {
+      setTimeout(() => setManualRefreshing(false), 350);
+    }
   };
 
   // Poll state every 1.5 seconds from proxy. Any non-2xx means the data is not live.
@@ -1015,13 +1069,10 @@ export default function Dashboard() {
     </div>
   );
 
-  function renderTrading(s: EngineState) {
+  function renderOverviewEngineControls(s: EngineState) {
     const isPnlPositive = s.pnl.total >= 0;
     const isRealMoney = s.mode === 'LIVE' || s.mode === 'LIVE_ARMED' || s.isArmed;
     return (
-      <>
-      {offlineBanner}
-      {/* Engine state; greyed out and inert when not live. */}
       <div
         aria-disabled={isOffline}
         style={{
@@ -1495,7 +1546,21 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+      </div>
+    );
+  }
 
+  function renderPositionsAndRisk(s: EngineState) {
+    return (
+      <div
+        aria-disabled={isOffline}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 18,
+          ...(isOffline ? { opacity: 0.35, filter: 'grayscale(1)', pointerEvents: 'none' as const, userSelect: 'none' as const } : {}),
+        }}
+      >
       {/* Positions and the engine's signal journal */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 18 }}>
           {/* Active Positions Table */}
@@ -1849,106 +1914,512 @@ export default function Dashboard() {
         </div>
       </div>
       </div>
+    );
+  }
+
+  function renderDefaultOverviewCards() {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>Total P&L Today</div>
+              <Hint term="P&L" explanation="Profit & Loss: Green means profit, red means loss. Realised is closed trades, Unrealised is open trades." />
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--ok)', fontFamily: 'monospace' }}>
+              ₹0.00
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              Engine offline · 0 open trades
+            </div>
+          </div>
+
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>Active Auto Strategy</div>
+              <Hint term="Strategy Modes" explanation="Intraday exits before 15:15 IST today. Swing holds multi-day breakouts. Dual trades both." />
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ color: 'var(--accent)' }}>DUAL (Intraday + Swing)</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              15m ORB Breakout + Daily EMA
+            </div>
+          </div>
+
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>Position Sizing Model</div>
+              <Hint term="Position Sizing" explanation="Controls capital allocation per trade to protect your account balance against unexpected market moves." />
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, color: 'var(--fg)', fontFamily: 'monospace' }}>
+              FIXED_BUDGET (₹10,000)
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              Ceiling: ₹25,000 max per trade
+            </div>
+          </div>
+
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>AI Consensus Engine</div>
+              <Hint term="3 AI Models" explanation="TradeForger runs 3 distinct free AI evaluation models in real-time to vote CONFIRM, CAUTION, or REJECT on trade signals." />
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, color: 'var(--ok)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>🤖 3 Free AI Models</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              Quant + Pattern + ML Expectancy (<strong style={{ color: 'var(--ok)' }}>0ms, $0 Cost</strong>)
+            </div>
+          </div>
+        </div>
+
+        {/* Upstox API feed card */}
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 12,
+            padding: '14px 20px',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div style={{ fontSize: 24 }}>🇮🇳</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--fg)' }}>
+                Upstox Real-Time Market Feed
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                Web control plane connected to live NSE market quotes and options chains.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11.5, padding: '4px 10px', borderRadius: 999, background: 'var(--ok-subtle)', border: '1px solid var(--ok)', color: 'var(--ok)', fontWeight: 600 }}>
+              ● Market Data Feed Active
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderTrading(s: EngineState) {
+    return (
+      <>
+        {offlineBanner}
+        {renderOverviewEngineControls(s)}
+        {renderPositionsAndRisk(s)}
       </>
     );
   }
 
   return (
-    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
       {toastEl}
-      {statusStrip}
 
-      {/* ── Market analysis: computed by the dashboard, works without the engine ── */}
-      <div ref={analysisRef} style={{ scrollMarginTop: 12 }}>
-        <StockAnalysis symbol={focusSymbol} onSymbolChange={setFocusSymbol} catalog={catalog} />
-      </div>
-      <MarketScanner
-        catalog={catalog}
-        onAnalyze={(symbol) => {
-          setFocusSymbol(symbol);
-          analysisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }}
+      {/* Prominent Live Data Status Bar with exact refreshed time */}
+      <LiveStatusBar
+        lastUpdated={lastLiveAt ?? (market?.asOf ? new Date(market.asOf).getTime() : Date.now())}
+        feedStaleness={s?.telemetry.feedStaleness ?? null}
+        subscribedCount={s?.telemetry.subscribedCount ?? (market?.watchlist?.length ?? 50)}
+        ordersCount={s?.telemetry.ordersCount ?? 0}
+        isEngineConnected={!isOffline && s !== null}
+        onRefresh={handleManualRefresh}
+        refreshing={manualRefreshing}
       />
-      {/* Top Stock Spotlight Banner (Best Stock of the Session) */}
-      {topStock && (
-        <div
-          style={{
-            background: 'linear-gradient(90deg, var(--accent-subtle) 0%, var(--ok-subtle) 100%)',
-            border: '1px solid var(--line)',
-            borderRadius: 12,
-            padding: '16px 22px',
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-            boxShadow: 'var(--card-shadow)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <div
-              style={{
-                width: 48,
-                height: 48,
-                borderRadius: 10,
-                background: 'var(--accent)',
-                color: '#ffffff',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: 14,
-                boxShadow: '0 2px 8px rgba(37,99,235,0.3)',
-              }}
-            >
-              <span>#1</span>
-              <span style={{ fontSize: 9, letterSpacing: '0.05em' }}>TOP</span>
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 17, fontWeight: 800, color: 'var(--fg)' }}>{topStock.symbol}</span>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>{topStock.name}</span>
-                <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--ok-subtle)', border: '1px solid var(--ok)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
-                  BREAKOUT SCORE {topStock.score}/100
-                </span>
-                <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--accent-subtle)', border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
-                  {topStock.rvol}x RVOL
-                </span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4, fontFamily: 'monospace' }}>
-                LTP ₹{topStock.ltp.toFixed(2)} | Target 1: ₹{topStock.tradeSetup.target1.toFixed(2)} (+{((topStock.tradeSetup.target1 - topStock.tradeSetup.entry) / topStock.tradeSetup.entry * 100).toFixed(1)}%) | Stop Loss: ₹{topStock.tradeSetup.stopLoss.toFixed(2)} | R:R 1.5:1
-              </div>
-            </div>
-          </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      {/* Accessible Tab Navigation Bar */}
+      <nav
+        role="tablist"
+        aria-label="Trading terminal sections"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          borderBottom: '1px solid var(--line)',
+          paddingBottom: 8,
+          overflowX: 'auto',
+          WebkitOverflowScrolling: 'touch',
+          scrollbarWidth: 'none',
+        }}
+      >
+        {[
+          { id: 'overview', label: '📊 Dashboard Overview', badge: null },
+          { id: 'scanner', label: '🔍 Market Scanner', badge: '500+ Stocks' },
+          { id: 'breakouts', label: '⚡ Breakout Radar', badge: `${rankedStocks.length > 0 ? rankedStocks.length : 'Top Setups'}` },
+          { id: 'analysis', label: `🎯 Stock Deep Analysis`, badge: focusSymbol },
+          { id: 'positions', label: '💼 Positions & Risk', badge: s?.positions.length ? `${s.positions.length} Active` : null },
+          { id: 'fno', label: '📈 F&O Desk', badge: fnoInstrument ?? 'Index' },
+        ].map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
             <button
-              onClick={() => handleAnalyzeStock(topStock)}
+              key={tab.id}
+              role="tab"
+              id={`tab-${tab.id}`}
+              aria-selected={isActive}
+              aria-controls={`panel-${tab.id}`}
+              tabIndex={isActive ? 0 : -1}
+              onClick={() => setActiveTab(tab.id as TabId)}
               style={{
-                background: 'var(--accent)',
-                border: 'none',
-                color: '#ffffff',
-                padding: '9px 18px',
-                borderRadius: 7,
-                fontWeight: 700,
-                fontSize: 12.5,
-                cursor: 'pointer',
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
-                gap: 6,
-                boxShadow: '0 2px 6px rgba(37,99,235,0.25)',
+                gap: 7,
+                padding: '9px 16px',
+                borderRadius: 8,
+                border: `1px solid ${isActive ? 'var(--accent)' : 'var(--line)'}`,
+                background: isActive ? 'var(--accent)' : 'var(--panel)',
+                color: isActive ? '#ffffff' : 'var(--fg)',
+                fontWeight: isActive ? 700 : 600,
+                fontSize: 13,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                boxShadow: isActive ? '0 2px 6px rgba(37,99,235,0.25)' : 'none',
                 transition: 'all 0.15s ease',
               }}
             >
-              <span>⚡</span>
-              <span>Deep AI Analysis</span>
+              <span>{tab.label}</span>
+              {tab.badge && (
+                <span
+                  style={{
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    padding: '2px 7px',
+                    borderRadius: 999,
+                    background: isActive ? 'rgba(255,255,255,0.25)' : 'var(--panel-subtle)',
+                    color: isActive ? '#ffffff' : 'var(--muted)',
+                    border: isActive ? 'none' : '1px solid var(--line)',
+                  }}
+                >
+                  {tab.badge}
+                </span>
+              )}
             </button>
+          );
+        })}
+      </nav>
+
+      {/* ── 1. OVERVIEW TAB ── */}
+      <div
+        role="tabpanel"
+        id="panel-overview"
+        aria-labelledby="tab-overview"
+        tabIndex={0}
+        hidden={activeTab !== 'overview'}
+        style={{ display: activeTab === 'overview' ? 'flex' : 'none', flexDirection: 'column', gap: 18 }}
+      >
+        <BeginnerCard />
+
+        {topStock && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, var(--accent-subtle) 0%, var(--ok-subtle) 100%)',
+              border: '1px solid var(--line)',
+              borderRadius: 12,
+              padding: '16px 22px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 16,
+              boxShadow: 'var(--card-shadow)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: 10,
+                  background: 'var(--accent)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 800,
+                  fontSize: 14,
+                  boxShadow: '0 2px 8px rgba(37,99,235,0.3)',
+                }}
+              >
+                <span>#1</span>
+                <span style={{ fontSize: 9, letterSpacing: '0.05em' }}>TOP</span>
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 17, fontWeight: 800, color: 'var(--fg)' }}>{topStock.symbol}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>{topStock.name}</span>
+                  <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--ok-subtle)', border: '1px solid var(--ok)', color: 'var(--ok)', fontSize: 11, fontWeight: 700 }}>
+                    BREAKOUT SCORE {topStock.score}/100
+                  </span>
+                  <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--accent-subtle)', border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+                    {topStock.rvol}x RVOL
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4, fontFamily: 'monospace' }}>
+                  LTP ₹{topStock.ltp.toFixed(2)} | Target 1: ₹{topStock.tradeSetup.target1.toFixed(2)} (+{((topStock.tradeSetup.target1 - topStock.tradeSetup.entry) / topStock.tradeSetup.entry * 100).toFixed(1)}%) | Stop Loss: ₹{topStock.tradeSetup.stopLoss.toFixed(2)} | R:R 1.5:1
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                onClick={() => handleAnalyzeStock(topStock)}
+                style={{
+                  background: 'var(--accent)',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '9px 18px',
+                  borderRadius: 7,
+                  fontWeight: 700,
+                  fontSize: 12.5,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  boxShadow: '0 2px 6px rgba(37,99,235,0.25)',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <span>⚡</span>
+                <span>Deep AI Analysis</span>
+              </button>
+              <button
+                onClick={() => handleSelectAndAnalyze(topStock.symbol)}
+                style={{
+                  background: 'var(--panel)',
+                  border: '1px solid var(--line)',
+                  color: 'var(--fg)',
+                  padding: '9px 16px',
+                  borderRadius: 7,
+                  fontWeight: 650,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                Open Full Chart
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Quick Navigation Cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+          <div
+            onClick={() => setActiveTab('scanner')}
+            style={{
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 10,
+              padding: '16px 18px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 20 }}>🔍</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-subtle)', padding: '2px 8px', borderRadius: 999 }}>
+                500+ NSE STOCKS
+              </span>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginTop: 10, color: 'var(--fg)' }}>
+              Market Scanner
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.4 }}>
+              Screen NIFTY 50, Midcap 100 & sectors with real-time volume surges and breakout filters.
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11.5, fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>Open Dedicated Scanner</span>
+              <span>→</span>
+            </div>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('breakouts')}
+            style={{
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 10,
+              padding: '16px 18px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 20 }}>⚡</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ok)', background: 'var(--ok-subtle)', padding: '2px 8px', borderRadius: 999 }}>
+                0-100 SCORE
+              </span>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginTop: 10, color: 'var(--fg)' }}>
+              Breakout Radar
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.4 }}>
+              Track 15m ORB & SuperTrend setups with pre-calculated Entry, Target, and Stop Loss.
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11.5, fontWeight: 600, color: 'var(--ok)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>View Radar & Charts</span>
+              <span>→</span>
+            </div>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('analysis')}
+            style={{
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 10,
+              padding: '16px 18px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 20 }}>🤖</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-subtle)', padding: '2px 8px', borderRadius: 999 }}>
+                3 AI MODELS
+              </span>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginTop: 10, color: 'var(--fg)' }}>
+              AI Stock Deep Analysis
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.4 }}>
+              Real-time multi-model AI consensus, technical indicators, and R:R geometry for any stock.
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11.5, fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>Analyze Stock ({focusSymbol})</span>
+              <span>→</span>
+            </div>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('positions')}
+            style={{
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 10,
+              padding: '16px 18px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 20 }}>🛡️</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--warn)', background: 'var(--warn-subtle)', padding: '2px 8px', borderRadius: 999 }}>
+                SEBI SAFEGUARDS
+              </span>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginTop: 10, color: 'var(--fg)' }}>
+              Positions & Risk Controls
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.4 }}>
+              Track open trades, GTT OCO bracket orders, daily loss breakers, and kill switches.
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11.5, fontWeight: 600, color: 'var(--warn)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>Manage Risk & Positions</span>
+              <span>→</span>
+            </div>
           </div>
         </div>
-      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
+        {/* Master Auto-Trading Switch Header */}
+        {tradingHeader}
+
+        {/* Overview Engine Controls (KPIs, Strategy, Arming, Upstox API) */}
+        {s ? renderOverviewEngineControls(s) : renderDefaultOverviewCards()}
+      </div>
+
+      {/* ── 2. SCANNER TAB (Dedicated as requested) ── */}
+      <div
+        role="tabpanel"
+        id="panel-scanner"
+        aria-labelledby="tab-scanner"
+        tabIndex={0}
+        hidden={activeTab !== 'scanner'}
+        style={{ display: activeTab === 'scanner' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
+        <div
+          style={{
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '12px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>💡</span>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
+              <strong>Market Scanner Tab:</strong> Filter 500+ NSE stocks in real-time across NIFTY 50, Midcap 100, and sectors. Click <strong>Analyze</strong> on any row to open the full AI Consensus and Technical chart.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Hint term="RVOL" explanation="Relative Volume: RVOL > 1.5x means trading volume is 50%+ higher than normal at this time of day. High volume validates breakouts.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is RVOL?</span>
+            </Hint>
+            <span style={{ color: 'var(--line)' }}>•</span>
+            <Hint term="Breakout Setup" explanation="A breakout occurs when a stock breaks through a key resistance level with high volume, signaling a potential strong trend continuation.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is a Breakout?</span>
+            </Hint>
+          </div>
+        </div>
+
+        <MarketScanner
+          catalog={catalog}
+          onAnalyze={(symbol) => handleSelectAndAnalyze(symbol)}
+        />
+      </div>
+
+      {/* ── 3. BREAKOUTS TAB ── */}
+      <div
+        role="tabpanel"
+        id="panel-breakouts"
+        aria-labelledby="tab-breakouts"
+        tabIndex={0}
+        hidden={activeTab !== 'breakouts'}
+        style={{ display: activeTab === 'breakouts' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
+        <div
+          style={{
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '12px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>⚡</span>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
+              <strong>Breakout Radar:</strong> Stocks ranked by institutional volume surge (RVOL) and technical breakout alignment. Click any stock row to preview its candlestick chart.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Hint term="ORB" explanation="Opening Range Breakout: The high and low formed during the first 15 minutes of trading (09:15-09:30 IST). Breaking above the ORB high signals intraday bullish strength.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is ORB?</span>
+            </Hint>
+            <span style={{ color: 'var(--line)' }}>•</span>
+            <Hint term="SuperTrend" explanation="A trend-following indicator based on ATR volatility. Green indicates an active bullish trend; red indicates bearish.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is SuperTrend?</span>
+            </Hint>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
           {/* Watchlist Scanner Table */}
           <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
             <div
@@ -1967,7 +2438,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div style={{ overflowX: 'auto', maxHeight: 400 }}>
+            <div style={{ overflowX: 'auto', maxHeight: 440 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
@@ -1975,8 +2446,18 @@ export default function Dashboard() {
                     <th style={{ padding: '8px 12px' }}>Symbol</th>
                     <th style={{ padding: '8px 12px' }}>LTP (₹)</th>
                     <th style={{ padding: '8px 12px' }}>Change</th>
-                    <th style={{ padding: '8px 12px' }}>RVOL</th>
-                    <th style={{ padding: '8px 12px' }}>Score</th>
+                    <th style={{ padding: '8px 12px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span>RVOL</span>
+                        <Hint term="RVOL" explanation="Relative Volume compared to 20-day average. > 1.5x indicates heavy institutional buying." />
+                      </span>
+                    </th>
+                    <th style={{ padding: '8px 12px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span>Score</span>
+                        <Hint term="Breakout Score" explanation="Proprietary 0-100 score combining Volume Surge, ORB range break, RSI momentum, and SuperTrend alignment." />
+                      </span>
+                    </th>
                     <th style={{ padding: '8px 12px' }}>Action</th>
                   </tr>
                 </thead>
@@ -2076,23 +2557,37 @@ export default function Dashboard() {
           {/* Interactive Chart Preview for Selected Symbol */}
           {selectedStock && (
             <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                 <div>
                   <span style={{ fontWeight: 700, fontSize: 15 }}>{selectedStock.symbol}</span>
                   <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>₹{selectedStock.ltp.toFixed(2)}</span>
                 </div>
-                <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
+                <div style={{ display: 'flex', gap: 6, fontSize: 11, flexWrap: 'wrap' }}>
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>EMA20/50</span>
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(210,153,34,0.15)', color: 'var(--warn)' }}>VWAP</span>
                   <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(63,185,80,0.15)', color: 'var(--ok)' }}>Supertrend</span>
-                  <span style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--panel-subtle)', border: '1px solid var(--line)', color: 'var(--muted)' }}>illustrative only — not live candles</span>
+                  <button
+                    onClick={() => handleSelectAndAnalyze(selectedStock.symbol)}
+                    style={{
+                      background: 'var(--accent)',
+                      border: 'none',
+                      color: '#ffffff',
+                      borderRadius: 4,
+                      padding: '2px 8px',
+                      fontSize: 11,
+                      fontWeight: 650,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Open Full AI Analysis →
+                  </button>
                 </div>
               </div>
 
               {/* Graphical Candlestick & Overlays Visualization */}
               <div
                 style={{
-                  height: 180,
+                  height: 220,
                   background: 'var(--chart-bg)',
                   borderRadius: 8,
                   border: '1px solid var(--line)',
@@ -2147,267 +2642,390 @@ export default function Dashboard() {
               </div>
             </div>
           )}
+        </div>
       </div>
 
-      {/* F&O Desk */}
-      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+      {/* ── 4. ANALYSIS TAB ── */}
+      <div
+        role="tabpanel"
+        id="panel-analysis"
+        aria-labelledby="tab-analysis"
+        tabIndex={0}
+        hidden={activeTab !== 'analysis'}
+        style={{ display: activeTab === 'analysis' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
         <div
           style={{
-            padding: '12px 16px',
-            borderBottom: '1px solid var(--line)',
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '12px 18px',
             display: 'flex',
-            flexWrap: 'wrap',
-            gap: 10,
-            justifyContent: 'space-between',
             alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
           }}
         >
-          <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>F&O Desk</span>
-            {fnoInstrument && (
-              <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>
-                {fnoInstrument}
-              </span>
-            )}
-            <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Index options / futures · option-chain analytics</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>🎯</span>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
+              <strong>Single Stock Deep Analysis:</strong> Multi-indicator breakdown with real-time voting by 3 free AI models (Quant, Pattern, Expectancy). Enter any NSE symbol below to evaluate.
+            </div>
           </div>
-          {s?.fno && !isOffline && (
-            <button
-              onClick={handleFnoToggle}
-              disabled={fnoTogglePending}
-              style={{
-                background: s.fno.enabled ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
-                border: `1px solid ${s.fno.enabled ? 'var(--ok)' : 'var(--danger)'}`,
-                color: s.fno.enabled ? 'var(--ok)' : 'var(--danger)',
-                borderRadius: 6,
-                padding: '6px 14px',
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: fnoTogglePending ? 'wait' : 'pointer',
-              }}
-            >
-              {fnoTogglePending ? '… updating' : s.fno.enabled ? '● F&O TRADING ENABLED' : '○ F&O TRADING DISABLED'}
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Hint term="AI Models Consensus" explanation="3 independent AI evaluators check technical indicators, price pattern momentum, and statistical expectancy before scoring the setup.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>How AI Models Vote</span>
+            </Hint>
+            <span style={{ color: 'var(--line)' }}>•</span>
+            <Hint term="ATR Stop Loss" explanation="Average True Range: Sets a volatility-adjusted Stop Loss so normal price noise doesn't trigger your stop prematurely.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is ATR SL?</span>
+            </Hint>
+          </div>
         </div>
 
-        {!fnoUnderlyings ? (
-          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
-            {marketFnoError ? `Option-chain data unavailable: ${marketFnoError}` : 'Loading option chains…'}
+        <div ref={analysisRef} style={{ scrollMarginTop: 12 }}>
+          <StockAnalysis symbol={focusSymbol} onSymbolChange={setFocusSymbol} catalog={catalog} />
+        </div>
+      </div>
+
+      {/* ── 5. POSITIONS & RISK TAB ── */}
+      <div
+        role="tabpanel"
+        id="panel-positions"
+        aria-labelledby="tab-positions"
+        tabIndex={0}
+        hidden={activeTab !== 'positions'}
+        style={{ display: activeTab === 'positions' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
+        <div
+          style={{
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '12px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>🛡️</span>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
+              <strong>Positions & Risk Controls:</strong> Live open trades are monitored tick-by-tick with automated GTT OCO brackets. Safety circuit breakers enforce maximum loss rules.
+            </div>
           </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 14 }}>
-            {fnoUnderlyings.length === 0 ? (
-              <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No F&O underlyings configured.</div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-                {fnoUnderlyings.map((u) => {
-                  const result = fnoResults[u.symbol];
-                  const a = u.analytics ?? result?.analytics ?? null;
-                  const biasColor = a?.bias === 'BULLISH' ? 'var(--ok)' : a?.bias === 'BEARISH' ? 'var(--danger)' : 'var(--muted)';
-                  const biasRgb = a?.bias === 'BULLISH' ? '63,185,80' : a?.bias === 'BEARISH' ? '248,81,73' : '139,150,165';
-                  return (
-                    <div
-                      key={u.symbol}
-                      style={{
-                        background: 'var(--panel-subtle)',
-                        border: '1px solid var(--line)',
-                        borderRadius: 8,
-                        padding: '12px 14px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 8,
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ fontWeight: 700, fontSize: 14 }}>{u.symbol}</span>
-                            <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600 }}>{fmt(u.spot ?? a?.spot ?? null)}</span>
-                            {a && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Hint term="GTT OCO" explanation="Good Till Triggered - One-Cancels-Other: If Target profit is executed, the Stop Loss order is automatically cancelled. Capital is 100% safeguarded.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is GTT OCO?</span>
+            </Hint>
+            <span style={{ color: 'var(--line)' }}>•</span>
+            <Hint term="Safety Breakers" explanation="Automated circuit breakers halt entries when daily loss limit is hit or market volatility exceeds thresholds.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>Safety Rules</span>
+            </Hint>
+          </div>
+        </div>
+
+        {s ? renderPositionsAndRisk(s) : tradingUnavailable}
+      </div>
+
+      {/* ── 6. F&O DESK TAB ── */}
+      <div
+        role="tabpanel"
+        id="panel-fno"
+        aria-labelledby="tab-fno"
+        tabIndex={0}
+        hidden={activeTab !== 'fno'}
+        style={{ display: activeTab === 'fno' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
+        <div
+          style={{
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '12px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>📈</span>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
+              <strong>Futures & Options (F&O) Desk:</strong> Real-time option-chain analytics for NIFTY, BANKNIFTY, FINNIFTY, and key derivatives. Evaluates Put-Call Ratio (PCR), Max Pain, and Open Interest.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Hint term="PCR" explanation="Put-Call Ratio: PCR > 1.0 indicates bullish support (more put writing). PCR < 0.7 indicates bearish resistance (more call writing).">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is PCR?</span>
+            </Hint>
+            <span style={{ color: 'var(--line)' }}>•</span>
+            <Hint term="Max Pain" explanation="The strike price where option buyers lose the most money at expiry, often acting as a price attractor.">
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>What is Max Pain?</span>
+            </Hint>
+          </div>
+        </div>
+
+        {/* F&O Desk Content */}
+        <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+          <div
+            style={{
+              padding: '12px 16px',
+              borderBottom: '1px solid var(--line)',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 10,
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>F&O Derivatives Desk</span>
+              {fnoInstrument && (
+                <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: 'rgba(74,158,255,0.15)', color: 'var(--accent)' }}>
+                  {fnoInstrument}
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Index options / futures · option-chain analytics</span>
+            </div>
+            {s?.fno && !isOffline && (
+              <button
+                onClick={handleFnoToggle}
+                disabled={fnoTogglePending}
+                style={{
+                  background: s.fno.enabled ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
+                  border: `1px solid ${s.fno.enabled ? 'var(--ok)' : 'var(--danger)'}`,
+                  color: s.fno.enabled ? 'var(--ok)' : 'var(--danger)',
+                  borderRadius: 6,
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: fnoTogglePending ? 'wait' : 'pointer',
+                }}
+              >
+                {fnoTogglePending ? '… updating' : s.fno.enabled ? '● F&O TRADING ENABLED' : '○ F&O TRADING DISABLED'}
+              </button>
+            )}
+          </div>
+
+          {!fnoUnderlyings ? (
+            <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+              {marketFnoError ? `Option-chain data unavailable: ${marketFnoError}` : 'Loading option chains…'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 14 }}>
+              {fnoUnderlyings.length === 0 ? (
+                <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No F&O underlyings configured.</div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+                  {fnoUnderlyings.map((u) => {
+                    const result = fnoResults[u.symbol];
+                    const a = u.analytics ?? result?.analytics ?? null;
+                    const biasColor = a?.bias === 'BULLISH' ? 'var(--ok)' : a?.bias === 'BEARISH' ? 'var(--danger)' : 'var(--muted)';
+                    const biasRgb = a?.bias === 'BULLISH' ? '63,185,80' : a?.bias === 'BEARISH' ? '248,81,73' : '139,150,165';
+                    return (
+                      <div
+                        key={u.symbol}
+                        style={{
+                          background: 'var(--panel-subtle)',
+                          border: '1px solid var(--line)',
+                          borderRadius: 8,
+                          padding: '12px 14px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontWeight: 700, fontSize: 14 }}>{u.symbol}</span>
+                              <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600 }}>{fmt(u.spot ?? a?.spot ?? null)}</span>
+                              {a && (
+                                <span
+                                  style={{
+                                    padding: '1px 6px',
+                                    borderRadius: 4,
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    background: `rgba(${biasRgb},0.15)`,
+                                    color: biasColor,
+                                    border: `1px solid ${biasColor}`,
+                                  }}
+                                >
+                                  {a.bias} {a.biasScore > 0 ? '+' : ''}
+                                  {a.biasScore}
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
+                              Exp {u.expiry ?? '—'} · Lot {u.lotSize ?? '—'} · signals from <span className="mono" style={{ fontSize: 10.5 }}>{u.signalKey}</span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleFnoAnalyze(u.symbol)}
+                            disabled={result?.loading}
+                            style={{
+                              background: 'rgba(74,158,255,0.15)',
+                              border: '1px solid var(--accent)',
+                              color: 'var(--accent)',
+                              borderRadius: 4,
+                              padding: '3px 8px',
+                              fontSize: 10,
+                              fontWeight: 650,
+                              cursor: result?.loading ? 'wait' : 'pointer',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {result?.loading ? 'Analyzing…' : 'Analyze'}
+                          </button>
+                        </div>
+
+                        {u.error && (
+                          <div style={{ fontSize: 11.5, color: 'var(--danger)', background: 'rgba(248,81,73,0.1)', borderRadius: 6, padding: '6px 10px' }}>
+                            {u.error}
+                          </div>
+                        )}
+
+                        {a ? (
+                          <>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                              <Metric label="ATM" value={fmt(a.atmStrike, 0)} />
+                              <Metric label="PCR OI / VOL" value={`${fmt(a.pcrOi)} / ${fmt(a.pcrVolume)}`} />
+                              <Metric label="MAX PAIN" value={fmt(a.maxPain, 0)} />
+                              <Metric label="CALL WALL" value={fmt(a.callWall, 0)} color="var(--danger)" />
+                              <Metric label="PUT WALL" value={fmt(a.putWall, 0)} color="var(--ok)" />
+                              <Metric label="ATM IV" value={a.atmIv === null ? '—' : `${fmt(a.atmIv, 1)}%`} />
+                              <Metric label="IV SKEW" value={a.ivSkew === null ? '—' : `${fmt(a.ivSkew, 1)}`} />
+                              <Metric label="STRADDLE" value={fmt(a.straddle)} />
+                              <Metric label="EXP. MOVE" value={a.expectedMovePct === null ? '—' : `±${fmt(a.expectedMovePct)}%`} />
+                            </div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 10 }}>
+                              <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.callBuildup]}`, color: BUILDUP_COLOR[a.callBuildup] }}>
+                                CE: {a.callBuildup.replace('_', ' ')}
+                              </span>
+                              <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.putBuildup]}`, color: BUILDUP_COLOR[a.putBuildup] }}>
+                                PE: {a.putBuildup.replace('_', ' ')}
+                              </span>
+                              <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>updated {agoSec(a.updatedAt, now)}</span>
+                            </div>
+                            {a.notes.length > 0 && (
+                              <div style={{ fontSize: 11, color: '#c9d1d9', lineHeight: 1.4 }}>
+                                {a.notes.map((n, i) => (
+                                  <div key={i}>• {n}</div>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          !u.error && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No option-chain analytics yet.</div>
+                        )}
+
+                        {result && !result.loading && (
+                          <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>Analyze result</div>
+                            {result.error && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>{result.error}</div>}
+                            {result.plan && <FnoPlanDetail plan={result.plan} />}
+                            {result.plan && (
+                              <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
+                                Sized at 1 lot for reference. The engine sizes real trades from your capital and limits.
+                              </div>
+                            )}
+                            {!result.error && !result.plan && result.rejected.length === 0 && (
+                              <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No setup generated.</div>
+                            )}
+                            {result.rejected.length > 0 && (
+                              <div style={{ fontSize: 11.5, color: 'var(--warn)', lineHeight: 1.4 }}>
+                                <div style={{ fontWeight: 600 }}>No trade — rejected:</div>
+                                {result.rejected.map((r, i) => (
+                                  <div key={i}>• {r}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Recent F&O plans */}
+              {s?.fno && (
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--muted)' }}>Recent F&O plans</div>
+                {s.fno.plans.length === 0 ? (
+                  <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No plans yet.</div>
+                ) : (
+                  <div style={{ overflowX: 'auto', maxHeight: 360 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
+                          <th style={{ padding: '8px 12px' }}>Time</th>
+                          <th style={{ padding: '8px 12px' }}>Contract</th>
+                          <th style={{ padding: '8px 12px' }}>Side / Lots</th>
+                          <th style={{ padding: '8px 12px' }}>Entry / SL / Target</th>
+                          <th style={{ padding: '8px 12px' }}>Cost / Max loss</th>
+                          <th style={{ padding: '8px 12px' }}>Conf</th>
+                          <th style={{ padding: '8px 12px' }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {s.fno.plans.map((p) => (
+                          <tr key={p.id} style={{ borderBottom: '1px solid var(--line-subtle)' }}>
+                            <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                              {new Date(p.createdAt).toLocaleTimeString('en-IN', { hour12: false })}
+                            </td>
+                            <td style={{ padding: '8px 12px', fontWeight: 600 }}>
+                              <div style={{ fontFamily: 'monospace' }}>{p.contract.tradingSymbol}</div>
+                              <div style={{ fontSize: 10, color: 'var(--muted)' }}>
+                                {p.symbol} · exp {p.contract.expiry}
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <span style={{ fontWeight: 700, color: p.side === 'BUY' ? 'var(--ok)' : 'var(--danger)' }}>{p.side}</span> {p.lots}L
+                              <span style={{ fontSize: 10, color: 'var(--muted)' }}> ({p.quantity})</span>
+                            </td>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                              {fmt(p.premium.entry)} / <span style={{ color: 'var(--danger)' }}>{fmt(p.premium.stopLoss)}</span> /{' '}
+                              <span style={{ color: 'var(--ok)' }}>{fmt(p.premium.target)}</span>
+                            </td>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
+                              {inr(p.costRupees, 0)} / <span style={{ color: 'var(--danger)' }}>{inr(p.maxLossRupees, 0)}</span>
+                            </td>
+                            <td style={{ padding: '8px 12px', fontSize: 11 }}>{p.confidence}%</td>
+                            <td style={{ padding: '8px 12px' }}>
                               <span
+                                title={p.rejectReason ?? undefined}
                                 style={{
-                                  padding: '1px 6px',
+                                  padding: '2px 6px',
                                   borderRadius: 4,
                                   fontSize: 10,
                                   fontWeight: 700,
-                                  background: `rgba(${biasRgb},0.15)`,
-                                  color: biasColor,
-                                  border: `1px solid ${biasColor}`,
+                                  background: PLAN_STATUS_STYLE[p.status].bg,
+                                  color: PLAN_STATUS_STYLE[p.status].fg,
                                 }}
                               >
-                                {a.bias} {a.biasScore > 0 ? '+' : ''}
-                                {a.biasScore}
+                                {p.status}
                               </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
-                            Exp {u.expiry ?? '—'} · Lot {u.lotSize ?? '—'} · signals from <span className="mono" style={{ fontSize: 10.5 }}>{u.signalKey}</span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleFnoAnalyze(u.symbol)}
-                          disabled={result?.loading}
-                          style={{
-                            background: 'rgba(74,158,255,0.15)',
-                            border: '1px solid var(--accent)',
-                            color: 'var(--accent)',
-                            borderRadius: 4,
-                            padding: '3px 8px',
-                            fontSize: 10,
-                            fontWeight: 600,
-                            cursor: result?.loading ? 'wait' : 'pointer',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {result?.loading ? 'Analyzing…' : 'Analyze'}
-                        </button>
-                      </div>
-
-                      {u.error && (
-                        <div style={{ fontSize: 11.5, color: 'var(--danger)', background: 'rgba(248,81,73,0.1)', borderRadius: 6, padding: '6px 10px' }}>
-                          {u.error}
-                        </div>
-                      )}
-
-                      {a ? (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-                            <Metric label="ATM" value={fmt(a.atmStrike, 0)} />
-                            <Metric label="PCR OI / VOL" value={`${fmt(a.pcrOi)} / ${fmt(a.pcrVolume)}`} />
-                            <Metric label="MAX PAIN" value={fmt(a.maxPain, 0)} />
-                            <Metric label="CALL WALL" value={fmt(a.callWall, 0)} color="var(--danger)" />
-                            <Metric label="PUT WALL" value={fmt(a.putWall, 0)} color="var(--ok)" />
-                            <Metric label="ATM IV" value={a.atmIv === null ? '—' : `${fmt(a.atmIv, 1)}%`} />
-                            <Metric label="IV SKEW" value={a.ivSkew === null ? '—' : `${fmt(a.ivSkew, 1)}`} />
-                            <Metric label="STRADDLE" value={fmt(a.straddle)} />
-                            <Metric label="EXP. MOVE" value={a.expectedMovePct === null ? '—' : `±${fmt(a.expectedMovePct)}%`} />
-                          </div>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 10 }}>
-                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.callBuildup]}`, color: BUILDUP_COLOR[a.callBuildup] }}>
-                              CE: {a.callBuildup.replace('_', ' ')}
-                            </span>
-                            <span style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${BUILDUP_COLOR[a.putBuildup]}`, color: BUILDUP_COLOR[a.putBuildup] }}>
-                              PE: {a.putBuildup.replace('_', ' ')}
-                            </span>
-                            <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>updated {agoSec(a.updatedAt, now)}</span>
-                          </div>
-                          {a.notes.length > 0 && (
-                            <div style={{ fontSize: 11, color: '#c9d1d9', lineHeight: 1.4 }}>
-                              {a.notes.map((n, i) => (
-                                <div key={i}>• {n}</div>
-                              ))}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        !u.error && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No option-chain analytics yet.</div>
-                      )}
-
-                      {result && !result.loading && (
-                        <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>Analyze result</div>
-                          {result.error && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>{result.error}</div>}
-                          {result.plan && <FnoPlanDetail plan={result.plan} />}
-                          {result.plan && (
-                            <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
-                              Sized at 1 lot for reference. The engine sizes real trades from your capital and limits.
-                            </div>
-                          )}
-                          {!result.error && !result.plan && result.rejected.length === 0 && (
-                            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No setup generated.</div>
-                          )}
-                          {result.rejected.length > 0 && (
-                            <div style={{ fontSize: 11.5, color: 'var(--warn)', lineHeight: 1.4 }}>
-                              <div style={{ fontWeight: 600 }}>No trade — rejected:</div>
-                              {result.rejected.map((r, i) => (
-                                <div key={i}>• {r}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                              {p.rejectReason && <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{p.rejectReason}</div>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-            )}
-
-            {/* Recent F&O plans: the engine's journal */}
-            {s?.fno && (
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--muted)' }}>Recent F&O plans</div>
-              {s.fno.plans.length === 0 ? (
-                <div style={{ padding: 12, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No plans yet.</div>
-              ) : (
-                <div style={{ overflowX: 'auto', maxHeight: 360 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: 11 }}>
-                        <th style={{ padding: '8px 12px' }}>Time</th>
-                        <th style={{ padding: '8px 12px' }}>Contract</th>
-                        <th style={{ padding: '8px 12px' }}>Side / Lots</th>
-                        <th style={{ padding: '8px 12px' }}>Entry / SL / Target</th>
-                        <th style={{ padding: '8px 12px' }}>Cost / Max loss</th>
-                        <th style={{ padding: '8px 12px' }}>Conf</th>
-                        <th style={{ padding: '8px 12px' }}>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {s.fno.plans.map((p) => (
-                        <tr key={p.id} style={{ borderBottom: '1px solid var(--line-subtle)' }}>
-                          <td style={{ padding: '8px 12px', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                            {new Date(p.createdAt).toLocaleTimeString('en-IN', { hour12: false })}
-                          </td>
-                          <td style={{ padding: '8px 12px', fontWeight: 600 }}>
-                            <div style={{ fontFamily: 'monospace' }}>{p.contract.tradingSymbol}</div>
-                            <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-                              {p.symbol} · exp {p.contract.expiry}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span style={{ fontWeight: 700, color: p.side === 'BUY' ? 'var(--ok)' : 'var(--danger)' }}>{p.side}</span> {p.lots}L
-                            <span style={{ fontSize: 10, color: 'var(--muted)' }}> ({p.quantity})</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
-                            {fmt(p.premium.entry)} / <span style={{ color: 'var(--danger)' }}>{fmt(p.premium.stopLoss)}</span> /{' '}
-                            <span style={{ color: 'var(--ok)' }}>{fmt(p.premium.target)}</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11 }}>
-                            {inr(p.costRupees, 0)} / <span style={{ color: 'var(--danger)' }}>{inr(p.maxLossRupees, 0)}</span>
-                          </td>
-                          <td style={{ padding: '8px 12px', fontSize: 11 }}>{p.confidence}%</td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span
-                              title={p.rejectReason ?? undefined}
-                              style={{
-                                padding: '2px 6px',
-                                borderRadius: 4,
-                                fontSize: 10,
-                                fontWeight: 700,
-                                background: PLAN_STATUS_STYLE[p.status].bg,
-                                color: PLAN_STATUS_STYLE[p.status].fg,
-                              }}
-                            >
-                              {p.status}
-                            </span>
-                            {p.rejectReason && <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{p.rejectReason}</div>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
               )}
             </div>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
-
-      {/* ── Trading: everything that can place or manage orders lives in the engine ── */}
-      {tradingHeader}
-      {s ? renderTrading(s) : tradingUnavailable}
 
       {/* Single Stock Deep AI Analysis Modal */}
       {deepAnalysisStock && (
