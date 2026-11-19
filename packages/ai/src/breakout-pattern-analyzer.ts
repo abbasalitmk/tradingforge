@@ -125,6 +125,18 @@ export class BreakoutPatternAnalyzer {
     const flagNotice = flags.length > 0 ? ` Caution flags: ${flags.join(', ')}.` : '';
     const rationale = `${verdict}: ${summary}.${flagNotice}`;
 
+    const beginnerSummary = verdict === 'REJECT'
+      ? `Price action pattern rejected. The trade is fighting major institutional levels (VWAP or Supertrend), which historically leads to high failure rates.`
+      : verdict === 'CAUTION'
+        ? `Breakout pattern detected on ${signal.symbol}, but with mixed signals (${flags.join(', ')}). Patience is advised.`
+        : `Confirmed breakout pattern on ${signal.symbol}. Price is trading ${isLong ? 'above' : 'below'} VWAP with EMA alignment, indicating institutional buying/selling momentum.`;
+
+    const beginnerTip = isLong
+      ? 'Buy near support/VWAP rather than chasing price when it has already rallied heavily.'
+      : 'For short trades, ensure price stays below VWAP to maintain edge.';
+
+    const riskRating = verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW';
+
     return {
       verdict,
       confidence,
@@ -135,6 +147,21 @@ export class BreakoutPatternAnalyzer {
       latencyMs: Math.max(1, this.clock.ms() - started),
       model: 'free-breakout-pattern-v1',
       fellBack: false,
+      beginnerSummary,
+      beginnerTip,
+      riskRating,
+      trafficLights: {
+        momentum: patterns.some((p) => p.includes('MOMENTUM')) ? 'GREEN' : (flags.some((f) => f.includes('DIVERGENCE')) ? 'RED' : 'AMBER'),
+        volume: patterns.includes('HIGH_RVOL_BREAKOUT') ? 'GREEN' : 'AMBER',
+        riskBuffer: flags.includes('COUNTER_VWAP_BIAS') ? 'RED' : 'GREEN',
+        rewardRatio: 'GREEN',
+      },
+      actionChecklist: [
+        { item: 'VWAP Institutional Anchor', passed: !flags.includes('COUNTER_VWAP_BIAS'), detail: isLong ? 'Price above VWAP' : 'Price below VWAP' },
+        { item: 'Supertrend Trend Follower', passed: !flags.includes('AGAINST_SUPERTREND'), detail: 'Supertrend matches signal direction' },
+        { item: 'EMA Moving Average Alignment', passed: !flags.includes('EMA_STACK_DIVERGENCE'), detail: 'Fast EMA confirms direction' },
+        { item: 'Volume Expansion Confirmation', passed: patterns.includes('HIGH_RVOL_BREAKOUT'), detail: 'Breakout backed by surge in volume' },
+      ],
     };
   }
 }

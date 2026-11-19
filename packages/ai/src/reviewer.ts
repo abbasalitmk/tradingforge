@@ -8,6 +8,7 @@ import { AiConsensusEngine, type ConsensusDecision } from './consensus.ts';
 
 export interface AiReviewerOptions {
   readonly clock?: Clock;
+  readonly grokConfig?: ConfirmerConfig | null;
   readonly groqConfig?: ConfirmerConfig | null;
 }
 
@@ -18,7 +19,7 @@ export interface AiReviewerOptions {
  *  1. FreeRealtimeAnalyzer (Risk/geometry & session timing)
  *  2. BreakoutPatternAnalyzer (Candlestick & breakout structure)
  *  3. MlExpectancyAnalyzer (Statistical win-rate and EV expectancy)
- * Plus optional Groq / Remote LLM Cloud model with automatic consensus voting.
+ * Plus optional xAI Grok and Groq Cloud models with automatic consensus voting.
  */
 export class AiReviewer {
   readonly quantModel: FreeRealtimeAnalyzer;
@@ -33,7 +34,17 @@ export class AiReviewer {
     this.patternModel = new BreakoutPatternAnalyzer({ clock });
     this.mlModel = new MlExpectancyAnalyzer({ clock });
     this.consensusEngine = new AiConsensusEngine({ clock });
-    this.confirmer = opts.groqConfig ? new Confirmer(opts.groqConfig) : null;
+
+    if (opts.grokConfig && opts.groqConfig) {
+      // Primary: xAI Grok, Failover: Groq Qwen
+      this.confirmer = new Confirmer(opts.grokConfig, opts.groqConfig);
+    } else if (opts.grokConfig) {
+      this.confirmer = new Confirmer(opts.grokConfig);
+    } else if (opts.groqConfig) {
+      this.confirmer = new Confirmer(opts.groqConfig);
+    } else {
+      this.confirmer = null;
+    }
   }
 
   async review(signal: Signal): Promise<ConsensusDecision> {

@@ -1,4 +1,4 @@
-import { type Candle, type Clock, type Signal, istMinutes, istDateKey, SESSION, paiseToRupees } from '@tradeforger/core';
+import { type Candle, type Clock, type Signal, istMinutes, istDateKey, SESSION, paiseToRupees, computeIndianCharges } from '@tradeforger/core';
 import type { UpstoxClient } from '@tradeforger/upstox';
 import {
   StockScanner, DEFAULT_UNIVERSE, STRATEGY_CATALOG, analyzeHybrid, prefilter, screen,
@@ -454,12 +454,24 @@ export class MarketService {
     const { eq, r } = await this.analyzeLive(symbol, strategies);
     const setups = [r.best.INTRADAY, r.best.SWING].filter((s): s is HybridSetup => s !== null);
     const best = setups.sort((a, b) => b.quality - a.quality)[0];
-    if (!best) return { symbol: eq.symbol, setup: null, consensus: null, reason: 'No strategy has a setup on this stock right now.' };
+    if (!best) return { symbol: eq.symbol, setup: null, consensus: null, charges: null, sampleQty: null, reason: 'No strategy has a setup on this stock right now.' };
     const lead: Signal | null = best.votes.find((v) => v.strategyId === best.primaryStrategyId)?.signal ?? null;
-    if (!lead) return { symbol: eq.symbol, setup: slimSetup(best), consensus: null, reason: 'Lead signal unavailable.' };
+    if (!lead) return { symbol: eq.symbol, setup: slimSetup(best), consensus: null, charges: null, sampleQty: null, reason: 'Lead signal unavailable.' };
     const sig = `${eq.instrumentKey}|${best.style}|${best.side}|${best.primaryStrategyId}`;
     const consensus = await this.cache.get(`ai:${sig}`, 30_000, () => this.ai.review(lead));
-    return { symbol: eq.symbol, setup: slimSetup(best), consensus, reason: null };
+
+    const entryRs = paiseToRupees(lead.entry);
+    const targetRs = paiseToRupees(lead.target);
+    const nominalCapital = 50_000;
+    const sampleQty = Math.max(1, Math.floor(nominalCapital / Math.max(1, entryRs)));
+    const charges = computeIndianCharges({
+      style: best.style,
+      buyPrice: best.side === 'BUY' ? entryRs : targetRs,
+      sellPrice: best.side === 'BUY' ? targetRs : entryRs,
+      qty: sampleQty,
+    });
+
+    return { symbol: eq.symbol, setup: slimSetup(best), consensus, charges, sampleQty, reason: null };
   }
 
   // ─────────────────────────────── F&O ───────────────────────────────

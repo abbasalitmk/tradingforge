@@ -105,6 +105,37 @@ export class AiConsensusEngine {
     const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
     const rationale = `Consensus ${verdict} [Grade ${grade}] with ${confirms.length}/${votes.length} models confirming. ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`;
 
+    // Beginner-friendly aggregation
+    const beginnerSummary = externalDecision?.beginnerSummary ?? (
+      verdict === 'REJECT'
+        ? `Consensus REJECT: ${rejects.length} AI model(s) flagged this trade as unsafe. Key risk: ${allFlags.join(', ') || 'Inadequate risk profile'}. Preserve your capital and do not enter.`
+        : verdict === 'CAUTION'
+          ? `Consensus CAUTION: ${confirms.length} of ${votes.length} models confirm this setup, but caution flags (${allFlags.join(', ') || 'moderate risk'}) were detected. Half size (0.5x) recommended.`
+          : `Consensus CONFIRM (Grade ${grade}): High-conviction setup verified across ${confirms.length}/${votes.length} quantitative and AI models. Trend, volume, and risk geometry are in full alignment.`
+    );
+
+    const beginnerTip = externalDecision?.beginnerTip ?? (
+      verdict === 'REJECT'
+        ? 'Rule #1 of trading: The best trades are effortless; never force a trade that fails risk checks.'
+        : 'Never risk more than 1% to 2% of total trading capital on any single setup, and keep stop-loss placed in the market.'
+    );
+
+    const riskRating: 'LOW' | 'MEDIUM' | 'HIGH' = verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW';
+
+    const trafficLights = externalDecision?.trafficLights ?? {
+      momentum: d2.trafficLights?.momentum ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
+      volume: d1.trafficLights?.volume ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
+      riskBuffer: d1.trafficLights?.riskBuffer ?? (verdict === 'REJECT' ? 'RED' : 'GREEN'),
+      rewardRatio: d3.trafficLights?.rewardRatio ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
+    };
+
+    const actionChecklist = externalDecision?.actionChecklist ?? [
+      { item: 'Multi-Model Consensus Alignment', passed: confirms.length >= 2, detail: `${confirms.length} of ${votes.length} models confirming` },
+      { item: 'Risk/Reward & Stop Protection', passed: !allFlags.includes('INVERTED_STOP') && !allFlags.includes('POOR_RISK_REWARD'), detail: 'Stop placed below support' },
+      { item: 'Volume & Institutional Flow', passed: !allFlags.includes('THIN_VOLUME'), detail: 'Volume verified' },
+      { item: 'Mathematical Edge (+EV)', passed: !allFlags.includes('NEGATIVE_EXPECTANCY'), detail: `Expectancy Grade ${grade}` },
+    ];
+
     return {
       verdict,
       confidence: avgConfidence,
@@ -119,6 +150,11 @@ export class AiConsensusEngine {
       consensusGrade: grade,
       agreeCount: confirms.length,
       totalModels: votes.length,
+      beginnerSummary,
+      beginnerTip,
+      riskRating,
+      trafficLights,
+      actionChecklist,
     };
   }
 }

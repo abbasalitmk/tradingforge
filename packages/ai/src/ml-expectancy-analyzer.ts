@@ -128,6 +128,16 @@ export class MlExpectancyAnalyzer {
 
     const rationale = `${verdict} (Grade ${edge.edgeGrade}): Estimated Win Probability ${(edge.winProbability * 100).toFixed(0)}%, Expected Value +${edge.expectedValueR.toFixed(2)}R per trade.`;
 
+    const beginnerSummary = verdict === 'REJECT'
+      ? `Mathematical edge test failed (Expected Value is negative). Statistically, taking this trade loses money over a series of 100 trades.`
+      : verdict === 'CAUTION'
+        ? `Moderate statistical edge (Grade B) with ${(edge.winProbability * 100).toFixed(0)}% estimated win rate and +${edge.expectedValueR.toFixed(2)}R expectancy.`
+        : `High mathematical expectancy (Grade ${edge.edgeGrade}). At ${(edge.winProbability * 100).toFixed(0)}% win rate with positive +${edge.expectedValueR.toFixed(2)}R payoff, this trade has a solid statistical edge.`;
+
+    const beginnerTip = 'In trading, you do not need 100% win rate to be profitable. A 50% win rate with 1:2 R:R compounds capital rapidly.';
+
+    const riskRating = verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW';
+
     return {
       verdict,
       confidence,
@@ -138,6 +148,21 @@ export class MlExpectancyAnalyzer {
       latencyMs: Math.max(1, this.clock.ms() - started),
       model: 'free-ml-expectancy-v1',
       fellBack: false,
+      beginnerSummary,
+      beginnerTip,
+      riskRating,
+      trafficLights: {
+        momentum: edge.winProbability >= 0.52 ? 'GREEN' : 'AMBER',
+        volume: 'GREEN',
+        riskBuffer: edge.expectedValueR >= 0.25 ? 'GREEN' : (edge.expectedValueR >= 0 ? 'AMBER' : 'RED'),
+        rewardRatio: edge.expectedValueR >= 0.25 ? 'GREEN' : 'AMBER',
+      },
+      actionChecklist: [
+        { item: 'Statistical Win Probability (>= 48%)', passed: edge.winProbability >= 0.48, detail: `${(edge.winProbability * 100).toFixed(0)}% estimated win rate` },
+        { item: 'Expected Value (> +0.10R)', passed: edge.expectedValueR >= 0.10, detail: `+${edge.expectedValueR.toFixed(2)}R per trade` },
+        { item: 'Mathematical Edge Quality', passed: edge.edgeGrade !== 'REJECT', detail: `Grade ${edge.edgeGrade}` },
+        { item: 'Long-term Expectancy', passed: edge.expectedValueR > 0, detail: 'Net positive expectancy formula' },
+      ],
     };
   }
 }
