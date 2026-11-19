@@ -1,0 +1,78 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - TF_MODE=${TF_MODE:-PAPER}
+      - UPSTOX_API_KEY=${UPSTOX_API_KEY}
+      - UPSTOX_REDIRECT_URI=${UPSTOX_REDIRECT_URI}
+      - TF_WEBHOOK_SECRET=${TF_WEBHOOK_SECRET}
+      - TF_ENGINE_URL=http://engine:4000
+      - TF_ENGINE_TOKEN=${TF_ENGINE_TOKEN}
+      - TF_DASHBOARD_USER=${TF_DASHBOARD_USER:-admin}
+      - TF_DASHBOARD_PASSWORD=${TF_DASHBOARD_PASSWORD}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - engine
+    networks:
+      - tf-network
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - TF_MODE=${TF_MODE:-PAPER}
+      - UPSTOX_API_KEY=${UPSTOX_API_KEY}
+      - UPSTOX_API_SECRET=${UPSTOX_API_SECRET}
+      - UPSTOX_REDIRECT_URI=${UPSTOX_REDIRECT_URI}
+      - UPSTOX_ANALYTICS_TOKEN=${UPSTOX_ANALYTICS_TOKEN:-}
+      - UPSTOX_ACCESS_TOKEN=${UPSTOX_ACCESS_TOKEN:-}
+      - UPSTOX_SANDBOX_TOKEN=${UPSTOX_SANDBOX_TOKEN:-}
+      - TF_WEBHOOK_SECRET=${TF_WEBHOOK_SECRET}
+      - TF_ENGINE_TOKEN=${TF_ENGINE_TOKEN}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-}
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - engine-data:/app/data
+    networks:
+      - tf-network
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - HOSTINGER_DOMAIN=${HOSTINGER_DOMAIN:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+    networks:
+      - tf-network
+
+networks:
+  tf-network:
+    driver: bridge
+
+volumes:
+  engine-data:
+  caddy-data:
+  caddy-config:

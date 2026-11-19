@@ -1,0 +1,63 @@
+# Multi-stage build for Next.js Web Dashboard
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat
+
+# Copy workspace package manifests
+COPY package*.json ./
+COPY .npmrc ./
+COPY apps/web/package*.json ./apps/web/
+COPY apps/engine/package*.json ./apps/engine/
+COPY packages/core/package*.json ./packages/core/
+COPY packages/db/package*.json ./packages/db/
+COPY packages/safety/package*.json ./packages/safety/
+COPY packages/upstox/package*.json ./packages/upstox/
+COPY packages/broker/package*.json ./packages/broker/
+COPY packages/risk/package*.json ./packages/risk/
+COPY packages/feed/package*.json ./packages/feed/
+COPY packages/data/package*.json ./packages/data/
+COPY packages/indicators/package*.json ./packages/indicators/
+COPY packages/strategy/package*.json ./packages/strategy/
+COPY packages/execution/package*.json ./packages/execution/
+COPY packages/ai/package*.json ./packages/ai/
+COPY packages/fno/package*.json ./packages/fno/
+COPY packages/backtest/package*.json ./packages/backtest/
+
+RUN npm install --legacy-peer-deps
+
+# Copy full source
+COPY . .
+
+# Build standalone Next.js bundle
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV TF_MODE=PAPER
+ENV UPSTOX_API_KEY=build-placeholder
+ENV UPSTOX_REDIRECT_URI=https://example.com/api/auth/callback
+ENV TF_WEBHOOK_SECRET=0000000000000000000000000000000000000000000000000000000000000000
+ENV TF_ENGINE_URL=http://engine:4000
+ENV TF_ENGINE_TOKEN=00000000000000000000000000000000
+
+RUN npm run build:web
+
+# Production runner image
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Copy standalone output
+COPY --from=builder /app/apps/web/.next/standalone ./
+COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public 2>/dev/null || true
+
+USER nextjs
+
+EXPOSE 3000
+
+CMD ["node", "apps/web/server.js"]

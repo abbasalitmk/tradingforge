@@ -9,7 +9,7 @@ export type RelayResult =
  *
  * The engine lives behind a Cloudflare Tunnel on a static-IP host; this web app
  * is stateless and holds no Upstox token. Relay failures are NOT retried here —
- * a Vercel function must not block, and more importantly the engine already
+ * a web request must not block, and more importantly the engine already
  * reconciles from the authoritative order book on its own schedule. A dropped
  * hint costs latency, never correctness.
  */

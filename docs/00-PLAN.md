@@ -100,7 +100,7 @@ Treat all three as compromised.
 2. **Rotate the Groq key** at https://console.groq.com/keys.
 3. The Analytics Token (`…DIKcorbn`) is read-only and IP-locked, so exposure is low-risk — but
    regenerate it with the others.
-4. `stockwatch` has the same problem and is deployed to Vercel: `src/services/upstox.js:7-8`
+4. `stockwatch` has the same problem in its legacy deployment: `src/services/upstox.js:7-8`
    hardcodes a key/secret, `src/services/groq.js:2` hardcodes a Groq key, and `set-token.js`
    contains a live access token. Rotate those too, and purge them from git history.
 
@@ -519,43 +519,43 @@ tradeforger/
 | Sizing | **User-selectable**: `FIXED_QTY`, `FIXED_BUDGET` (default), `RISK_BASED` — see §6.2. Absolute rupee ceilings always enforced. |
 | Capital | Not a fixed constant. Derived from live funds + the user's configured ceilings. |
 | Live gating | **Full ladder** (§7), enforced in code. `LIVE` unreachable until paper sessions show positive expectancy after costs. |
-| Hosting | Split — see §12. Vercel for UI only. |
+| Hosting | Hostinger VPS / Docker Compose — both UI & Engine run with static IP. |
 | F&O (2026-11-18) | **Added**: long index/stock options by default, futures opt-in, no option writing. See `docs/04-FNO.md`. Same breakers, sizing and paper→live ladder as equity. |
 
 ---
 
 ## 12. Deployment topology
 
-The user's stated preference was to host on Vercel. **The engine cannot run there**, for three
-structural reasons:
-
-1. Vercel functions are request-scoped with a hard duration cap. The V3 market feed needs a
-   WebSocket held open continuously for the 6.5-hour session.
-2. There is no background process. Nothing can watch an open position between HTTP requests,
-   which is the entire job of the execution state machine.
-3. Vercel egress comes from a rotating IP pool, so every trading-plane call returns
-   `401 UDAPI1221` (§0.4). This one is fatal on its own and cannot be worked around from
-   inside Vercel on a Hobby/Pro plan.
-
-This costs nothing architecturally, because the design already forbids the web app from calling
-Upstox directly. The split:
+TradeForger runs on **Hostinger VPS** using Docker Compose. Hostinger VPS provides a dedicated static IP
+address essential for Upstox API allowlisting (`UDAPI1221`), and provides persistent background execution
+for both the trading engine daemon and the web control plane.
 
 ```
    Browser
-      │  https
+      │  HTTPS (443)
       ▼
-  ┌───────────────┐      Cloudflare Tunnel        ┌─────────────────────┐
-  │  Next.js (UI)   │ ─── mTLS / signed JWT ───► │  ENGINE              │
-  │  VERCEL         │ ◄── SSE: ticks, P&L, state ─ │  static IP host      │
-  │  stateless      │                             │  Postgres + Redis    │
-  └───────────────┘                             └────────┬───────────┘
-                                                            │ allowlisted IP
-                                                            ▼  Upstox
+┌─────────────────────────────────────────────────────────────┐
+│ HOSTINGER VPS (Static IP)                                    │
+│                                                             │
+│   ┌─────────────────────┐       ┌────────────────────────┐  │
+│   │ Reverse Proxy       │──────►│ Next.js Web Dashboard  │  │
+│   │ (Caddy/Nginx)       │       │ (apps/web on :3000)    │  │
+│   └─────────────────────┘       └───────────┬────────────┘  │
+│                                             │ internal net  │
+│                                             ▼               │
+│                                 ┌────────────────────────┐  │
+│                                 │ Trading Engine Daemon  │  │
+│                                 │ (apps/engine on :4000) │  │
+│                                 │ Postgres + Risk Guards │  │
+│                                 └───────────┬────────────┘  │
+└─────────────────────────────────────────────┼───────────────┘
+                                              │ Static IP
+                                              ▼ Outbound
+                                           Upstox
 ```
 
-Vercel holds **no** Upstox credentials. It authenticates the user, then proxies commands to the
-engine over a Cloudflare Tunnel (`cloudflared` is already installed on this machine). The engine
-is the only thing that ever holds a token or opens a socket to Upstox.
+The web dashboard authenticates the user and proxies commands to the engine internally.
+The engine holds the Upstox session token and keeps the 6.5-hour market WebSocket active.
 
 Engine host options, in order of recommendation:
 

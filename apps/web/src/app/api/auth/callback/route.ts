@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
  * code→token exchange itself. That is not an arbitrary split: the exchange
  * requires the API secret, and the resulting token is only usable from the
  * account's allowlisted static IP (UDAPI1221). Exchanging here would put the
- * secret on Vercel and mint a token bound to an IP Vercel does not have.
+ * secret on the public web tier and mint a token bound to an IP it may not have.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);

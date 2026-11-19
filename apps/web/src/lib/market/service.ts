@@ -189,7 +189,7 @@ export class MarketService {
     });
 
     return {
-      source: 'vercel' as const,
+      source: 'hostinger' as const,
       asOf: this.clock.ms(),
       session: sessionOf(bars.values()),
       watchlist,
@@ -480,7 +480,7 @@ export class MarketService {
     await this.fnoReady();
     await this.cache.get('fno:refresh', 15_000, () => this.desk.refreshAll());
     const snap = this.desk.snapshot(false) as { instrument: string; underlyings: unknown[] };
-    return { source: 'vercel' as const, asOf: this.clock.ms(), instrument: snap.instrument, underlyings: snap.underlyings };
+    return { source: 'hostinger' as const, asOf: this.clock.ms(), instrument: snap.instrument, underlyings: snap.underlyings };
   }
 
   /**

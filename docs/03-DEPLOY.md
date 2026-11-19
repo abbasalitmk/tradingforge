@@ -1,107 +1,82 @@
-# Deployment
+# Hostinger Deployment Guide
 
-Two halves, deployed separately. This split is forced by Upstox, not a preference —
-see `00-PLAN.md` §12.
+TradeForger is architected to run in production on **Hostinger VPS** using Docker Compose. Hostinger VPS provides a persistent static IP (required by Upstox API for order routing and session validation `401 UDAPI1221`), and keeps the 6.5-hour market data WebSocket connection alive continuously.
 
-| | Control plane | Engine |
+| Component | Port | Description |
 |---|---|---|
-| Where | Vercel | static-IP host |
-| Holds credentials | **no** | yes |
-| Places orders | never | yes |
-| Deploy | git push → Vercel CI/CD | pm2 / launchd / Docker |
+| **Web Dashboard** (`@tradeforger/web`) | `3000` | Next.js frontend, OAuth callback, Upstox webhook gateway, mode toggle |
+| **Trading Engine** (`@tradeforger/engine`) | `4000` | Automated trading execution, risk guards, Upstox WebSocket feed, AI analysis |
+| **Reverse Proxy** (Caddy / Nginx) | `80`, `443` | Automated SSL (Let's Encrypt), exposes Web Dashboard & protects Engine internally |
 
 ---
 
-## 1. Control plane → Vercel (git CI/CD)
+## 1. Quick Deploy (`scripts/deploy-hostinger.sh`)
 
-The repo is already configured: root `vercel.json` builds `apps/web`, and
-`.npmrc` pins `legacy-peer-deps` so Vercel's install does not hit the npm
-arborist bug. Nothing needs the Vercel CLI.
+TradeForger includes an automated deploy script supporting both Hostinger MCP / API and SSH Docker Compose:
 
-1. Go to <https://vercel.com/new>
-2. Import **abbasalitmk/tradingforge**
-3. Leave Root Directory as the repo root — `vercel.json` handles the monorepo
-4. Add these Environment Variables (Production):
+```bash
+# Set your Hostinger credentials in .env or environment
+export HOSTINGER_API_TOKEN="your_hostinger_api_token"
+export HOSTINGER_VPS_HOST="your.vps.ip.or.domain"
 
-| Key | Value |
-|---|---|
-| `TF_MODE` | `PAPER` |
-| `UPSTOX_API_KEY` | your API key |
-| `UPSTOX_REDIRECT_URI` | `https://<assigned-host>/api/auth/callback` |
-| `TF_WEBHOOK_SECRET` | the 64-hex secret from `.secrets.local` |
-| `TF_ENGINE_URL` | your Cloudflare Tunnel hostname |
-| `TF_ENGINE_TOKEN` | the engine token from `.secrets.local` |
+./scripts/deploy-hostinger.sh
+```
 
-5. Deploy. Every push to `main` redeploys from then on.
-
-`UPSTOX_REDIRECT_URI` is circular — you need the hostname to set it. Deploy once,
-read the assigned host, set the variable, redeploy. Vercel assigns
-`tradingforge.vercel.app` if free, otherwise a suffixed variant.
+The script performs:
+1. **Pre-flight verification**: runs typechecks (`npm run typecheck`) and all test suites (`npm test`).
+2. **Environment validation**: verifies required Upstox & AI keys.
+3. **Container build & deploy**: builds multi-stage standalone Next.js & Engine containers.
+4. **Health check**: verifies `/api/health` responds with HTTP 200.
+5. **Prints Upstox configuration**: prints redirect and webhook URLs ready to paste into your Upstox Developer App.
 
 ---
 
-## 2. Engine → static-IP host
+## 2. GitHub Actions CI/CD (Auto-Deploy on Git Push)
 
-**Not Vercel.** Functions are request-scoped (the market feed needs a socket held
-open for 6.5 hours), there is no background process, and Vercel's egress IPs rotate
-so every trading call returns `401 UDAPI1221`.
+Whenever you push to the `main` branch, `.github/workflows/deploy-hostinger.yml` runs automated verification and deploys directly to your Hostinger VPS.
 
-```bash
-git clone git@github.com:abbasalitmk/tradingforge.git && cd tradingforge
-npm install --legacy-peer-deps
-createdb tradeforger
-DATABASE_URL=postgresql://$USER@localhost:5432/tradeforger npm run migrate
-cp .env.example apps/engine/.env.local   # fill in, then:
-npm start -w @tradeforger/engine
-```
+### Configure GitHub Repository Secrets
+In your GitHub Repository (`Settings` → `Secrets and variables` → `Actions`):
 
-Then allowlist that host's IP at <https://account.upstox.com/developer/apps>, or the
-trading plane stays dead. Verify:
-
-```bash
-curl -s https://api.upstox.com/v2/user/profile -H "Authorization: Bearer $TOKEN"
-```
-
-`UDAPI1221` means the IP is not allowlisted.
-
-Expose the engine to Vercel over a tunnel — never a public port:
-
-```bash
-cloudflared tunnel --url http://127.0.0.1:4000
-```
+| Secret Name | Description | Example |
+|---|---|---|
+| `HOSTINGER_HOST` | Hostinger VPS IP or domain | `194.163.x.x` |
+| `HOSTINGER_USER` | SSH user (typically root) | `root` |
+| `HOSTINGER_SSH_KEY` | Private SSH key matching Hostinger VPS authorized keys | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `HOSTINGER_API_TOKEN` | (Optional) Hostinger API token from hPanel | `8Fyu3zkD...` |
+| `UPSTOX_API_KEY` | Upstox API Key | `...` |
+| `UPSTOX_API_SECRET` | Upstox API Secret | `...` |
+| `TF_WEBHOOK_SECRET` | 64-hex webhook secret | `$(openssl rand -hex 32)` |
+| `TF_ENGINE_TOKEN` | 64-hex engine auth token | `$(openssl rand -hex 32)` |
 
 ---
 
-## 3. URLs to register with Upstox
+## 3. URLs to Register with Upstox
 
-Paste into <https://account.upstox.com/developer/apps>, replacing
-`<assigned-host>` with your Vercel hostname.
+Paste these into <https://account.upstox.com/developer/apps>, replacing `<your-domain>` with your Hostinger VPS domain or IP:
 
 **Redirect URI**
 ```
-https://<assigned-host>/api/auth/callback
+https://<your-domain>/api/auth/callback
 ```
 
 **Webhook URL** — enable **both** "Order updates" and "GTT order updates";
-GTT updates default to off and without them bracket legs report nothing.
+GTT updates default to off and without them bracket legs report nothing:
 ```
-https://<assigned-host>/api/webhooks/upstox/order/<TF_WEBHOOK_SECRET>
-```
-
-**Notifier URL** — postback for the semi-automated daily token flow.
-```
-https://<assigned-host>/api/webhooks/upstox/token/<TF_WEBHOOK_SECRET>
+https://<your-domain>/api/webhooks/upstox/order/<TF_WEBHOOK_SECRET>
 ```
 
-> The path secret is the only thing guarding these — Upstox sends webhooks with no
+**Notifier URL** — postback for the semi-automated daily token flow:
+```
+https://<your-domain>/api/webhooks/upstox/token/<TF_WEBHOOK_SECRET>
+```
+
+> ⚠️ The path secret is the only thing guarding these — Upstox sends webhooks with no
 > signature, HMAC or IP allowlist. Treat the full URLs as credentials.
 
 ---
 
-## 4. WebSocket URLs
-
-These are Upstox's, not ours, and are **not** configured anywhere — the engine
-fetches an authorized URL at runtime and connects outbound.
+## 4. WebSocket Connections
 
 | Purpose | Endpoint |
 |---|---|
@@ -109,15 +84,4 @@ fetches an authorized URL at runtime and connects outbound.
 | Market data socket | `wss://wsfeeder-api.upstox.com/market-data-feeder/v3/upstox-developer-api/feeds?requestId=…` |
 | Portfolio (orders/fills) | `wss://api.upstox.com/v2/feed/portfolio-stream-feed?update_types=order,gtt_order,position,holding` |
 
-The market socket URL is single-use and issued per authorize call — it cannot be
-hardcoded. Market data is protobuf; the portfolio stream is JSON.
-
-**Standard tier allows 2 WebSocket connections total.** The engine uses both. The
-browser must never open one; it receives ticks relayed from the engine.
-
----
-
-## 5. CI
-
-`.github/workflows/ci.yml` runs typecheck, 203 tests, and a production build of the
-control plane on every push and PR.
+The engine opens and maintains both connections from the Hostinger VPS static IP.

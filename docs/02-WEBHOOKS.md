@@ -1,13 +1,11 @@
 # Webhook & Callback Endpoints
 
-The control plane (Vercel) terminates all **inbound** Upstox traffic. The engine
-(static-IP host) makes all **outbound** calls. This split matters:
+The control plane terminates all **inbound** Upstox traffic. The engine
+(running on Hostinger VPS with a static IP) makes all **outbound** calls. This architecture ensures:
 
-- **Inbound is fine on Vercel.** Webhook receivers are request-scoped, which is exactly
-  what serverless does well. No static IP is involved in receiving a POST.
-- **Outbound is not.** Every order/funds/position call must originate from the account's
-  allowlisted IP or it returns `401 UDAPI1221`. Vercel's egress IPs rotate, so the engine
-  cannot live there. See `00-PLAN.md` §12.
+- **Inbound is safe on the web plane.** Webhook receivers parse order hints and trigger engine state reconciliation.
+- **Outbound is protected on Hostinger VPS.** Every order/funds/position call originates from the account's
+  allowlisted static IP, avoiding `401 UDAPI1221`. See `00-PLAN.md` §12.
 
 ---
 
@@ -84,11 +82,10 @@ in the server log.
 ## Deploying
 
 ```bash
-vercel login                 # one-time, interactive
-./scripts/deploy-web.sh      # links, pushes env, deploys, prints the URLs
+./scripts/deploy-hostinger.sh      # runs tests, builds Docker containers, deploys to Hostinger
 ```
 
-The script prints the three URLs to paste into
+The script prints the URLs to paste into
 <https://account.upstox.com/developer/apps>. On the app config page, enable **both**
 "Order updates" and "GTT order updates" — GTT updates are off by default, and without them
 the bracket legs (§0.1) report nothing.
@@ -98,7 +95,7 @@ the bracket legs (§0.1) report nothing.
 ## Verifying a deployment
 
 ```bash
-HOST=your-app.vercel.app
+HOST=your-hostinger-domain.com
 SEC=$(grep TF_WEBHOOK_SECRET .secrets.local | cut -d= -f2)
 
 curl -s https://$HOST/api/health
