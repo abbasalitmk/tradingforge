@@ -19,6 +19,8 @@ const schema = z.object({
   UPSTOX_API_SECRET: z.string().min(4),
   UPSTOX_REDIRECT_URI: z.string().url().default('https://tradeforger.internal/api/auth/callback'),
   UPSTOX_ANALYTICS_TOKEN: z.string().optional(),
+  /** Daily trading token pasted from the Upstox console; the dashboard login replaces it. */
+  UPSTOX_ACCESS_TOKEN: z.string().optional(),
   UPSTOX_SANDBOX_TOKEN: z.string().optional(),
 
   DATABASE_URL: z.string().url().default('postgresql://abba@localhost:5432/tradeforger'),
@@ -99,12 +101,14 @@ export function loadConfig(baseEnv: NodeJS.ProcessEnv = process.env): EngineConf
   const apiKey = merged['UPSTOX_API_KEY'] || merged['UPSTOCK_API_KEY'] || merged['UPSTOCK_KEY'];
   const apiSecret = merged['UPSTOX_API_SECRET'] || merged['UPSTOCK_API_SECRET'] || merged['UPSTOCK_SECRET'];
   const analyticsToken = merged['UPSTOX_ANALYTICS_TOKEN'] || merged['UPSTOCK_ANALYTICS_KEY'] || merged['UPSTOCK_ANALYTICS_TOKEN'];
+  const accessToken = merged['UPSTOX_ACCESS_TOKEN'] || merged['UPSTOCK_ACCESS_TOKEN'];
 
   const normalized = {
     ...merged,
     UPSTOX_API_KEY: apiKey,
     UPSTOX_API_SECRET: apiSecret,
     UPSTOX_ANALYTICS_TOKEN: analyticsToken,
+    UPSTOX_ACCESS_TOKEN: accessToken,
   };
 
   const parsed = schema.safeParse(normalized);

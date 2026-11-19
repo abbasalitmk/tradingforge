@@ -32,8 +32,7 @@ if [[ -f .env ]]; then
   source .env
 fi
 
-UPSTOX_API_KEY="${UPSTOX_API_KEY:-${UPSTOCK_API_KEY:-b08b0b88-0e9b-4f44-894f-a68d17d20465}}"
-: "${TF_ENGINE_URL:=https://engine.invalid}"   # replace with your Cloudflare Tunnel hostname
+UPSTOX_API_KEY="${UPSTOX_API_KEY:-${UPSTOCK_API_KEY:?set UPSTOX_API_KEY in .env}}"
 
 echo "→ Linking project '$PROJECT'…"
 vercel link --yes --project "$PROJECT" >/dev/null
@@ -51,7 +50,12 @@ push_env TF_MODE               "PAPER"
 push_env UPSTOX_API_KEY        "$UPSTOX_API_KEY"
 push_env TF_WEBHOOK_SECRET     "$TF_WEBHOOK_SECRET"
 push_env TF_ENGINE_TOKEN       "$TF_ENGINE_TOKEN"
-push_env TF_ENGINE_URL         "$TF_ENGINE_URL"
+# Only when given: a placeholder here would silently disconnect the dashboard.
+if [[ -n "${TF_ENGINE_URL:-}" ]]; then
+  push_env TF_ENGINE_URL       "$TF_ENGINE_URL"
+else
+  echo "  · TF_ENGINE_URL unchanged (set it in .env to your Cloudflare Tunnel hostname)"
+fi
 push_env VERCEL_PREVIEW_FEEDBACK_ENABLED "0"
 
 echo "→ Deploying…"

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Candle } from '@tradeforger/core';
 import { sma, ema, macd, atr, trueRange, supertrend, adx } from './trend.ts';
-import { rsi, bollinger, stochastic, vwap, relativeVolume } from './momentum.ts';
+import { rsi, bollinger, stochastic, vwap, relativeVolume, obv } from './momentum.ts';
 import { openingRange, orbState, findLevels, gapPct } from './structure.ts';
 import { latest } from './series.ts';
 
@@ -240,5 +240,12 @@ describe('gap', () => {
     expect(gapPct(100, 102)).toBeCloseTo(0.02, 9);
     expect(gapPct(100, 98)).toBeCloseTo(-0.02, 9);
     expect(gapPct(0, 100)).toBe(0);
+  });
+});
+
+describe('OBV', () => {
+  it('adds volume on up-closes, subtracts on down-closes, holds on unchanged', () => {
+    const c = [100, 101, 100, 100, 102].map((close, i) => ({ ts: i, open: close, high: close, low: close, close, volume: 10 * (i + 1) }));
+    expect(obv(c)).toEqual([0, 20, -10, -10, 40]);
   });
 });

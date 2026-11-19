@@ -7,11 +7,18 @@ import { BB_SQUEEZE_BREAKOUT } from './strategies/bbSqueeze.ts';
 import { RSI_MEAN_REVERSION } from './strategies/rsiMeanReversion.ts';
 import { DONCHIAN_BREAKOUT } from './strategies/donchianBreakout.ts';
 import { GMMA_TREND } from './strategies/gmma.ts';
+import { ICHIMOKU_CLOUD } from './strategies/ichimoku.ts';
+import { SMC_STRUCTURE } from './strategies/smc.ts';
+import { CANDLESTICK_PATTERNS } from './strategies/candlestick.ts';
+import { TECHNICAL_COMPOSITE } from './strategies/technicalComposite.ts';
 
 // The definition contract lives in definition.ts (so strategy files can use it
 // without an import cycle); re-exported here so the catalog's API is unchanged.
 export { type Params, type ParamBound, type StrategyDefinition, tagged, clampParams } from './definition.ts';
-export { VWAP_PULLBACK, SUPERTREND_MOMENTUM, BB_SQUEEZE_BREAKOUT, RSI_MEAN_REVERSION, DONCHIAN_BREAKOUT, GMMA_TREND };
+export {
+  VWAP_PULLBACK, SUPERTREND_MOMENTUM, BB_SQUEEZE_BREAKOUT, RSI_MEAN_REVERSION, DONCHIAN_BREAKOUT, GMMA_TREND,
+  ICHIMOKU_CLOUD, SMC_STRUCTURE, CANDLESTICK_PATTERNS, TECHNICAL_COMPOSITE,
+};
 
 export const ORB_SUPERTREND: StrategyDefinition = {
   id: 'ORB_SUPERTREND',
@@ -63,6 +70,11 @@ export const STRATEGY_CATALOG: StrategyDefinition[] = [
   RSI_MEAN_REVERSION,
   DONCHIAN_BREAKOUT,
   GMMA_TREND,
+  // From the Vibe-Trading skills: ichimoku, smc, candlestick, technical-basic.
+  ICHIMOKU_CLOUD,
+  SMC_STRUCTURE,
+  CANDLESTICK_PATTERNS,
+  TECHNICAL_COMPOSITE,
 ];
 
 export const getStrategy = (id: string): StrategyDefinition | undefined =>

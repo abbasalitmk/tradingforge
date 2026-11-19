@@ -85,12 +85,12 @@ https://<assigned-host>/api/auth/callback
 **Webhook URL** — enable **both** "Order updates" and "GTT order updates";
 GTT updates default to off and without them bracket legs report nothing.
 ```
-https://<assigned-host>/api/webhooks/upstox/order/9ed50257864e86e587ce90ddd87d615966f81e553120d79b8e19657a7fd89457
+https://<assigned-host>/api/webhooks/upstox/order/<TF_WEBHOOK_SECRET>
 ```
 
 **Notifier URL** — postback for the semi-automated daily token flow.
 ```
-https://<assigned-host>/api/webhooks/upstox/token/9ed50257864e86e587ce90ddd87d615966f81e553120d79b8e19657a7fd89457
+https://<assigned-host>/api/webhooks/upstox/token/<TF_WEBHOOK_SECRET>
 ```
 
 > The path secret is the only thing guarding these — Upstox sends webhooks with no

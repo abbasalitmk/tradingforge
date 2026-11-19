@@ -96,7 +96,7 @@ is a base-URL change.
 The API secret, access token and Groq key were pasted in plaintext into a chat transcript.
 Treat all three as compromised.
 
-1. **Rotate the API secret** (`wnom4e98ol`) at https://account.upstox.com/developer/apps.
+1. **Rotate the API secret** at https://account.upstox.com/developer/apps.
 2. **Rotate the Groq key** at https://console.groq.com/keys.
 3. The Analytics Token (`…DIKcorbn`) is read-only and IP-locked, so exposure is low-risk — but
    regenerate it with the others.

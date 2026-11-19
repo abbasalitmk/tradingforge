@@ -6,6 +6,17 @@ const config: NextConfig = {
   // Disable immutable static assets so Vercel can deploy preview outputs without
   // failing on preview comments toolbar patching.
   supportsImmutableAssets: false,
+  // Workspace packages ship TypeScript source; the market routes import them.
+  transpilePackages: [
+    '@tradeforger/core',
+    '@tradeforger/indicators',
+    '@tradeforger/strategy',
+    '@tradeforger/fno',
+    '@tradeforger/upstox',
+    '@tradeforger/ai',
+    '@tradeforger/backtest',
+    '@tradeforger/data',
+  ],
   async headers() {
     return [
       {
