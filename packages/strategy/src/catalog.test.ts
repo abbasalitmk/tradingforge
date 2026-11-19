@@ -93,7 +93,10 @@ describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) 
 // The catalog strategies added for the hybrid engine guard against being
 // handed bars from the future (the original two rely on their caller).
 describe('lookahead guard', () => {
-  const guarded = ['VWAP_PULLBACK', 'SUPERTREND_MOMENTUM', 'BB_SQUEEZE_BREAKOUT', 'GMMA_TREND', 'RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT'];
+  const guarded = [
+    'VWAP_PULLBACK', 'SUPERTREND_MOMENTUM', 'BB_SQUEEZE_BREAKOUT', 'GMMA_TREND', 'RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT',
+    'ICHIMOKU_CLOUD', 'SMC_STRUCTURE', 'CANDLESTICK_PATTERNS', 'TECHNICAL_COMPOSITE',
+  ];
   it.each(guarded)('%s ignores bars after the clock', (id) => {
     const def = getStrategy(id)!;
     const series = bars(def, up(1, def.timeframe));
@@ -121,8 +124,8 @@ describe('session handling with multi-day warmup', () => {
 });
 
 describe('long-only swing strategies', () => {
-  it('RSI mean reversion and Donchian never short by default', () => {
-    for (const id of ['RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT']) {
+  it('daily strategies that would hold equity overnight never short by default', () => {
+    for (const id of ['RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT', 'ICHIMOKU_CLOUD', 'CANDLESTICK_PATTERNS']) {
       const def = getStrategy(id)!;
       expect(signalsOf(def, 'down').every((x) => x.s.side === 'BUY')).toBe(true);
     }

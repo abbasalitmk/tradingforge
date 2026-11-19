@@ -131,3 +131,17 @@ export function relativeVolume(candles: readonly Candle[], period = 20): Series 
   }
   return out;
 }
+
+/** On-balance volume: volume added on up-closes, subtracted on down-closes. */
+export function obv(candles: readonly Candle[]): number[] {
+  const out: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < candles.length; i++) {
+    if (i > 0) {
+      const d = candles[i]!.close - candles[i - 1]!.close;
+      acc += d > 0 ? candles[i]!.volume : d < 0 ? -candles[i]!.volume : 0;
+    }
+    out.push(acc);
+  }
+  return out;
+}
