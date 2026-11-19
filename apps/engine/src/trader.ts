@@ -106,6 +106,12 @@ export class Trader {
     this.rollDay();
   }
 
+  /** Dynamically switch the underlying broker implementation (e.g. PAPER <-> UPSTOX). */
+  setBroker(b: BrokerPort): void {
+    (this.d as { broker: BrokerPort }).broker = b;
+    b.onEvent((e) => { void this.serial(() => this.apply(e)); });
+  }
+
   private log(msg: string): void {
     (this.d.log ?? console.log)(msg);
   }

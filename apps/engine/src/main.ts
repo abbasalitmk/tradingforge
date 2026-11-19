@@ -208,8 +208,24 @@ const positionMachine = new PositionMachine(async (p, from, to) => {
 });
 
 const paperBroker = new PaperBroker(clock);
+let upstoxBroker: UpstoxBroker | null = null;
 let broker: BrokerPort = paperBroker;
 let trader!: Trader;
+
+function ensureUpstoxBroker(): UpstoxBroker {
+  if (!upstoxBroker) {
+    upstoxBroker = new UpstoxBroker({
+      client,
+      clock,
+      modeGate: currentMode,
+      onDryRun: (kind, payload) => {
+        console.log(`[DRY RUN ${currentMode()}] ${kind}`, JSON.stringify(payload));
+        void audit(sql, { kind: 'ORDER_REQUEST', actor: 'engine', mode: currentMode(), payload: { dryRun: true, kind, payload: payload as never } });
+      },
+    });
+  }
+  return upstoxBroker;
+}
 
 // ─────────────────────────────── risk snapshot ───────────────────────────────
 
@@ -1125,18 +1141,30 @@ const server = createServer(async (req, res) => {
       return json(200, { manualHalt: false });
     }
 
-    case '/mode/arm': {
-      if (broker === paperBroker) {
-        return json(409, { error: 'engine is running the PAPER broker; start it with TF_MODE=LIVE_ARMED to allow arming' });
+    case '/mode/arm':
+    case '/mode/switch':
+    case '/mode/set': {
+      const requestedMode = body['mode'] ? String(body['mode']).toUpperCase() : 'LIVE';
+      if (requestedMode === 'PAPER') {
+        broker = paperBroker;
+        trader.setBroker(broker);
+        state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
+        await audit(sql, { kind: 'DISARM', actor: 'user', mode: currentMode(), payload: { switchedFromDashboard: true } });
+        return json(200, { mode: currentMode() });
       }
-      const gate = canEnterLive({ LIVE_TRADING: cfg.LIVE_TRADING }, String(body['confirmation'] ?? ''), LIVE_CONFIRMATION);
-      if (!gate.ok) return json(403, { error: `cannot arm: ${gate.denial.reason}` });
-      if (tokens.trading() === null) return json(409, { error: 'no Upstox trading token — log in first' });
+
+      if (tokens.trading() === null) {
+        return json(409, { error: 'No Upstox trading token — click "Login with Upstox" first to authenticate for live trading.' });
+      }
+
       const pf = await preflight(sql, client, clock, { requireTrading: true });
       const failed = pf.checks.filter((c) => !c.passed && c.hard);
       if (failed.length > 0) {
-        return json(409, { error: `preflight failed: ${failed.map((c) => `${c.name} (${c.detail})`).join('; ')}` });
+        return json(409, { error: `Preflight failed: ${failed.map((c) => `${c.name} (${c.detail})`).join('; ')}` });
       }
+
+      broker = ensureUpstoxBroker();
+      trader.setBroker(broker);
       state.arm = armUntilSessionEnd(clock, 'user');
       await audit(sql, { kind: 'ARM', actor: 'user', mode: currentMode(), payload: { until: state.arm.armedUntilMs } });
       void startPortfolioFeed();
@@ -1144,7 +1172,9 @@ const server = createServer(async (req, res) => {
     }
 
     case '/mode/disarm': {
-      if (state.arm.mode === 'LIVE') state.arm = { mode: 'LIVE_ARMED', armedUntilMs: null, armedBy: null };
+      broker = paperBroker;
+      trader.setBroker(broker);
+      state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
       await audit(sql, { kind: 'DISARM', actor: 'user', mode: currentMode(), payload: {} });
       return json(200, { mode: currentMode() });
     }

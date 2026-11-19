@@ -28,6 +28,8 @@ const POST_PATHS = new Set([
   '/fno/analyze',
   '/mode/arm',
   '/mode/disarm',
+  '/mode/switch',
+  '/mode/set',
   '/halt/reset',
 ]);
 

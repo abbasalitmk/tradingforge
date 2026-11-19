@@ -6,6 +6,7 @@ import MarketScanner from './components/MarketScanner.tsx';
 import Hint from './components/Hint.tsx';
 import BeginnerCard from './components/BeginnerCard.tsx';
 import LiveStatusBar from './components/LiveStatusBar.tsx';
+import TradingModeToggle, { type TradingMode } from './components/TradingModeToggle.tsx';
 import type { Catalog } from './components/ui.tsx';
 
 interface WatchlistItem {
@@ -1337,66 +1338,44 @@ export default function Dashboard() {
           gap: 12,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
-          <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Trading Mode:</span>
-          <span className="mono" style={{ fontWeight: 700, color: isRealMoney ? 'var(--danger)' : 'var(--fg)' }}>
-            {s.mode}
-          </span>
-          <span style={{ color: 'var(--muted)' }}>
-            base <span className="mono">{s.baseMode}</span>
-          </span>
-          <span
-            style={{
-              fontSize: 11,
-              padding: '1px 6px',
-              borderRadius: 4,
-              fontWeight: 700,
-              background: s.isArmed ? 'var(--danger-subtle)' : 'var(--panel-subtle)',
-              border: `1px solid ${s.isArmed ? 'var(--danger)' : 'var(--line)'}`,
-              color: s.isArmed ? 'var(--danger)' : 'var(--muted)',
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Active Trading Mode:</span>
+          <TradingModeToggle
+            onChange={(m) => {
+              if (state) {
+                setState({
+                  ...state,
+                  mode: m === 'LIVE' ? 'LIVE' : 'PAPER',
+                  isArmed: m === 'LIVE',
+                });
+              }
+              showToast(
+                m === 'LIVE'
+                  ? '🔴 Switched to LIVE TRADING (Real Money Orders Active)'
+                  : '🟢 Switched to PAPER MODE (Simulated Risk-Free Trading)'
+              );
             }}
-          >
-            {s.isArmed ? 'ARMED — REAL MONEY' : 'NOT ARMED'}
-          </span>
+          />
+          <Hint
+            term="Paper vs Live"
+            explanation="PAPER MODE uses virtual simulated funds with real Upstox market data (zero risk). LIVE TRADING routes real orders with real money directly through your Upstox account."
+          />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {!armOpen && (
-            <button
-              onClick={() => {
-                setArmOpen(true);
-                setArmError(null);
-                setArmPhrase('');
-              }}
-              style={{
-                background: 'rgba(248,81,73,0.15)',
-                border: '1px solid var(--danger)',
-                color: 'var(--danger)',
-                borderRadius: 6,
-                padding: '6px 12px',
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              Arm LIVE…
-            </button>
-          )}
-          <button
-            onClick={handleDisarm}
+          <span
             style={{
-              background: 'var(--line)',
-              border: 'none',
-              color: 'var(--fg)',
-              borderRadius: 6,
-              padding: '6px 12px',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
+              fontSize: 11,
+              padding: '2px 8px',
+              borderRadius: 4,
+              fontWeight: 700,
+              background: s.isArmed || s.mode === 'LIVE' ? 'var(--danger-subtle)' : 'var(--ok-subtle)',
+              border: `1px solid ${s.isArmed || s.mode === 'LIVE' ? 'var(--danger)' : 'var(--ok)'}`,
+              color: s.isArmed || s.mode === 'LIVE' ? 'var(--danger)' : 'var(--ok)',
             }}
           >
-            Disarm
-          </button>
+            {s.isArmed || s.mode === 'LIVE' ? '🔴 LIVE ARMED — REAL MONEY' : '🟢 PAPER — SIMULATED'}
+          </span>
         </div>
 
         {armOpen && (

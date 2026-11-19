@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import ThemeToggle from './components/ThemeToggle';
+import TradingModeToggle from './components/TradingModeToggle';
 
 export const metadata: Metadata = {
   title: 'TradeForger | Autonomous Trading Control Plane',
@@ -75,25 +76,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </svg>
             </div>
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: '-0.02em', color: 'var(--fg)' }}>
                   TradeForger
                 </span>
-                <span
-                  style={{
-                    fontSize: 10.5,
-                    fontWeight: 700,
-                    letterSpacing: '0.04em',
-                    padding: '2px 8px',
-                    borderRadius: 999,
-                    textTransform: 'uppercase',
-                    background: LIVE ? 'var(--danger-subtle)' : 'var(--panel-subtle)',
-                    border: `1px solid ${LIVE ? 'var(--danger)' : 'var(--line)'}`,
-                    color: LIVE ? 'var(--danger)' : 'var(--muted)',
-                  }}
-                >
-                  {MODE} MODE
-                </span>
+                <TradingModeToggle compact />
               </div>
               <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
                 <span>Autonomous Trading Desk</span>
