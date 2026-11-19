@@ -1,87 +1,81 @@
-# Hostinger Deployment Guide
+# Hostinger Deployment Guide (Direct VPS)
 
-TradeForger is architected to run in production on **Hostinger VPS** using Docker Compose. Hostinger VPS provides a persistent static IP (required by Upstox API for order routing and session validation `401 UDAPI1221`), and keeps the 6.5-hour market data WebSocket connection alive continuously.
-
-| Component | Port | Description |
-|---|---|---|
-| **Web Dashboard** (`@tradeforger/web`) | `3000` | Next.js frontend, OAuth callback, Upstox webhook gateway, mode toggle |
-| **Trading Engine** (`@tradeforger/engine`) | `4000` | Automated trading execution, risk guards, Upstox WebSocket feed, AI analysis |
-| **Reverse Proxy** (Caddy / Nginx) | `80`, `443` | Automated SSL (Let's Encrypt), exposes Web Dashboard & protects Engine internally |
+Deploy TradeForger directly to your **Hostinger VPS** using Docker Compose. All secrets and `.env` settings remain strictly on your Hostinger server and your local machine — **no secrets on GitHub, no GitHub Actions CI/CD needed**.
 
 ---
 
-## 1. Quick Deploy (`scripts/deploy-hostinger.sh`)
+## 1. How to Add and Edit `.env` Directly on Hostinger
 
-TradeForger includes an automated deploy script supporting both Hostinger MCP / API and SSH Docker Compose:
+You can add/edit your `.env` directly on your Hostinger server without using GitHub at all:
+
+### Option A: Using Hostinger hPanel
+1. Log in to [Hostinger hPanel](https://hpanel.hostinger.com).
+2. Go to **VPS** $\to$ Select your VPS.
+3. Open **File Manager** (or **Browser Terminal**).
+4. Navigate to `/opt/tradeforger/.env`.
+5. Edit your values directly and save.
+
+### Option B: Via SSH from your terminal
+Run this one command from your local machine to open and edit `.env` directly on your VPS:
+```bash
+ssh root@<YOUR_HOSTINGER_VPS_IP> "nano /opt/tradeforger/.env"
+```
+
+### Option C: Automatic 1-Time Upload via Deploy Script
+If you already have a local `.env` file on your computer, the deploy script can copy it directly to your VPS over secure SSH on the first deploy.
+
+---
+
+## 2. Deploying with the Deploy Script
+
+Run the deployment script from your project root:
 
 ```bash
-# Set your Hostinger credentials in .env or environment
-export HOSTINGER_API_TOKEN="your_hostinger_api_token"
-export HOSTINGER_VPS_HOST="your.vps.ip.or.domain"
-
-./scripts/deploy-hostinger.sh
+./scripts/deploy-hostinger.sh <YOUR_HOSTINGER_VPS_IP>
 ```
+*(Or set `export HOSTINGER_VPS_HOST=<YOUR_HOSTINGER_VPS_IP>` and run `npm run deploy:hostinger`)*
 
-The script performs:
-1. **Pre-flight verification**: runs typechecks (`npm run typecheck`) and all test suites (`npm test`).
-2. **Environment validation**: verifies required Upstox & AI keys.
-3. **Container build & deploy**: builds multi-stage standalone Next.js & Engine containers.
-4. **Health check**: verifies `/api/health` responds with HTTP 200.
-5. **Prints Upstox configuration**: prints redirect and webhook URLs ready to paste into your Upstox Developer App.
+### What the deploy script does:
+1. **Tests locally**: Runs `npm run typecheck` and `npm test` (all 435 tests).
+2. **Syncs code**: Copies project files to `/opt/tradeforger` on your VPS, strictly ignoring secrets (`.env*`, `.secrets.local`, `.git`).
+3. **Preserves `.env`**: If `/opt/tradeforger/.env` already exists on Hostinger, the script leaves it untouched so your server settings are never overwritten.
+4. **Starts Docker**: Runs `docker compose up -d --build` on Hostinger VPS.
+5. **Prints URLs**: Displays the exact Redirect URI and Webhook URLs to paste into Upstox.
 
 ---
 
-## 2. GitHub Actions CI/CD (Auto-Deploy on Git Push)
+## 3. Managing the App on Hostinger
 
-Whenever you push to the `main` branch, `.github/workflows/deploy-hostinger.yml` runs automated verification and deploys directly to your Hostinger VPS.
+Once deployed, you can manage the application on your VPS anytime:
 
-### Configure GitHub Repository Secrets
-In your GitHub Repository (`Settings` → `Secrets and variables` → `Actions`):
+```bash
+# View live application logs
+ssh root@<HOSTINGER_VPS_IP> "cd /opt/tradeforger && docker compose logs -f"
 
-| Secret Name | Description | Example |
-|---|---|---|
-| `HOSTINGER_HOST` | Hostinger VPS IP or domain | `194.163.x.x` |
-| `HOSTINGER_USER` | SSH user (typically root) | `root` |
-| `HOSTINGER_SSH_KEY` | Private SSH key matching Hostinger VPS authorized keys | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
-| `HOSTINGER_API_TOKEN` | (Optional) Hostinger API token from hPanel | `8Fyu3zkD...` |
-| `UPSTOX_API_KEY` | Upstox API Key | `...` |
-| `UPSTOX_API_SECRET` | Upstox API Secret | `...` |
-| `TF_WEBHOOK_SECRET` | 64-hex webhook secret | `$(openssl rand -hex 32)` |
-| `TF_ENGINE_TOKEN` | 64-hex engine auth token | `$(openssl rand -hex 32)` |
+# Restart application
+ssh root@<HOSTINGER_VPS_IP> "cd /opt/tradeforger && docker compose restart"
+
+# Check container status
+ssh root@<HOSTINGER_VPS_IP> "docker ps"
+```
 
 ---
 
-## 3. URLs to Register with Upstox
+## 4. Upstox Developer App Configuration
 
-Paste these into <https://account.upstox.com/developer/apps>, replacing `<your-domain>` with your Hostinger VPS domain or IP:
+Paste these into <https://account.upstox.com/developer/apps>:
 
-**Redirect URI**
-```
-https://<your-domain>/api/auth/callback
-```
-
-**Webhook URL** — enable **both** "Order updates" and "GTT order updates";
-GTT updates default to off and without them bracket legs report nothing:
-```
-https://<your-domain>/api/webhooks/upstox/order/<TF_WEBHOOK_SECRET>
-```
-
-**Notifier URL** — postback for the semi-automated daily token flow:
-```
-https://<your-domain>/api/webhooks/upstox/token/<TF_WEBHOOK_SECRET>
-```
-
-> ⚠️ The path secret is the only thing guarding these — Upstox sends webhooks with no
-> signature, HMAC or IP allowlist. Treat the full URLs as credentials.
-
----
-
-## 4. WebSocket Connections
-
-| Purpose | Endpoint |
-|---|---|
-| Market data authorize | `GET https://api.upstox.com/v3/feed/market-data-feed/authorize` |
-| Market data socket | `wss://wsfeeder-api.upstox.com/market-data-feeder/v3/upstox-developer-api/feeds?requestId=…` |
-| Portfolio (orders/fills) | `wss://api.upstox.com/v2/feed/portfolio-stream-feed?update_types=order,gtt_order,position,holding` |
-
-The engine opens and maintains both connections from the Hostinger VPS static IP.
+- **Redirect URI**:
+  ```
+  http://<HOSTINGER_VPS_IP>:3000/api/auth/callback
+  ```
+- **Webhook URL** (Enable "Order updates" AND "GTT order updates"):
+  ```
+  http://<HOSTINGER_VPS_IP>:3000/api/webhooks/upstox/order/<TF_WEBHOOK_SECRET>
+  ```
+- **Notifier URL**:
+  ```
+  http://<HOSTINGER_VPS_IP>:3000/api/webhooks/upstox/token/<TF_WEBHOOK_SECRET>
+  ```
+- **Static IP Allowlist**:
+  Add your Hostinger VPS IP address so that Upstox authorizes live order execution without `UDAPI1221`.
