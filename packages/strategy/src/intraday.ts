@@ -1,6 +1,6 @@
 import {
   type Candle, type Signal, type TradingStyle, type Paise,
-  newSignalId, rupeesToPaise, istMinutes, SESSION,
+  newSignalId, rupeesToPaise, istMinutes, istDateKey, SESSION,
 } from '@tradeforger/core';
 import {
   closes, latest, prior, ema, atr, supertrend, adx,
@@ -68,6 +68,9 @@ export class IntradayProfile implements StrategyProfile {
     if (mins < SESSION.ENTRY_START || mins >= SESSION.ENTRY_END) return null;
 
     const last = candles[candles.length - 1]!;
+    // Warmup history spans prior sessions; before today's first bar exists the
+    // last bar is yesterday's close, and its breakout is not today's trade.
+    if (istDateKey(new Date(last.ts)) !== istDateKey(now)) return null;
     const price = last.close;
     const c = closes(candles);
 

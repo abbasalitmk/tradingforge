@@ -9,6 +9,7 @@
     "@tradeforger/upstox": "*", "@tradeforger/broker": "*", "@tradeforger/risk": "*",
     "@tradeforger/feed": "*", "@tradeforger/data": "*", "@tradeforger/indicators": "*",
     "@tradeforger/strategy": "*", "@tradeforger/execution": "*", "@tradeforger/ai": "*",
+    "@tradeforger/fno": "*", "@tradeforger/backtest": "*",
     "zod": "^3.25.76"
   }
 }

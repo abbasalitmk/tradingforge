@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "regions": ["bom1"],
+  "build": {
+    "env": {
+      "VERCEL_PREVIEW_FEEDBACK_ENABLED": "0"
+    }
+  },
   "functions": {
     "src/app/api/webhooks/**/route.ts": { "maxDuration": 15 },
     "src/app/api/**/route.ts": { "maxDuration": 30 }

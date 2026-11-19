@@ -2,7 +2,10 @@ import {
   type Result, ok, err, type OrderRequest, type OrderAck, type Fill,
   type Paise, type Mode, type Clock, type Tick, rupeesToPaise,
 } from '@tradeforger/core';
-import { BrokerError, type BrokerPort, type BracketSpec, type BracketAck } from './port.ts';
+import {
+  BrokerError, type BrokerPort, type BracketOrder, type BracketAck,
+  type BrokerEvent, type BrokerListener, type ExitRequest, type ExitLeg,
+} from './port.ts';
 
 export interface PaperConfig {
   /** Slippage applied against us, in basis points. Market orders in NSE
@@ -45,8 +48,11 @@ interface PaperOrder {
 
 interface PaperBracket {
   readonly id: string;
-  readonly spec: BracketSpec;
-  active: boolean;
+  readonly order: BracketOrder;
+  status: 'PENDING_ENTRY' | 'OPEN' | 'CLOSED' | 'CANCELLED';
+  /** Live stop level — moves only in the favourable direction when trailing. */
+  stop: Paise;
+  fillPrice: Paise | null;
 }
 
 /**
@@ -71,6 +77,7 @@ export class PaperBroker implements BrokerPort {
   private readonly clock: Clock;
   private readonly cfg: PaperConfig;
   private readonly rand: () => number;
+  private readonly listeners: BrokerListener[] = [];
   private seq = 0;
 
   constructor(clock: Clock, cfg: PaperConfig = DEFAULT_PAPER_CONFIG) {
@@ -152,65 +159,160 @@ export class PaperBroker implements BrokerPort {
     return ok(undefined);
   }
 
-  async placeBracket(spec: BracketSpec): Promise<Result<BracketAck, BrokerError>> {
-    if (spec.quantity < 1) {
+  onEvent(listener: BrokerListener): void {
+    this.listeners.push(listener);
+  }
+
+  private emit(e: BrokerEvent): void {
+    for (const l of this.listeners) l(e);
+  }
+
+  /** Paper state is always current; nothing to pull. */
+  async sync(): Promise<void> {}
+
+  async placeBracketOrder(o: BracketOrder): Promise<Result<BracketAck, BrokerError>> {
+    if (o.quantity < 1) {
       return err(new BrokerError('REJECTED', 'bracket quantity below 1'));
     }
+    // Reject an inverted bracket outright rather than guessing which leg the
+    // caller meant. Upstox validates leg geometry too.
+    const long = o.side === 'BUY';
+    const ordered = long
+      ? o.targetPrice > o.entryPrice && o.stopLossPrice < o.entryPrice
+      : o.targetPrice < o.entryPrice && o.stopLossPrice > o.entryPrice;
+    if (!ordered) {
+      return err(new BrokerError('REJECTED', `bracket legs on the wrong side of entry for a ${o.side}`));
+    }
+    const tick = this.lastTick.get(o.instrumentKey);
+    if (!tick) {
+      return err(new BrokerError(
+        'BLOCKED',
+        `no market data for ${o.instrumentKey} — refusing to invent a fill price`,
+      ));
+    }
+    if (this.cfg.latencyMs > 0) {
+      await new Promise((r) => setTimeout(r, this.cfg.latencyMs));
+    }
+
     const id = this.nextId('gtt');
-    this.brackets.set(id, { id, spec, active: true });
+    const b: PaperBracket = { id, order: o, status: 'PENDING_ENTRY', stop: o.stopLossPrice, fillPrice: null };
+    this.brackets.set(id, b);
+    if (o.entryTrigger === 'IMMEDIATE') this.fillEntry(b, rupeesToPaise(tick.ltp));
     return ok({ gttOrderId: id });
+  }
+
+  private fillEntry(b: PaperBracket, ltp: Paise): void {
+    const price = this.applySlippage(ltp, b.order.side);
+    b.status = 'OPEN';
+    b.fillPrice = price;
+    this.emit({
+      kind: 'ENTRY_FILLED', positionId: b.order.positionId,
+      quantity: b.order.quantity, avgPrice: price, at: this.clock.ms(),
+    });
+  }
+
+  private closeBracket(b: PaperBracket, leg: ExitLeg, price: Paise): void {
+    const exitSide = b.order.side === 'BUY' ? 'SELL' : 'BUY';
+    const id = this.nextId('paper');
+    this.orders.set(id, {
+      id,
+      req: {
+        positionId: b.order.positionId,
+        instrumentKey: b.order.instrumentKey,
+        side: exitSide,
+        quantity: b.order.quantity,
+        orderType: 'MARKET',
+        product: b.order.product,
+        validity: 'DAY',
+        price,
+        triggerPrice: price,
+        tag: `exit-${b.id}`,
+      },
+      status: 'FILLED',
+      filledQuantity: b.order.quantity,
+      averagePrice: price,
+      placedAt: this.clock.ms(),
+    });
+    b.status = 'CLOSED';
+    this.emit({
+      kind: 'EXIT_FILLED', positionId: b.order.positionId, leg,
+      quantity: b.order.quantity, avgPrice: price, at: this.clock.ms(),
+    });
   }
 
   async cancelBracket(gttOrderId: string): Promise<Result<void, BrokerError>> {
     const b = this.brackets.get(gttOrderId);
     if (!b) return err(new BrokerError('REJECTED', `unknown GTT ${gttOrderId}`));
-    b.active = false;
+    if (b.status === 'CLOSED' || b.status === 'CANCELLED') {
+      return err(new BrokerError('REJECTED', `GTT ${gttOrderId} already ${b.status.toLowerCase()}`));
+    }
+    const wasPending = b.status === 'PENDING_ENTRY';
+    b.status = 'CANCELLED';
+    if (wasPending) {
+      this.emit({ kind: 'ENTRY_FAILED', positionId: b.order.positionId, reason: 'cancelled before entry', at: this.clock.ms() });
+    }
     return ok(undefined);
   }
 
+  async exitPosition(req: ExitRequest): Promise<Result<OrderAck, BrokerError>> {
+    const tick = this.lastTick.get(req.instrumentKey);
+    if (!tick) {
+      return err(new BrokerError('BLOCKED', `no market data for ${req.instrumentKey} — cannot price the exit`));
+    }
+    const price = this.applySlippage(rupeesToPaise(tick.ltp), req.side);
+    const id = this.nextId('paper');
+    this.orders.set(id, {
+      id,
+      req: {
+        positionId: req.positionId, instrumentKey: req.instrumentKey, side: req.side,
+        quantity: req.quantity, orderType: 'MARKET', product: req.product, validity: 'DAY',
+        price, triggerPrice: price, tag: `exit-${req.positionId}`,
+      },
+      status: 'FILLED', filledQuantity: req.quantity, averagePrice: price, placedAt: this.clock.ms(),
+    });
+    this.emit({
+      kind: 'EXIT_FILLED', positionId: req.positionId, leg: 'MANUAL',
+      quantity: req.quantity, avgPrice: price, at: this.clock.ms(),
+    });
+    return ok({ brokerOrderId: id, acceptedAt: this.clock.ms() });
+  }
+
   /**
-   * Resolve brackets against a tick. Mirrors Upstox's GTT MULTIPLE semantics:
-   * whichever leg triggers first wins and the sibling is cancelled together
-   * with it, because both legs belong to one GTT order.
+   * Resolve brackets against a tick, mirroring GTT MULTIPLE: a pending entry
+   * triggers on its level; once open, whichever exit leg triggers first closes
+   * the whole bracket.
+   *
+   * The stop fills at the tick that crossed it, not at the stop level — a gap
+   * through the stop costs the gap, which is what happens on the exchange. The
+   * target fills at its level and never better. Both choices are pessimistic.
    */
   private settleBrackets(tick: Tick): void {
     const ltp = rupeesToPaise(tick.ltp);
     for (const b of this.brackets.values()) {
-      if (!b.active || b.spec.instrumentKey !== tick.instrumentKey) continue;
+      if (b.order.instrumentKey !== tick.instrumentKey) continue;
+      const o = b.order;
+      const long = o.side === 'BUY';
 
-      // A long position exits by SELLing: target above, stop below.
-      const long = b.spec.exitSide === 'SELL';
-      const hitTarget = long ? ltp >= b.spec.targetPrice : ltp <= b.spec.targetPrice;
-      const hitStop = long ? ltp <= b.spec.stopLossPrice : ltp >= b.spec.stopLossPrice;
+      if (b.status === 'PENDING_ENTRY') {
+        const triggered = o.entryTrigger === 'ABOVE' ? ltp >= o.entryPrice
+          : o.entryTrigger === 'BELOW' ? ltp <= o.entryPrice
+          : true;
+        if (triggered) this.fillEntry(b, ltp);
+        continue;
+      }
+      if (b.status !== 'OPEN') continue;
 
-      if (hitTarget || hitStop) {
-        // A tick is a point, so for a well-formed bracket (target beyond stop)
-        // only one leg can match. Both match only if the bracket is inverted —
-        // target on the wrong side of stop. Preferring the stop there means a
-        // malformed bracket exits at the worse price rather than booking a
-        // phantom profit, which is the safe way to be wrong.
-        const price = hitStop ? b.spec.stopLossPrice : b.spec.targetPrice;
-        const id = this.nextId('paper');
-        this.orders.set(id, {
-          id,
-          req: {
-            positionId: '' as never,
-            instrumentKey: b.spec.instrumentKey,
-            side: b.spec.exitSide,
-            quantity: b.spec.quantity,
-            orderType: 'MARKET',
-            product: b.spec.product,
-            validity: 'DAY',
-            price,
-            triggerPrice: price,
-            tag: `exit-${b.id}`,
-          },
-          status: 'FILLED',
-          filledQuantity: b.spec.quantity,
-          averagePrice: this.applySlippage(price, b.spec.exitSide),
-          placedAt: this.clock.ms(),
-        });
-        b.active = false;
+      if (o.trailingGap !== undefined && o.trailingGap > 0) {
+        const trailed = (long ? ltp - o.trailingGap : ltp + o.trailingGap) as Paise;
+        b.stop = (long ? Math.max(b.stop, trailed) : Math.min(b.stop, trailed)) as Paise;
+      }
+
+      const hitStop = long ? ltp <= b.stop : ltp >= b.stop;
+      const hitTarget = long ? ltp >= o.targetPrice : ltp <= o.targetPrice;
+      if (hitStop) {
+        this.closeBracket(b, 'STOPLOSS', this.applySlippage(ltp, long ? 'SELL' : 'BUY'));
+      } else if (hitTarget) {
+        this.closeBracket(b, 'TARGET', o.targetPrice);
       }
     }
   }
@@ -228,10 +330,18 @@ export class PaperBroker implements BrokerPort {
     return ok(fills);
   }
 
+  /** Flatten everything: open brackets exit at market, pending entries are cancelled. */
   async exitAllPositions(): Promise<Result<number, BrokerError>> {
     let n = 0;
     for (const b of this.brackets.values()) {
-      if (b.active) { b.active = false; n++; }
+      if (b.status === 'PENDING_ENTRY') {
+        await this.cancelBracket(b.id);
+      } else if (b.status === 'OPEN') {
+        const tick = this.lastTick.get(b.order.instrumentKey);
+        const ltp = tick ? rupeesToPaise(tick.ltp) : (b.fillPrice ?? b.order.entryPrice);
+        this.closeBracket(b, 'MANUAL', this.applySlippage(ltp, b.order.side === 'BUY' ? 'SELL' : 'BUY'));
+        n++;
+      }
     }
     for (const o of this.orders.values()) {
       if (o.status === 'PENDING') o.status = 'CANCELLED';
@@ -243,7 +353,8 @@ export class PaperBroker implements BrokerPort {
   inspect(): { orders: number; activeBrackets: number } {
     return {
       orders: this.orders.size,
-      activeBrackets: [...this.brackets.values()].filter((b) => b.active).length,
+      activeBrackets: [...this.brackets.values()]
+        .filter((b) => b.status === 'OPEN' || b.status === 'PENDING_ENTRY').length,
     };
   }
 }

@@ -1,0 +1,125 @@
+import { type Signal, type Clock, SystemClock } from '@tradeforger/core';
+import { type AiDecision, applyVerdict } from './confirm.ts';
+import { FreeRealtimeAnalyzer } from './free-analyzer.ts';
+import { BreakoutPatternAnalyzer } from './breakout-pattern-analyzer.ts';
+import { MlExpectancyAnalyzer } from './ml-expectancy-analyzer.ts';
+
+export interface MultiModelVote {
+  readonly model: string;
+  readonly verdict: 'CONFIRM' | 'CAUTION' | 'REJECT';
+  readonly confidence: number;
+  readonly rationale: string;
+  readonly flags: readonly string[];
+}
+
+export interface ConsensusDecision extends AiDecision {
+  readonly votes: readonly MultiModelVote[];
+  readonly consensusGrade: 'A+' | 'A' | 'B' | 'REJECT';
+  readonly agreeCount: number;
+  readonly totalModels: number;
+}
+
+export interface ConsensusOptions {
+  readonly clock?: Clock;
+}
+
+/**
+ * Multi-Model AI Consensus Engine.
+ *
+ * Runs 3 specialized zero-cost AI models in parallel on every trade candidate:
+ *  1. free-realtime-quant-v1 (Geometry, ATR noise, and session rules)
+ *  2. free-breakout-pattern-v1 (Price action, ORB breakout quality, VWAP bands)
+ *  3. free-ml-expectancy-v1 (Probabilistic win-rate and EV expectancy modeling)
+ *
+ * Combines their votes into a high-conviction consensus decision.
+ */
+export class AiConsensusEngine {
+  private readonly quantModel: FreeRealtimeAnalyzer;
+  private readonly patternModel: BreakoutPatternAnalyzer;
+  private readonly mlModel: MlExpectancyAnalyzer;
+  private readonly clock: Clock;
+
+  constructor(opts: ConsensusOptions = {}) {
+    this.clock = opts.clock ?? SystemClock;
+    this.quantModel = new FreeRealtimeAnalyzer({ clock: this.clock });
+    this.patternModel = new BreakoutPatternAnalyzer({ clock: this.clock });
+    this.mlModel = new MlExpectancyAnalyzer({ clock: this.clock });
+  }
+
+  evaluate(signal: Signal, externalDecision?: AiDecision | null): ConsensusDecision {
+    const started = this.clock.ms();
+
+    const d1 = this.quantModel.analyze(signal);
+    const d2 = this.patternModel.analyze(signal);
+    const d3 = this.mlModel.analyze(signal);
+
+    const votes: MultiModelVote[] = [
+      { model: d1.model, verdict: d1.verdict, confidence: d1.confidence, rationale: d1.rationale, flags: d1.riskFlags },
+      { model: d2.model, verdict: d2.verdict, confidence: d2.confidence, rationale: d2.rationale, flags: d2.riskFlags },
+      { model: d3.model, verdict: d3.verdict, confidence: d3.confidence, rationale: d3.rationale, flags: d3.riskFlags },
+    ];
+
+    if (externalDecision && !externalDecision.fellBack) {
+      votes.push({
+        model: externalDecision.model,
+        verdict: externalDecision.verdict,
+        confidence: externalDecision.confidence,
+        rationale: externalDecision.rationale,
+        flags: externalDecision.riskFlags,
+      });
+    }
+
+    const rejects = votes.filter((v) => v.verdict === 'REJECT');
+    const cautions = votes.filter((v) => v.verdict === 'CAUTION');
+    const confirms = votes.filter((v) => v.verdict === 'CONFIRM');
+
+    let verdict: 'CONFIRM' | 'CAUTION' | 'REJECT';
+    let grade: 'A+' | 'A' | 'B' | 'REJECT';
+
+    // Strict safety asymmetry: if ANY model finds a fatal flaw (e.g. inverted stop, severe counter-trend), reject
+    if (rejects.length > 0) {
+      verdict = 'REJECT';
+      grade = 'REJECT';
+    } else if (cautions.length >= 2 || confirms.length === 0) {
+      verdict = 'CAUTION';
+      grade = 'B';
+    } else if (confirms.length === votes.length) {
+      verdict = 'CONFIRM';
+      grade = 'A+';
+    } else {
+      verdict = 'CONFIRM';
+      grade = 'A';
+    }
+
+    const { sizeMultiplier, blocked } = applyVerdict({
+      verdict,
+      confidence: 0,
+      risk_flags: [],
+      rationale: '',
+    });
+
+    const avgConfidence = Math.round(
+      votes.reduce((sum, v) => sum + v.confidence, 0) / votes.length,
+    );
+
+    const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
+    const rationale = `Consensus ${verdict} [Grade ${grade}] with ${confirms.length}/${votes.length} models confirming. ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`;
+
+    return {
+      verdict,
+      confidence: avgConfidence,
+      riskFlags: allFlags,
+      rationale,
+      sizeMultiplier,
+      blocked,
+      latencyMs: Math.max(1, this.clock.ms() - started),
+      model: 'ai-consensus-ensemble-v1',
+      fellBack: false,
+      votes,
+      consensusGrade: grade,
+      agreeCount: confirms.length,
+      totalModels: votes.length,
+    };
+  }
+}
+

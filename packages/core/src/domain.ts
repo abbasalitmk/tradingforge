@@ -131,6 +131,8 @@ export interface Signal {
   readonly reasons: readonly string[];
   readonly indicators: Readonly<Record<string, number>>;
   readonly generatedAt: number;
+  /** Catalog id of the strategy that produced this, e.g. "ORB_SUPERTREND". */
+  readonly strategyId?: string;
 }
 
 export interface OrderRequest {

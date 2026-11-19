@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'TradeForger',
-  description: 'Autonomous equity trading control plane',
+  description: 'Autonomous trading control plane (equity intraday, swing, F&O)',
   robots: { index: false, follow: false },
 };
 
@@ -36,7 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </span>
         </header>
 
-        <main style={{ maxWidth: 920, margin: '0 auto', padding: '28px 20px 64px' }}>
+        <main style={{ maxWidth: 1320, margin: '0 auto', padding: '24px 20px 64px' }}>
           {children}
         </main>
 

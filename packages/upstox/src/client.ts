@@ -27,12 +27,19 @@ export const HISTORY_FROM: Record<Unit, string> = {
   months: '2000-01-01',
 };
 
-const toCandles = (rows: readonly S.CandleTuple[]): Candle[] =>
-  rows.map((r) => ({
-    ts: new Date(r[0]).getTime(),
-    open: r[1], high: r[2], low: r[3], close: r[4],
-    volume: r[5], oi: r[6],
-  }));
+/**
+ * Upstox returns candles NEWEST FIRST (verified live 2026-11-18). Everything
+ * downstream — indicators, the ORB, "last price" — assumes oldest first, so the
+ * order is normalised here, at the one place candles enter the system.
+ */
+export const toCandles = (rows: readonly S.CandleTuple[]): Candle[] =>
+  rows
+    .map((r) => ({
+      ts: new Date(r[0]).getTime(),
+      open: r[1], high: r[2], low: r[3], close: r[4],
+      volume: r[5], oi: r[6],
+    }))
+    .sort((a, b) => a.ts - b.ts);
 
 /**
  * Typed Upstox client.
@@ -54,6 +61,52 @@ export class UpstoxClient {
     this.http = new UpstoxHttp(tokens, opts);
   }
 
+  /**
+   * OAuth 2.0 Code-to-Token Exchange against Upstox login API.
+   */
+  async exchangeToken(params: {
+    code: string;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+  }): Promise<Result<{ accessToken: string; userProfile?: unknown }, UpstoxError>> {
+    const form = new URLSearchParams({
+      code: params.code,
+      client_id: params.clientId,
+      client_secret: params.clientSecret,
+      redirect_uri: params.redirectUri,
+      grant_type: 'authorization_code',
+    });
+
+    try {
+      const res = await fetch('https://api.upstox.com/v2/login/authorization/token', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: form.toString(),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return err(new UpstoxError('BAD_REQUEST', `Token exchange failed: ${res.statusText}`, res.status, undefined, body));
+      }
+
+      const data = body as { access_token?: string; user_id?: string; user_name?: string };
+      if (!data.access_token) {
+        return err(new UpstoxError('BAD_REQUEST', 'No access_token returned in token response', res.status, undefined, body));
+      }
+
+      return ok({
+        accessToken: data.access_token,
+        userProfile: data,
+      });
+    } catch (e) {
+      return err(new UpstoxError('NETWORK', e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   // ───────────────────────────── data plane ─────────────────────────────
 
   /** Batch LTP. Upstox accepts up to 500 instrument keys per call. */
@@ -71,6 +124,26 @@ export class UpstoxClient {
     return parsed.success
       ? ok(parsed.data.data)
       : err(new UpstoxError('BAD_REQUEST', `unexpected LTP shape: ${parsed.error.message}`));
+  }
+
+  /**
+   * Full quotes (OHLC, volume, net change) for up to 500 instruments. The
+   * scanner's coarse stage runs the whole universe through this in ~20 calls.
+   */
+  async quotes(instrumentKeys: readonly string[]): Promise<Result<S.FullQuote[], UpstoxError>> {
+    if (instrumentKeys.length === 0) return ok([]);
+    if (instrumentKeys.length > 500) {
+      return err(new UpstoxError('BAD_REQUEST', `${instrumentKeys.length} keys exceeds the 500 limit`));
+    }
+    const r = await this.http.request<unknown>('/v2/market-quote/quotes', {
+      query: { instrument_key: instrumentKeys.join(',') },
+      plane: 'data',
+    });
+    if (!r.ok) return r;
+    const parsed = S.fullQuoteResponse.safeParse(r.value);
+    return parsed.success
+      ? ok(Object.values(parsed.data.data))
+      : err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${parsed.error.message}`));
   }
 
   async historicalCandles(
@@ -139,6 +212,25 @@ export class UpstoxClient {
     return uri ? ok(uri) : err(new UpstoxError('BAD_REQUEST', 'no authorized redirect URI in response'));
   }
 
+  /**
+   * Full option chain for one underlying and expiry: per-strike LTP, bid/ask,
+   * OI, previous OI and greeks for both the call and the put.
+   */
+  async optionChain(
+    underlyingKey: string,
+    expiryDate: string,
+  ): Promise<Result<S.OptionStrike[], UpstoxError>> {
+    const r = await this.http.request<unknown>('/v2/option/chain', {
+      query: { instrument_key: underlyingKey, expiry_date: expiryDate },
+      plane: 'data',
+    });
+    if (!r.ok) return r;
+    const parsed = S.optionChainResponse.safeParse(r.value);
+    return parsed.success
+      ? ok(parsed.data.data)
+      : err(new UpstoxError('BAD_REQUEST', `unexpected option chain shape: ${parsed.error.message}`));
+  }
+
   // ──────────────────────────── trading plane ────────────────────────────
   // All of the below require the account's allowlisted static IP.
 
@@ -150,12 +242,38 @@ export class UpstoxClient {
     return this.http.request('/v2/user/profile', { plane: 'trading' });
   }
 
-  async positions(): Promise<Result<unknown, UpstoxError>> {
-    return this.http.request('/v2/portfolio/short-term-positions', { plane: 'trading' });
+  async positions(): Promise<Result<S.PositionEntry[], UpstoxError>> {
+    const r = await this.http.request<unknown>('/v2/portfolio/short-term-positions', { plane: 'trading' });
+    if (!r.ok) return r;
+    const parsed = S.positionsResponse.safeParse(r.value);
+    return parsed.success
+      ? ok(parsed.data.data)
+      : err(new UpstoxError('BAD_REQUEST', `unexpected positions shape: ${parsed.error.message}`));
   }
 
-  async orderBook(): Promise<Result<unknown, UpstoxError>> {
-    return this.http.request('/v2/order/retrieve-all', { plane: 'trading' });
+  async orderBook(): Promise<Result<S.OrderBookEntry[], UpstoxError>> {
+    const r = await this.http.request<unknown>('/v2/order/retrieve-all', { plane: 'trading' });
+    if (!r.ok) return r;
+    const parsed = S.orderBookEntries.safeParse(r.value);
+    return parsed.success
+      ? ok(parsed.data.data)
+      : err(new UpstoxError('BAD_REQUEST', `unexpected order book shape: ${parsed.error.message}`));
+  }
+
+  /** Exchange margin for a prospective order — what a futures lot actually locks up. */
+  async margin(instruments: ReadonlyArray<{
+    instrument_key: string; quantity: number; product: string; transaction_type: string; price?: number;
+  }>): Promise<Result<{ requiredMargin: number; finalMargin: number }, UpstoxError>> {
+    const r = await this.http.request<unknown>('/v2/charges/margin', {
+      method: 'POST', body: { instruments }, plane: 'trading',
+    });
+    if (!r.ok) return r;
+    const parsed = S.marginResponse.safeParse(r.value);
+    if (!parsed.success) {
+      return err(new UpstoxError('BAD_REQUEST', `unexpected margin shape: ${parsed.error.message}`));
+    }
+    const d = parsed.data.data;
+    return ok({ requiredMargin: d.required_margin ?? 0, finalMargin: d.final_margin ?? d.required_margin ?? 0 });
   }
 
   async placeOrder(body: Record<string, unknown>): Promise<Result<unknown, UpstoxError>> {
@@ -183,16 +301,36 @@ export class UpstoxClient {
     });
   }
 
+  /** The v3 cancel takes the id in a JSON body, not the query string. */
   async cancelGtt(gttOrderId: string): Promise<Result<unknown, UpstoxError>> {
     return this.http.request('/v3/order/gtt/cancel', {
-      method: 'DELETE', query: { gtt_order_id: gttOrderId }, category: 'order', plane: 'trading',
+      method: 'DELETE', body: { gtt_order_id: gttOrderId }, category: 'order', plane: 'trading',
     });
   }
 
-  async getGtt(gttOrderId?: string): Promise<Result<unknown, UpstoxError>> {
-    return this.http.request('/v3/order/gtt', {
+  async getGtt(gttOrderId?: string): Promise<Result<S.GttDetail[], UpstoxError>> {
+    const r = await this.http.request<unknown>('/v3/order/gtt', {
       query: gttOrderId ? { gtt_order_id: gttOrderId } : {}, plane: 'trading',
     });
+    if (!r.ok) return r;
+    const parsed = S.gttDetailResponse.safeParse(r.value);
+    return parsed.success
+      ? ok(parsed.data.data)
+      : err(new UpstoxError('BAD_REQUEST', `unexpected GTT shape: ${parsed.error.message}`));
+  }
+
+  /** Authorized wss:// URL for the JSON portfolio stream (orders, GTTs, positions). */
+  async portfolioFeedUrl(): Promise<Result<string, UpstoxError>> {
+    const r = await this.http.request<unknown>('/v2/feed/portfolio-stream-feed/authorize', {
+      query: { update_types: 'order,gtt_order,position,holding' },
+      plane: 'trading',
+    });
+    if (!r.ok) return r;
+    const parsed = S.wsAuthorizeResponse.safeParse(r.value);
+    const uri = parsed.success
+      ? (parsed.data.data.authorizedRedirectUri ?? parsed.data.data.authorized_redirect_uri)
+      : undefined;
+    return uri ? ok(uri) : err(new UpstoxError('BAD_REQUEST', 'no authorized redirect URI in response'));
   }
 
   async exitAllPositions(): Promise<Result<unknown, UpstoxError>> {

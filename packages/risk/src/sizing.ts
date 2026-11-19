@@ -18,6 +18,14 @@ export interface SizingInput {
   readonly avgDailyVolume: number;
   /** Capital already committed to open positions. */
   readonly deployedCapital: Paise;
+  /**
+   * Cash actually committed per unit, when it is not the entry price. A long
+   * option costs its premium (the default); a futures contract locks up
+   * exchange margin, a fraction of notional. Risk per unit is still entry−stop.
+   */
+  readonly costPerUnit?: Paise | undefined;
+  /** Exchange ceiling on a single order — the F&O freeze quantity. */
+  readonly maxQuantity?: number | undefined;
 }
 
 export type RejectReason =
@@ -35,6 +43,7 @@ export interface Caps {
   readonly deployedCapital: number;
   readonly liquidity: number;
   readonly margin: number;
+  readonly exchange: number;
 }
 export type CapName = keyof Caps;
 
@@ -75,6 +84,8 @@ export function size(input: SizingInput, limits: Limits): Sizing {
   } = input;
 
   if (entry <= 0) return { ok: false, reason: 'INVALID_STOP', detail: 'entry must be positive' };
+  const unitCost = input.costPerUnit ?? entry;
+  if (unitCost <= 0) return { ok: false, reason: 'INVALID_STOP', detail: 'cost per unit must be positive' };
 
   const riskPerShare = Math.abs(entry - stopLoss);
   if (riskPerShare <= 0) {
@@ -95,7 +106,7 @@ export function size(input: SizingInput, limits: Limits): Sizing {
       if (input.budget === undefined) {
         return { ok: false, reason: 'MISSING_MODE_INPUT', detail: 'budget required for FIXED_BUDGET' };
       }
-      candidate = Math.floor(input.budget / entry);
+      candidate = Math.floor(input.budget / unitCost);
       break;
     }
     case 'RISK_BASED': {
@@ -109,22 +120,23 @@ export function size(input: SizingInput, limits: Limits): Sizing {
 
   // ── hard caps, always applied regardless of mode ────────────────────────
   const remainingDeployable = Math.max(0, limits.maxDeployedCapitalPaise - deployedCapital);
-  if (remainingDeployable < entry) {
+  if (remainingDeployable < unitCost * Math.max(1, lotSize)) {
     return {
       ok: false,
       reason: 'DEPLOYED_CAP_REACHED',
-      detail: `deployed ${deployedCapital} of ${limits.maxDeployedCapitalPaise} paise; no room for one share`,
+      detail: `deployed ${deployedCapital} of ${limits.maxDeployedCapitalPaise} paise; no room for one ${lotSize > 1 ? 'lot' : 'share'}`,
     };
   }
 
   const caps: Caps = {
     mode: candidate,
-    maxSpendPerTrade: Math.floor(limits.maxSpendPerTradePaise / entry),
-    deployedCapital: Math.floor(remainingDeployable / entry),
+    maxSpendPerTrade: Math.floor(limits.maxSpendPerTradePaise / unitCost),
+    deployedCapital: Math.floor(remainingDeployable / unitCost),
     // Never take more than 1% of a day's volume — our own liquidity guard, not
     // Upstox's. Larger and the exit becomes the problem.
     liquidity: Math.floor(avgDailyVolume * 0.01),
-    margin: Math.floor(availableMargin / entry),
+    margin: Math.floor(availableMargin / unitCost),
+    exchange: input.maxQuantity ?? Number.MAX_SAFE_INTEGER,
   };
 
   let boundBy: CapName = 'mode';
@@ -142,7 +154,11 @@ export function size(input: SizingInput, limits: Limits): Sizing {
     const lots = Math.floor(quantity / lotSize);
     quantity = lots * lotSize;
     if (lots === 0) {
-      return { ok: false, reason: 'QTY_BELOW_ONE', detail: `below one lot of ${lotSize}` };
+      return {
+        ok: false,
+        reason: 'QTY_BELOW_ONE',
+        detail: `below one lot of ${lotSize} — ${boundBy} cap allows ${quantity} units (one lot costs ${lotSize * unitCost} paise)`,
+      };
     }
   }
 
@@ -150,7 +166,7 @@ export function size(input: SizingInput, limits: Limits): Sizing {
     return { ok: false, reason: 'QTY_BELOW_ONE', detail: `bound by ${boundBy}` };
   }
 
-  const cost = paise(quantity * entry);
+  const cost = paise(quantity * unitCost);
   if (availableMargin < cost) {
     return { ok: false, reason: 'NO_MARGIN', detail: `need ${cost}, have ${availableMargin} paise` };
   }

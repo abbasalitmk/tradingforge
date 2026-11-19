@@ -1,5 +1,5 @@
 import type { Candle } from '@tradeforger/core';
-import { istMinutes, SESSION } from '@tradeforger/core';
+import { istMinutes, istDateKey, SESSION } from '@tradeforger/core';
 
 export interface OpeningRange {
   readonly high: number;
@@ -18,9 +18,15 @@ export interface OpeningRange {
  */
 export function openingRange(candles: readonly Candle[], minutes = 15): OpeningRange | null {
   const rangeEnd = SESSION.OPEN + minutes;
+  const last = candles[candles.length - 1];
+  if (!last) return null;
+  // Only the CURRENT session's opening bars. Callers pass prior days for
+  // indicator warmup, and mixing yesterday's range in is a different level.
+  const session = istDateKey(new Date(last.ts));
   const inRange = candles.filter((c) => {
-    const m = istMinutes(new Date(c.ts));
-    return m >= SESSION.OPEN && m < rangeEnd;
+    const d = new Date(c.ts);
+    const m = istMinutes(d);
+    return m >= SESSION.OPEN && m < rangeEnd && istDateKey(d) === session;
   });
   if (inRange.length === 0) return null;
 
