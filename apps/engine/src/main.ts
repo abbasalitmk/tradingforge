@@ -1370,8 +1370,8 @@ async function main(): Promise<void> {
   }
   void startPortfolioFeed();
 
-  server.listen(cfg.TF_ENGINE_PORT, '127.0.0.1', () => {
-    console.log(`✓ Control API on http://127.0.0.1:${cfg.TF_ENGINE_PORT} (bearer auth required)`);
+  server.listen(cfg.TF_ENGINE_PORT, cfg.TF_ENGINE_HOST, () => {
+    console.log(`✓ Control API on http://${cfg.TF_ENGINE_HOST}:${cfg.TF_ENGINE_PORT} (bearer auth required)`);
     console.log(`✓ Broker: ${broker === paperBroker ? 'PAPER' : 'UPSTOX (orders only while armed)'} · mode ${currentMode()}`);
     console.log(`✓ AI: local ensemble${cfg.GROQ_API_KEY ? ` + ${cfg.GROQ_MODEL}` : ''}`);
   });

@@ -33,6 +33,7 @@ const schema = z.object({
   // No default: a token in source is a token everyone with the repo holds.
   TF_ENGINE_TOKEN: z.string().min(32),
   TF_ENGINE_PORT: z.coerce.number().default(4000),
+  TF_ENGINE_HOST: z.string().default('0.0.0.0'),
 
   TF_MAX_SPEND_PER_TRADE: z.coerce.number().default(10_000),
   TF_MAX_DEPLOYED_CAPITAL: z.coerce.number().default(50_000),
