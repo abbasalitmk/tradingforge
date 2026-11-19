@@ -49,6 +49,24 @@ const tokens = new TokenStore(clock, {
   ...(cfg.UPSTOX_ANALYTICS_TOKEN ? { analyticsToken: cfg.UPSTOX_ANALYTICS_TOKEN } : {}),
 });
 
+/** `exp` claim of a JWT in ms, or null when it cannot be read. */
+function jwtExpiryMs(token: string): number | null {
+  try {
+    const exp = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString())?.exp;
+    return typeof exp === 'number' ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+// A token left in .env.local outlives its day, so trust its own expiry
+// rather than letting setTrading() assume it is good until the next 03:30.
+if (cfg.UPSTOX_ACCESS_TOKEN) {
+  const exp = jwtExpiryMs(cfg.UPSTOX_ACCESS_TOKEN);
+  if (exp !== null && exp > clock.ms()) tokens.setTrading(cfg.UPSTOX_ACCESS_TOKEN);
+  else console.warn('UPSTOX_ACCESS_TOKEN is expired or unreadable — ignored; log in with Upstox from the dashboard');
+}
+
 const client = new UpstoxClient(tokens, {
   clock,
   onHalt: (e) => {
