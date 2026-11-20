@@ -5,6 +5,10 @@ import { analyzeHybrid, type HybridSetup, type StrategyVote, type Params } from 
 export const AutoConfigSchema = z.object({
   /** Master switch for autonomous entries. Analysis runs either way. */
   enabled: z.boolean(),
+  /** Whether the engine acts on the top ranked stock from universe scanning or a single user-chosen stock */
+  targetMode: z.enum(['ALL_SCANNED', 'SINGLE_STOCK']).default('ALL_SCANNED'),
+  /** When targetMode is SINGLE_STOCK, entries are restricted to this symbol */
+  targetSymbol: z.string().default('RELIANCE'),
   segments: z.object({
     intraday: z.boolean(),
     swing: z.boolean(),
@@ -27,6 +31,8 @@ export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
 export const DEFAULT_AUTO: AutoConfig = {
   enabled: false,
+  targetMode: 'ALL_SCANNED',
+  targetSymbol: 'RELIANCE',
   segments: { intraday: true, swing: false, fno: false },
   minQuality: 70,
   minRewardRisk: 1.5,

@@ -30,6 +30,10 @@ const schema = z.object({
   GROQ_MODEL: z.string().default('qwen/qwen3.8-27b'),
   GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
 
+  XAI_API_KEY: z.string().optional(),
+  GROK_MODEL: z.string().default('grok-2-latest'),
+  GROK_BASE_URL: z.string().url().default('https://api.x.ai/v1'),
+
   // No default: a token in source is a token everyone with the repo holds.
   TF_ENGINE_TOKEN: z.string().min(32),
   TF_ENGINE_PORT: z.coerce.number().default(4000),

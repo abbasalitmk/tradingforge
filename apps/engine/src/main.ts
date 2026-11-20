@@ -84,8 +84,11 @@ const stockScanner = new StockScanner();
 
 const aiReviewer = new AiReviewer({
   clock,
+  grokConfig: cfg.XAI_API_KEY
+    ? { apiKey: cfg.XAI_API_KEY, model: cfg.GROK_MODEL, baseUrl: cfg.GROK_BASE_URL, timeoutMs: 3000 }
+    : null,
   groqConfig: cfg.GROQ_API_KEY
-    ? { apiKey: cfg.GROQ_API_KEY, model: cfg.GROQ_MODEL, baseUrl: cfg.GROQ_BASE_URL, timeoutMs: 900 }
+    ? { apiKey: cfg.GROQ_API_KEY, model: cfg.GROQ_MODEL, baseUrl: cfg.GROQ_BASE_URL, timeoutMs: 1500 }
     : null,
 });
 
@@ -633,6 +636,16 @@ function targets(): Target[] {
       ...state.focus, cashTradeable: state.focus.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false,
     });
   }
+  if (state.auto.targetMode === 'SINGLE_STOCK' && state.auto.targetSymbol) {
+    const sym = state.auto.targetSymbol.toUpperCase();
+    const existing = [...watchlist.values()].find((w) => w.symbol === sym);
+    if (existing && !map.has(existing.instrumentKey)) {
+      map.set(existing.instrumentKey, {
+        instrumentKey: existing.instrumentKey, symbol: existing.symbol, cashTradeable: true,
+        fnoUnderlying: false,
+      });
+    }
+  }
   return [...map.values()];
 }
 
@@ -688,9 +701,15 @@ async function liveCycle(): Promise<void> {
   void refreshFocusAi();
   if (!state.auto.enabled || acting || !verdictNow().allowEntries) return;
 
-  const ranked = results
+  let ranked = results
     .flatMap((a) => a.setups.filter((s) => s.eligible).map((s) => ({ a, s })))
     .sort((x, y) => y.s.quality - x.s.quality);
+
+  if (state.auto.targetMode === 'SINGLE_STOCK' && state.auto.targetSymbol) {
+    const sym = state.auto.targetSymbol.toUpperCase();
+    ranked = ranked.filter(({ a }) => a.symbol.toUpperCase() === sym);
+  }
+
   for (const { a, s } of ranked) {
     const key = `${a.instrumentKey}|${s.style}`;
     if ((cooldown.get(key) ?? 0) > clock.ms()) continue;
@@ -913,6 +932,8 @@ const server = createServer(async (req, res) => {
       armedUntilMs: state.arm.armedUntilMs,
       liveCapable: broker !== paperBroker,
       autoTrading: state.auto.enabled,
+      autoTargetMode: state.auto.targetMode ?? 'ALL_SCANNED',
+      autoTargetSymbol: state.auto.targetSymbol ?? 'RELIANCE',
       strategyMode: state.strategyMode,
       sizing: { mode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct },
       limits: {
@@ -1060,9 +1081,58 @@ const server = createServer(async (req, res) => {
       return json(200, { stock: scored, tradeSetup: scored.tradeSetup, signal: sig, consensus, votes: consensus.votes });
     }
 
-    case '/strategy/autotrade':
-      state.auto = { ...state.auto, enabled: typeof body['enabled'] === 'boolean' ? body['enabled'] : !state.auto.enabled };
-      return json(200, { autoTrading: state.auto.enabled });
+    case '/strategy/autotrade': {
+      const enabled = typeof body['enabled'] === 'boolean' ? body['enabled'] : !state.auto.enabled;
+      const targetMode = body['targetMode'] === 'SINGLE_STOCK' ? 'SINGLE_STOCK' : body['targetMode'] === 'ALL_SCANNED' ? 'ALL_SCANNED' : state.auto.targetMode ?? 'ALL_SCANNED';
+      const targetSymbol = typeof body['targetSymbol'] === 'string' && body['targetSymbol'].trim()
+        ? body['targetSymbol'].trim().toUpperCase()
+        : state.auto.targetSymbol ?? 'RELIANCE';
+
+      state.auto = {
+        ...state.auto,
+        enabled,
+        targetMode,
+        targetSymbol,
+      };
+
+      if (targetMode === 'SINGLE_STOCK') {
+        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol);
+        if (item) {
+          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
+        }
+      }
+
+      return json(200, {
+        autoTrading: state.auto.enabled,
+        targetMode: state.auto.targetMode,
+        targetSymbol: state.auto.targetSymbol,
+      });
+    }
+
+    case '/strategy/target': {
+      const targetMode = body['targetMode'] === 'SINGLE_STOCK' ? 'SINGLE_STOCK' : 'ALL_SCANNED';
+      const targetSymbol = typeof body['targetSymbol'] === 'string' && body['targetSymbol'].trim()
+        ? body['targetSymbol'].trim().toUpperCase()
+        : state.auto.targetSymbol ?? 'RELIANCE';
+
+      state.auto = {
+        ...state.auto,
+        targetMode,
+        targetSymbol,
+      };
+
+      if (targetMode === 'SINGLE_STOCK') {
+        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol);
+        if (item) {
+          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
+        }
+      }
+
+      return json(200, {
+        targetMode: state.auto.targetMode,
+        targetSymbol: state.auto.targetSymbol,
+      });
+    }
 
     case '/strategy/mode': {
       const m = body['mode'];

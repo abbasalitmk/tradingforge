@@ -371,6 +371,8 @@ interface EngineState {
   baseMode: string;
   isArmed: boolean;
   autoTrading: boolean;
+  autoTargetMode?: 'ALL_SCANNED' | 'SINGLE_STOCK';
+  autoTargetSymbol?: string;
   strategyMode: 'INTRADAY' | 'SWING' | 'BOTH';
   sizing: {
     mode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED';
@@ -445,6 +447,9 @@ export default function Dashboard() {
   const [focusSymbol, setFocusSymbol] = useState('RELIANCE');
   const analysisRef = useRef<HTMLDivElement | null>(null);
   const [customSizingInput, setCustomSizingInput] = useState<string>('');
+  const [autoTargetMode, setAutoTargetMode] = useState<'ALL_SCANNED' | 'SINGLE_STOCK'>('ALL_SCANNED');
+  const [autoTargetSymbol, setAutoTargetSymbol] = useState<string>('RELIANCE');
+  const [manualStockInput, setManualStockInput] = useState<string>('');
 
   useEffect(() => {
     const handleSync = (e: Event) => {
@@ -483,6 +488,8 @@ export default function Dashboard() {
           .then((body) => {
             if (body && !body.error && !body.offline) {
               setState(body);
+              if (body.autoTargetMode) setAutoTargetMode(body.autoTargetMode);
+              if (body.autoTargetSymbol) setAutoTargetSymbol(body.autoTargetSymbol);
               setOfflineReason(null);
               setLastLiveAt(Date.now());
             }
@@ -537,6 +544,8 @@ export default function Dashboard() {
       setNow(Date.now());
       if (data) {
         setState(data);
+        if (data.autoTargetMode) setAutoTargetMode(data.autoTargetMode);
+        if (data.autoTargetSymbol) setAutoTargetSymbol(data.autoTargetSymbol);
         setOfflineReason(null);
         setLastLiveAt(Date.now());
       } else {
@@ -632,19 +641,66 @@ export default function Dashboard() {
     }).catch(() => undefined);
   };
 
+  const handleSetAutoScope = async (mode: 'ALL_SCANNED' | 'SINGLE_STOCK', symbol?: string) => {
+    const sym = (symbol ?? autoTargetSymbol ?? 'RELIANCE').toUpperCase().trim();
+    setAutoTargetMode(mode);
+    if (symbol) setAutoTargetSymbol(sym);
+
+    const r = await postEngine<{ targetMode?: 'ALL_SCANNED' | 'SINGLE_STOCK'; targetSymbol?: string }>('/strategy/target', {
+      targetMode: mode,
+      targetSymbol: sym,
+    });
+    if (!r.ok) {
+      showToast(`Target scope update failed: ${r.error}`, 'error');
+      return;
+    }
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            autoTargetMode: r.data.targetMode ?? mode,
+            autoTargetSymbol: r.data.targetSymbol ?? sym,
+          }
+        : null,
+    );
+    showToast(mode === 'SINGLE_STOCK' ? `🎯 Auto-trading locked to ${sym} only` : `🌐 Auto-trading scanning all universe stocks`);
+  };
+
   const handleToggleAutoTrading = async () => {
     if (!state) return;
+    const nextEnabled = !state.autoTrading;
+
     if (
-      !state.autoTrading &&
-      !window.confirm(`Turn ON automated trading in ${state.mode} mode?\n\nThe engine will enter trades on its own using approved strategies.`)
+      nextEnabled &&
+      !window.confirm(
+        `Turn ON Automated Trading in ${state.mode} mode?\n\n` +
+        `• Target Scope: ${autoTargetMode === 'SINGLE_STOCK' ? `SINGLE STOCK (${autoTargetSymbol} ONLY)` : 'ALL SCANNED STOCKS (Top Ranked Breakout)'}\n` +
+        `• Sizing: ${state.sizing.mode} (${state.sizing.mode === 'FIXED_BUDGET' ? `₹${state.sizing.budget?.toLocaleString('en-IN')}` : state.sizing.mode === 'FIXED_QTY' ? `${state.sizing.fixedQty} shares` : `${state.sizing.riskPct}% risk`})\n` +
+        `• Strategy: ${state.strategyMode}\n\n` +
+        `Click OK to activate automated execution.`
+      )
     ) {
       return;
     }
-    const r = await postEngine<{ autoTrading?: boolean }>('/strategy/autotrade', { enabled: !state.autoTrading });
+
+    const r = await postEngine<{ autoTrading?: boolean; targetMode?: 'ALL_SCANNED' | 'SINGLE_STOCK'; targetSymbol?: string }>('/strategy/autotrade', {
+      enabled: nextEnabled,
+      targetMode: autoTargetMode,
+      targetSymbol: autoTargetSymbol,
+    });
     if (!r.ok) return showToast(`Auto-trading toggle FAILED: ${r.error}`, 'error');
-    const next = typeof r.data.autoTrading === 'boolean' ? r.data.autoTrading : !state.autoTrading;
-    setState((prev) => (prev ? { ...prev, autoTrading: next } : null));
-    showToast(`Auto-trading ${next ? 'RESUMED' : 'PAUSED'}`);
+    const next = typeof r.data.autoTrading === 'boolean' ? r.data.autoTrading : nextEnabled;
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            autoTrading: next,
+            autoTargetMode: r.data.targetMode ?? autoTargetMode,
+            autoTargetSymbol: r.data.targetSymbol ?? autoTargetSymbol,
+          }
+        : null,
+    );
+    showToast(next ? `⚡ Auto-Trading ACTIVATED (${autoTargetMode === 'SINGLE_STOCK' ? `${autoTargetSymbol} Only` : 'All Universe'})` : '○ Auto-Trading PAUSED');
   };
 
   const handleSetStrategyMode = async (mode: 'INTRADAY' | 'SWING' | 'BOTH') => {
@@ -1377,163 +1433,333 @@ export default function Dashboard() {
         <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
           <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>AI Consensus Engine</div>
           <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, color: 'var(--ok)', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>🤖 3 Free AI Models</span>
+            <span>🤖 Multi-Model Ensemble</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-            Quant + Pattern + ML Expectancy (<strong style={{ color: 'var(--ok)' }}>0ms, $0 Cost</strong>)
+            xAI Grok + Groq + Quant + Pattern + ML
           </div>
         </div>
       </div>
 
-      {/* Centralized Master Trading Mode Switcher */}
+      {/* ── UNIFIED AUTONOMOUS COMMAND HUB ── */}
       <div
         style={{
-          background: isRealMoney ? 'rgba(248,81,73,0.06)' : 'rgba(63,185,80,0.06)',
-          border: `2px solid ${isRealMoney ? 'var(--danger)' : 'var(--ok)'}`,
-          borderRadius: 12,
-          padding: '16px 20px',
+          background: 'var(--panel)',
+          border: `1.5px solid ${isRealMoney ? 'rgba(248,81,73,0.4)' : 'rgba(63,185,80,0.4)'}`,
+          borderRadius: 14,
+          padding: '20px 22px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 12,
+          gap: 18,
+          boxShadow: 'var(--card-shadow)',
           transition: 'all 0.2s ease',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 16, fontWeight: 800, color: isRealMoney ? 'var(--danger)' : 'var(--ok)' }}>
-                {isRealMoney ? '🔴 LIVE TRADING ACTIVE' : '🟢 PAPER TRADING ACTIVE'}
-              </span>
-              <span
+        {/* Row 1: Execution Mode & Master Auto-Trading Switch */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
+          {/* Centralized Mode Switcher */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Execution Mode:
+            </span>
+            <div
+              style={{
+                display: 'inline-flex',
+                background: 'var(--panel-subtle)',
+                border: '1px solid var(--line)',
+                borderRadius: 999,
+                padding: 3,
+                gap: 4,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => handleCentralModeSwitch('PAPER')}
                 style={{
-                  fontSize: 11,
-                  padding: '2px 8px',
+                  border: 'none',
+                  background: !isRealMoney ? 'var(--ok)' : 'transparent',
+                  color: !isRealMoney ? '#ffffff' : 'var(--muted)',
+                  fontWeight: 750,
+                  fontSize: 12.5,
+                  padding: '7px 18px',
                   borderRadius: 999,
-                  fontWeight: 700,
-                  background: isRealMoney ? 'var(--danger)' : 'var(--ok)',
-                  color: '#ffffff',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  transition: 'all 0.15s ease',
+                  boxShadow: !isRealMoney ? '0 2px 8px rgba(63,185,80,0.3)' : 'none',
                 }}
               >
-                {isRealMoney ? 'REAL MONEY ORDERS' : 'SIMULATION MODE'}
-              </span>
+                <span>🟢 PAPER SIMULATION</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleCentralModeSwitch('LIVE')}
+                style={{
+                  border: 'none',
+                  background: isRealMoney ? 'var(--danger)' : 'transparent',
+                  color: isRealMoney ? '#ffffff' : 'var(--muted)',
+                  fontWeight: 750,
+                  fontSize: 12.5,
+                  padding: '7px 18px',
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  transition: 'all 0.15s ease',
+                  boxShadow: isRealMoney ? '0 2px 8px rgba(248,81,73,0.3)' : 'none',
+                }}
+              >
+                <span>🔴 LIVE TRADING</span>
+              </button>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-              {isRealMoney
-                ? 'Real orders are routed directly to your Upstox account. Risk limits and stop losses are enforced.'
-                : 'Zero risk. Uses real-time live market ticks from Upstox with simulated paper execution.'}
-            </div>
+            <span style={{ fontSize: 11.5, color: isRealMoney ? 'var(--danger)' : 'var(--ok)', fontWeight: 600 }}>
+              {isRealMoney ? '● Real Upstox Orders' : '● Virtual Risk-Free'}
+            </span>
           </div>
 
-          {/* Centralized Switcher Buttons */}
-          <div
+          {/* Master Auto-Trading Toggle */}
+          <button
+            onClick={handleToggleAutoTrading}
             style={{
-              display: 'inline-flex',
-              background: 'var(--panel)',
-              border: '1px solid var(--line)',
+              background: s.autoTrading ? 'rgba(63,185,80,0.15)' : 'var(--panel-subtle)',
+              border: `1.5px solid ${s.autoTrading ? 'var(--ok)' : 'var(--line)'}`,
+              color: s.autoTrading ? 'var(--ok)' : 'var(--muted)',
               borderRadius: 999,
-              padding: 4,
-              gap: 6,
+              padding: '9px 22px',
+              fontSize: 13,
+              fontWeight: 800,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              boxShadow: s.autoTrading ? '0 0 14px rgba(63,185,80,0.35)' : 'none',
+              transition: 'all 0.2s ease',
             }}
           >
-            <button
-              type="button"
-              onClick={() => handleCentralModeSwitch('PAPER')}
+            <span
               style={{
-                border: 'none',
-                background: !isRealMoney ? 'var(--ok)' : 'transparent',
-                color: !isRealMoney ? '#ffffff' : 'var(--muted)',
-                fontWeight: 750,
-                fontSize: 12.5,
-                padding: '8px 18px',
-                borderRadius: 999,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                transition: 'all 0.15s ease',
-                boxShadow: !isRealMoney ? '0 2px 8px rgba(63,185,80,0.35)' : 'none',
+                width: 9,
+                height: 9,
+                borderRadius: '50%',
+                background: s.autoTrading ? 'var(--ok)' : 'var(--muted)',
+                boxShadow: s.autoTrading ? '0 0 8px var(--ok)' : 'none',
               }}
-            >
-              <span>🟢 PAPER MODE</span>
-            </button>
+            />
+            <span>{s.autoTrading ? 'AUTOMATED TRADING: ACTIVE' : 'AUTOMATED TRADING: PAUSED'}</span>
+          </button>
+        </div>
 
-            <button
-              type="button"
-              onClick={() => handleCentralModeSwitch('LIVE')}
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Row 2: Automated Target Scope (Exclusive Selection) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🎯 Automated Trading Target Scope</span>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'var(--panel-subtle)', border: '1px solid var(--line)', color: 'var(--muted)', fontWeight: 600 }}>
+                  Choose Either Mode
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                Option 1: Scans all market stocks automatically · Option 2: Automated entry happens strictly on your selected stock.
+              </div>
+            </div>
+
+            {/* Scope Selector Segmented Control */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => handleSetAutoScope('ALL_SCANNED')}
+                style={{
+                  background: autoTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: autoTargetMode === 'ALL_SCANNED' ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${autoTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--line)'}`,
+                  borderRadius: 8,
+                  padding: '7px 16px',
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  boxShadow: autoTargetMode === 'ALL_SCANNED' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
+                }}
+              >
+                <span>🌐 All Scanned Stocks (Auto Ranking)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSetAutoScope('SINGLE_STOCK')}
+                style={{
+                  background: autoTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: autoTargetMode === 'SINGLE_STOCK' ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${autoTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--line)'}`,
+                  borderRadius: 8,
+                  padding: '7px 16px',
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  boxShadow: autoTargetMode === 'SINGLE_STOCK' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
+                }}
+              >
+                <span>🎯 Dedicated Single Stock</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Sub-Panel: When Dedicated Single Stock is selected */}
+          {autoTargetMode === 'SINGLE_STOCK' && (
+            <div
               style={{
-                border: 'none',
-                background: isRealMoney ? 'var(--danger)' : 'transparent',
-                color: isRealMoney ? '#ffffff' : 'var(--muted)',
-                fontWeight: 750,
-                fontSize: 12.5,
-                padding: '8px 18px',
-                borderRadius: 999,
-                cursor: 'pointer',
+                background: 'var(--panel-subtle)',
+                border: '1px solid var(--accent)',
+                borderRadius: 10,
+                padding: '12px 16px',
                 display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                transition: 'all 0.15s ease',
-                boxShadow: isRealMoney ? '0 2px 8px rgba(248,81,73,0.35)' : 'none',
+                flexDirection: 'column',
+                gap: 10,
+                marginTop: 4,
               }}
             >
-              <span>🔴 LIVE TRADING</span>
-            </button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 14 }}>🔒</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
+                    Auto-Trading Locked Stock: <span style={{ color: 'var(--accent)', fontFamily: 'monospace', fontSize: 14 }}>{autoTargetSymbol}</span>
+                  </span>
+                  <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.15)', color: 'var(--accent)', fontWeight: 600 }}>
+                    Active Target
+                  </span>
+                </div>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                  Automated entry will happen on <strong>{autoTargetSymbol}</strong> only. All other stocks are skipped.
+                </span>
+              </div>
+
+              {/* Quick Stock Selector Chips */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Pick:</span>
+                {['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'TCS', 'INFY', 'SBIN', 'TATAMOTORS', 'BHARTIARTL', 'LT', 'ITC'].map((sym) => (
+                  <button
+                    key={sym}
+                    type="button"
+                    onClick={() => handleSetAutoScope('SINGLE_STOCK', sym)}
+                    style={{
+                      background: autoTargetSymbol === sym ? 'var(--accent)' : 'var(--panel)',
+                      color: autoTargetSymbol === sym ? '#ffffff' : 'var(--fg)',
+                      border: `1px solid ${autoTargetSymbol === sym ? 'var(--accent)' : 'var(--line)'}`,
+                      borderRadius: 6,
+                      padding: '4px 10px',
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom Search/Input for any stock */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Or Enter Any NSE Symbol:</span>
+                <input
+                  type="text"
+                  placeholder="e.g. AXISBANK, MARUTI, WIPRO"
+                  value={manualStockInput}
+                  onChange={(e) => setManualStockInput(e.target.value.toUpperCase())}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && manualStockInput.trim()) {
+                      handleSetAutoScope('SINGLE_STOCK', manualStockInput.trim());
+                      setManualStockInput('');
+                    }
+                  }}
+                  style={{
+                    width: 220,
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 6,
+                    padding: '6px 10px',
+                    color: 'var(--fg)',
+                    fontSize: 12.5,
+                    textTransform: 'uppercase',
+                    fontFamily: 'monospace',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (manualStockInput.trim()) {
+                      handleSetAutoScope('SINGLE_STOCK', manualStockInput.trim());
+                      setManualStockInput('');
+                    }
+                  }}
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '6px 14px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Set Target Stock
+                </button>
+              </div>
+            </div>
+          )}
+
+          {autoTargetMode === 'ALL_SCANNED' && (
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', background: 'var(--panel-subtle)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
+              🌐 <strong>All Scanned Stocks Active:</strong> Engine runs 15m ORB + Supertrend across all watchlist stocks, evaluates with AI consensus, and auto-trades the highest-ranked setup.
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Row 3: Strategy Profile */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Strategy Profile:</span>
+            {(['INTRADAY', 'SWING', 'BOTH'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => handleSetStrategyMode(m)}
+                style={{
+                  background: s.strategyMode === m ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: s.strategyMode === m ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${s.strategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
+                  borderRadius: 6,
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  boxShadow: s.strategyMode === m ? '0 1px 3px rgba(37,99,235,0.25)' : 'none',
+                }}
+              >
+                {m === 'BOTH' ? '⚡ DUAL (Intraday + Swing)' : m}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+            {s.strategyMode === 'BOTH' ? 'Intraday ORB (15m) + Swing EMA Breakouts' : s.strategyMode === 'INTRADAY' ? '15m Opening Range Breakouts' : 'Daily EMA Swing Breakouts'}
           </div>
         </div>
-      </div>
-
-      {/* Strategy Mode & Auto-Trading Master Switch */}
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          background: 'var(--panel)',
-          border: '1px solid var(--line)',
-          borderRadius: 10,
-          padding: '14px 18px',
-          gap: 12,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Strategy Mode:</span>
-          {(['INTRADAY', 'SWING', 'BOTH'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => handleSetStrategyMode(m)}
-              style={{
-                background: s.strategyMode === m ? 'var(--accent)' : 'var(--panel-subtle)',
-                color: s.strategyMode === m ? '#ffffff' : 'var(--fg)',
-                border: `1px solid ${s.strategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
-                borderRadius: 6,
-                padding: '6px 14px',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-                boxShadow: s.strategyMode === m ? '0 1px 3px rgba(37,99,235,0.25)' : 'none',
-              }}
-            >
-              {m === 'BOTH' ? '⚡ DUAL (Intraday + Swing)' : m}
-            </button>
-          ))}
-        </div>
-
-        <button
-          onClick={handleToggleAutoTrading}
-          style={{
-            background: s.autoTrading ? 'rgba(63,185,80,0.2)' : 'rgba(248,81,73,0.2)',
-            border: `1px solid ${s.autoTrading ? 'var(--ok)' : 'var(--danger)'}`,
-            color: s.autoTrading ? 'var(--ok)' : 'var(--danger)',
-            borderRadius: 6,
-            padding: '7px 18px',
-            fontSize: 12.5,
-            fontWeight: 700,
-            cursor: 'pointer',
-          }}
-        >
-          {s.autoTrading ? '● AUTO-TRADING ACTIVE' : '○ AUTO-TRADING PAUSED'}
-        </button>
       </div>
 
       {/* Position Sizing Control Panel */}
@@ -2612,9 +2838,6 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-
-        {/* Master Auto-Trading Switch Header */}
-        {tradingHeader}
 
         {/* Overview Engine Controls (KPIs, Strategy, Arming, Upstox API) */}
         {s ? renderOverviewEngineControls(s) : renderDefaultOverviewCards()}
