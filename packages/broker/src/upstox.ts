@@ -180,6 +180,19 @@ export class UpstoxBroker implements BrokerPort {
     return ok({ gttOrderId: gttId });
   }
 
+  /**
+   * Resume following a journaled position after a restart. Fills are still
+   * read from today's order book and the GTT — nothing is assumed.
+   */
+  adopt(a: {
+    readonly positionId: PositionId; readonly gttOrderId: string; readonly instrumentKey: string;
+    readonly side: Side; readonly product: string; readonly entryDone: boolean;
+  }): void {
+    this.tracked.set(a.positionId, {
+      ...a, exitDone: false, manualExitOrderId: null, flattenFrom: null,
+    });
+  }
+
   async cancelBracket(gttOrderId: string): Promise<Result<void, BrokerError>> {
     const res = await this.client.cancelGtt(gttOrderId);
     if (!res.ok) {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Candle, Clock, Mode } from '@tradeforger/core';
+import { rupeesToPaise, type Candle, type Clock, type Mode } from '@tradeforger/core';
 import { analyzeHybrid, type HybridSetup, type StrategyVote, type Params } from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
@@ -47,6 +47,26 @@ export const DEFAULT_AUTO: AutoConfig = {
   maxEntriesPerDay: 5,
 };
 
+/**
+ * The dashboard's strategy mode, expressed as the cash segments the live loop
+ * may enter. `decide()` reads only segments, so a mode that is not mapped here
+ * would change the label on the dashboard and nothing about what trades.
+ */
+export function segmentsForMode(
+  mode: 'INTRADAY' | 'SWING' | 'BOTH',
+  current: AutoConfig['segments'],
+): AutoConfig['segments'] {
+  return { ...current, intraday: mode !== 'SWING', swing: mode !== 'INTRADAY' };
+}
+
+/** Inverse of `segmentsForMode`, or null when neither cash segment is on. */
+export function modeForSegments(s: AutoConfig['segments']): 'INTRADAY' | 'SWING' | 'BOTH' | null {
+  if (s.intraday && s.swing) return 'BOTH';
+  if (s.intraday) return 'INTRADAY';
+  if (s.swing) return 'SWING';
+  return null;
+}
+
 export type Route = 'EQ_INTRADAY' | 'EQ_SWING' | 'FNO';
 
 export interface LiveSetup extends HybridSetup {
@@ -55,6 +75,8 @@ export interface LiveSetup extends HybridSetup {
   readonly stableSeconds: number;
   /** Analysis included the still-forming bar. */
   readonly partialBar: boolean;
+  /** Set when the live price has already made the setup untradeable. */
+  readonly invalidReason: string | null;
   /** What autonomous mode would do with it right now, and what stops it. */
   route: Route | null;
   eligible: boolean;
@@ -112,6 +134,7 @@ export function decide(
     blockers.push(target.fnoUnderlying ? 'F&O segment off' : target.cashTradeable ? 'intraday segment off' : 'not cash-tradeable');
   }
 
+  if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');
   if (setup.quality < cfg.minQuality) blockers.push(`quality ${setup.quality} < ${cfg.minQuality}`);
   if (setup.rewardRisk < cfg.minRewardRisk) blockers.push(`R:R ${setup.rewardRisk.toFixed(2)} < ${cfg.minRewardRisk}`);
@@ -133,6 +156,41 @@ export function decide(
   if (ctx.entriesToday >= cfg.maxEntriesPerDay) blockers.push(`daily entry cap ${cfg.maxEntriesPerDay} reached`);
 
   return { route, blockers };
+}
+
+/**
+ * Re-price a setup to the live market.
+ *
+ * Daily-bar strategies decide on the last completed session's close, but the
+ * order fills at today's price. Entry moves to the LTP; the stop and target
+ * stay where the strategy put them (they are structural levels), so R:R shows
+ * what would actually be traded — a gap toward the target shrinks it and the
+ * R:R floor in `decide()` does the rest. A price already through either level
+ * means the setup has played out and must not be entered at all.
+ */
+export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
+  if (!(ltp > 0) || ltp === s.entry) return { setup: s, invalid: null };
+  const long = s.side === 'BUY';
+  const fmt = (n: number) => `₹${n.toFixed(2)}`;
+  if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
+    return { setup: s, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
+  }
+  if (long ? ltp >= s.target : ltp <= s.target) {
+    return { setup: s, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
+  }
+  const risk = Math.abs(ltp - s.stopLoss);
+  const rewardRisk = Math.round((Math.abs(s.target - ltp) / risk) * 100) / 100;
+  const entryPaise = rupeesToPaise(ltp);
+  const votes = s.votes.map((v) => (v.strategyId === s.primaryStrategyId && v.signal
+    ? { ...v, signal: { ...v.signal, entry: entryPaise } }
+    : v));
+  return {
+    setup: {
+      ...s, entry: ltp, rewardRisk, votes,
+      reasons: [...s.reasons, `entry re-priced from ${fmt(s.entry)} (signal close) to live ${fmt(ltp)}`],
+    },
+    invalid: null,
+  };
 }
 
 /** Merge candle arrays by timestamp; later sources win (the live bar beats a stale REST bar). */
@@ -188,8 +246,13 @@ export class LiveAnalyzer {
       );
 
       const setups: LiveSetup[] = [];
-      for (const s of [r.best.INTRADAY, r.best.SWING]) {
-        if (!s) continue;
+      const ltp = this.src.ltp(t.instrumentKey);
+      for (const raw of [r.best.INTRADAY, r.best.SWING]) {
+        if (!raw) continue;
+        // Intraday setups already read the forming bar; swing ones read yesterday's close.
+        const { setup: s, invalid } = raw.style === 'SWING' && ltp !== null
+          ? repriceToMarket(raw, ltp)
+          : { setup: raw, invalid: null };
         const key = `${t.instrumentKey}|${s.style}`;
         seen.add(key);
         const sig = `${s.side}|${s.primaryStrategyId}`;
@@ -201,12 +264,13 @@ export class LiveAnalyzer {
           stableSince: since,
           stableSeconds: Math.floor((now - since) / 1000),
           partialBar: partial !== null && s.style === 'INTRADAY',
+          invalidReason: invalid,
         };
         const d = decide(base, t, cfg, ctx);
         setups.push({ ...base, route: d.route, blockers: d.blockers, eligible: d.route !== null && d.blockers.length === 0 });
       }
       const a: LiveAnalysis = {
-        instrumentKey: t.instrumentKey, symbol: t.symbol, ltp: this.src.ltp(t.instrumentKey),
+        instrumentKey: t.instrumentKey, symbol: t.symbol, ltp,
         votes: r.votes, setups, analyzedAt: now,
       };
       this.results.set(t.instrumentKey, a);

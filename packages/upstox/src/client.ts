@@ -56,8 +56,10 @@ export const toCandles = (rows: readonly S.CandleTuple[]): Candle[] =>
  */
 export class UpstoxClient {
   readonly http: UpstoxHttp;
+  readonly tokens: TokenSource;
 
   constructor(tokens: TokenSource, opts: HttpOptions = {}) {
+    this.tokens = tokens;
     this.http = new UpstoxHttp(tokens, opts);
   }
 
@@ -203,7 +205,8 @@ export class UpstoxClient {
 
   /** Authorized wss:// URL for the V3 protobuf market feed. */
   async marketFeedUrl(): Promise<Result<string, UpstoxError>> {
-    const r = await this.http.request<unknown>('/v3/feed/market-data-feed/authorize', { plane: 'data' });
+    const plane = this.tokens.trading() ? 'trading' : 'data';
+    const r = await this.http.request<unknown>('/v3/feed/market-data-feed/authorize', { plane });
     if (!r.ok) return r;
     const parsed = S.wsAuthorizeResponse.safeParse(r.value);
     const uri = parsed.success

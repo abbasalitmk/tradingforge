@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import {
   SystemClock, istHHMM, istDateKey, istMinutes, SESSION, rupeesToPaise, paiseToRupees,
   type Paise, type Candle, type Tick, type Side, type Signal, type SizingMode, type Mode, type Product, pctOf,
 } from '@tradeforger/core';
-import { db, audit, closeDb } from '@tradeforger/db';
+import { db, audit, closeDb, runMigrations } from '@tradeforger/db';
 import { TokenStore, UpstoxClient } from '@tradeforger/upstox';
 import { PaperBroker, UpstoxBroker, type BrokerPort } from '@tradeforger/broker';
 import {
@@ -27,9 +29,14 @@ import { STRATEGY_CATALOG, type ScanFilters } from '@tradeforger/strategy';
 import { loadConfig, LIVE_CONFIRMATION, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
 import { Trader, type ManagedPosition } from './trader.ts';
+import { PositionStore, EngineStateStore } from './journal.ts';
+import { planRecovery, type UpstoxView } from './recovery.ts';
 import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
-import { LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, type AutoConfig, type LiveAnalysis, type LiveSetup, type Target } from './live.ts';
+import {
+  LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments,
+  type AutoConfig, type LiveAnalysis, type LiveSetup, type Target,
+} from './live.ts';
 import { MarketScanner } from './scan.ts';
 import { ResearchLab } from './research.ts';
 
@@ -58,12 +65,48 @@ function jwtExpiryMs(token: string): number | null {
   }
 }
 
-// A token left in .env.local outlives its day, so trust its own expiry
-// rather than letting setTrading() assume it is good until the next 03:30.
+const TOKEN_FILE_PATH = existsSync('/app/data') ? '/app/data/trading_token.json' : resolve(process.cwd(), 'data/trading_token.json');
+
+function loadPersistedTradingToken(): string | null {
+  try {
+    if (!existsSync(TOKEN_FILE_PATH)) return null;
+    const raw = readFileSync(TOKEN_FILE_PATH, 'utf8');
+    const data = JSON.parse(raw) as { token?: string };
+    if (data.token) {
+      const exp = jwtExpiryMs(data.token);
+      if (exp !== null && exp > clock.ms()) return data.token;
+    }
+  } catch (e) {
+    console.warn('[token] failed to read persisted token:', e);
+  }
+  return null;
+}
+
+function persistTradingToken(token: string): void {
+  try {
+    mkdirSync(dirname(TOKEN_FILE_PATH), { recursive: true });
+    writeFileSync(TOKEN_FILE_PATH, JSON.stringify({ token, savedAt: clock.ms() }), 'utf8');
+  } catch (e) {
+    console.warn('[token] failed to persist token:', e);
+  }
+}
+
+// Check configured token, fallback to persisted token file
 if (cfg.UPSTOX_ACCESS_TOKEN) {
   const exp = jwtExpiryMs(cfg.UPSTOX_ACCESS_TOKEN);
-  if (exp !== null && exp > clock.ms()) tokens.setTrading(cfg.UPSTOX_ACCESS_TOKEN);
-  else console.warn('UPSTOX_ACCESS_TOKEN is expired or unreadable — ignored; log in with Upstox from the dashboard');
+  if (exp !== null && exp > clock.ms()) {
+    tokens.setTrading(cfg.UPSTOX_ACCESS_TOKEN);
+    persistTradingToken(cfg.UPSTOX_ACCESS_TOKEN);
+  } else {
+    console.warn('UPSTOX_ACCESS_TOKEN is expired or unreadable — checking persisted session...');
+  }
+}
+if (!tokens.trading()) {
+  const saved = loadPersistedTradingToken();
+  if (saved) {
+    tokens.setTrading(saved);
+    console.log('✓ Restored active Upstox trading session from storage');
+  }
 }
 
 const client = new UpstoxClient(tokens, {
@@ -110,10 +153,13 @@ const state = {
     enabled: cfg.TF_AUTO_ENABLED,
     minQuality: cfg.TF_AUTO_MIN_QUALITY,
     minRewardRisk: cfg.TF_AUTO_MIN_RR,
+    segments: segmentsForMode(cfg.TF_AUTO_TRADING_MODE, DEFAULT_AUTO.segments),
   } as AutoConfig,
   autoEntries: { day: '', count: 0 },
   /** The single stock the dashboard is analysing in real time. */
   focus: null as { instrumentKey: string; symbol: string } | null,
+  /** Resolved instrument for SINGLE_STOCK scope; analysed whatever the focus is. */
+  singleTarget: null as { instrumentKey: string; symbol: string } | null,
   fnoEnabled: cfg.TF_FNO_ENABLED,
   strategyMode: cfg.TF_AUTO_TRADING_MODE as AutoTradingStrategyMode,
   sizingMode: cfg.TF_SIZING_MODE as SizingMode,
@@ -146,11 +192,22 @@ export interface WatchlistStock {
 
 
 const watchlist = new Map<string, WatchlistStock>();
-for (const s of DEFAULT_UNIVERSE) {
+const addWatch = (s: { instrumentKey: string; symbol: string; name: string }): void => {
+  if (watchlist.has(s.instrumentKey)) return;
   watchlist.set(s.instrumentKey, {
     ...s, ltp: 0, changePct: 0, open: 0, high: 0, low: 0, close: 0, volume: 0, lastUpdated: clock.ms(),
   });
-}
+};
+for (const s of DEFAULT_UNIVERSE) addWatch(s);
+
+/**
+ * Stocks added to the live watchlist from scan results, on top of the default
+ * universe. Everything on the watchlist is streamed, analysed every cycle and
+ * eligible for autonomous entries — "all scanned" means exactly this set.
+ */
+const watchlistExtra = new Map<string, { instrumentKey: string; symbol: string; name: string }>();
+/** Feed and REST budget: each stock costs a stream slot and three candle calls. */
+const MAX_WATCHLIST_EXTRA = 40;
 
 /** Last traded price for every instrument we hear about — equities, futures, options, indices. */
 const lastLtp = new Map<string, number>();
@@ -200,7 +257,27 @@ const fnoDesk = new FnoDesk({
   },
 });
 
+const positionStore = new PositionStore(sql, () => ({ mode: currentMode(), sizingMode: state.sizingMode }));
+const settingsStore = new EngineStateStore(sql);
+
+/**
+ * States that precede an order. If the journal cannot record one, the order is
+ * not sent — an order the engine could not recover after a crash must not exist.
+ * Every other transition records a fact (a fill, an exit) or reduces risk; a
+ * journal failure there must never stop it, so it is queued and retried.
+ */
+const JOURNAL_REQUIRED = new Set(['AI_REVIEWED', 'RISK_APPROVED', 'ENTRY_SENT']);
+const journalBacklog = new Set<string>();
+
 const positionMachine = new PositionMachine(async (p, from, to) => {
+  try {
+    await positionStore.save(p as ManagedPosition, to);
+    journalBacklog.delete(p.id);
+  } catch (e) {
+    if (JOURNAL_REQUIRED.has(to)) throw e;
+    journalBacklog.add(p.id);
+    console.error(`[journal] ${p.symbol} ${from}→${to} not persisted (will retry):`, e instanceof Error ? e.message : e);
+  }
   await audit(sql, {
     kind: 'STATE_TRANSITION',
     actor: 'engine',
@@ -210,9 +287,41 @@ const positionMachine = new PositionMachine(async (p, from, to) => {
   });
 });
 
+async function flushJournal(): Promise<void> {
+  for (const id of [...journalBacklog]) {
+    const p = trader.positions.get(id);
+    if (!p) { journalBacklog.delete(id); continue; }
+    try {
+      await positionStore.save(p, p.state);
+      journalBacklog.delete(id);
+    } catch {
+      return; // database still down; next tick retries
+    }
+  }
+}
+
+/** Dashboard choices that survive a restart. Autonomy itself always boots from TF_AUTO_ENABLED. */
+interface PersistedSettings {
+  auto: Omit<AutoConfig, 'enabled'>;
+  strategyMode: AutoTradingStrategyMode;
+  sizing: { mode: SizingMode; budget: number; fixedQty: number; riskPct: number };
+  watchlistExtra: Array<{ instrumentKey: string; symbol: string; name: string }>;
+}
+
+function persistSettings(): void {
+  const { enabled: _enabled, ...auto } = state.auto;
+  const s: PersistedSettings = {
+    auto,
+    strategyMode: state.strategyMode,
+    sizing: { mode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct },
+    watchlistExtra: [...watchlistExtra.values()],
+  };
+  void settingsStore.set('settings', s).catch((e) => console.error('[settings] not persisted:', e instanceof Error ? e.message : e));
+}
+
 const paperBroker = new PaperBroker(clock);
-let upstoxBroker: UpstoxBroker | null = null;
 let broker: BrokerPort = paperBroker;
+let upstoxBroker: UpstoxBroker | null = null;
 let trader!: Trader;
 
 function ensureUpstoxBroker(): UpstoxBroker {
@@ -269,11 +378,13 @@ const feed = new MarketFeed(async () => {
   return r.value;
 }, clock);
 
-feed.on('tick', (t: Tick) => {
+function applyTick(t: Tick): void {
   state.ticks++;
   state.lastTickMs = clock.ms();
+  feed.recordTick(clock.ms());
   lastLtp.set(t.instrumentKey, t.ltp);
-  if (broker === paperBroker) paperBroker.onTick(t);
+  // Always: paper positions keep settling while the dashboard is in LIVE.
+  paperBroker.onTick(t);
 
   const stock = watchlist.get(t.instrumentKey);
   if (stock) {
@@ -300,11 +411,17 @@ feed.on('tick', (t: Tick) => {
 
     // Entries are decided by the 2-second live loop (liveCycle), not here.
   }
-});
+}
+
+feed.on('tick', applyTick);
 
 feed.on('error', (e) => console.error('[feed]', e.message));
 feed.on('open', () => {
-  const keys = [...new Set([...watchlist.keys(), ...fnoDesk.feedKeys(), ...trader.live().map((p) => p.instrumentKey)])];
+  const keys = [...new Set([
+    ...watchlist.keys(), ...fnoDesk.feedKeys(), ...trader.live().map((p) => p.instrumentKey),
+    ...(state.focus ? [state.focus.instrumentKey] : []),
+    ...(state.singleTarget ? [state.singleTarget.instrumentKey] : []),
+  ])];
   const { accepted, rejected } = feed.subscribe(keys, 'full');
   console.log(`[feed] connected — subscribed ${accepted.length} instruments, rejected ${rejected.length}`);
 });
@@ -316,13 +433,13 @@ const portfolioFeed = new PortfolioFeed(async () => {
   if (!r.ok) throw new Error(r.error.message);
   return r.value;
 }, clock);
-portfolioFeed.on('order', () => void broker.sync());
-portfolioFeed.on('gtt', () => void broker.sync());
+portfolioFeed.on('order', () => void upstoxBroker?.sync());
+portfolioFeed.on('gtt', () => void upstoxBroker?.sync());
 portfolioFeed.on('error', (e: Error) => console.error('[portfolio feed]', e.message));
 let portfolioFeedStarted = false;
 
 async function startPortfolioFeed(): Promise<void> {
-  if (portfolioFeedStarted || broker === paperBroker || tokens.trading() === null) return;
+  if (portfolioFeedStarted || upstoxBroker === null || tokens.trading() === null) return;
   portfolioFeedStarted = true;
   try {
     await portfolioFeed.connect();
@@ -339,7 +456,7 @@ async function primePrice(instrumentKey: string): Promise<number | null> {
   const q = Object.values(r.value).find((x) => x.instrument_token === instrumentKey) ?? Object.values(r.value)[0];
   if (!q || !(q.last_price > 0)) return null;
   lastLtp.set(instrumentKey, q.last_price);
-  if (broker === paperBroker) paperBroker.onTick({ instrumentKey, ltp: q.last_price, ts: clock.ms() });
+  paperBroker.onTick({ instrumentKey, ltp: q.last_price, ts: clock.ms() });
   return q.last_price;
 }
 
@@ -636,17 +753,83 @@ function targets(): Target[] {
       ...state.focus, cashTradeable: state.focus.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false,
     });
   }
-  if (state.auto.targetMode === 'SINGLE_STOCK' && state.auto.targetSymbol) {
-    const sym = state.auto.targetSymbol.toUpperCase();
-    const existing = [...watchlist.values()].find((w) => w.symbol === sym);
-    if (existing && !map.has(existing.instrumentKey)) {
-      map.set(existing.instrumentKey, {
-        instrumentKey: existing.instrumentKey, symbol: existing.symbol, cashTradeable: true,
-        fnoUnderlying: false,
-      });
-    }
+  const single = state.auto.targetMode === 'SINGLE_STOCK' ? state.singleTarget : null;
+  if (single && !map.has(single.instrumentKey)) {
+    map.set(single.instrumentKey, {
+      ...single, cashTradeable: single.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false,
+    });
   }
   return [...map.values()];
+}
+
+/** An NSE equity by symbol: the default universe first, then the instrument master. */
+function resolveEquity(symbol: string): { instrumentKey: string; symbol: string } | null {
+  const hit = DEFAULT_UNIVERSE.find((u) => u.symbol === symbol) ?? equities.find((e) => e.symbol === symbol);
+  return hit ? { instrumentKey: hit.instrumentKey, symbol: hit.symbol } : null;
+}
+
+/**
+ * Point SINGLE_STOCK scope at a symbol: resolve it, stream it and load its bars.
+ * An unknown symbol is refused — accepting it would leave autonomous mode
+ * "locked" to a stock that is never analysed, so it would silently never trade.
+ */
+async function setSingleTarget(symbol: string): Promise<string | null> {
+  const eq = resolveEquity(symbol);
+  if (!eq) return `${symbol} not found among NSE equities${equities.length === 0 ? ' (instrument master not loaded)' : ''}`;
+  state.singleTarget = eq;
+  state.focus = eq;
+  focusAi.sig = '';
+  feed.subscribe([eq.instrumentKey], 'full');
+  await loadCandles(eq.instrumentKey);
+  return null;
+}
+
+function setStrategyMode(m: AutoTradingStrategyMode): void {
+  state.strategyMode = m;
+  strategyManager.setMode(m);
+  state.auto = { ...state.auto, segments: segmentsForMode(m, state.auto.segments) };
+}
+
+/**
+ * Disarm is never refused. New entries go to the paper broker at once; open
+ * Upstox positions stay on Upstox, where their brackets live, and are still
+ * managed — the Upstox broker never gates an exit on the mode.
+ */
+async function disarm(payload: Record<string, unknown>): Promise<{ mode: Mode; detail?: string }> {
+  state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
+  trader.setBroker('PAPER', paperBroker);
+  const stillLive = trader.live().filter((p) => p.broker === 'UPSTOX').length;
+  await audit(sql, { kind: 'DISARM', actor: 'user', mode: currentMode(), payload: { ...payload, upstoxPositionsOpen: stillLive } as never });
+  return stillLive > 0
+    ? { mode: currentMode(), detail: `${stillLive} real position(s) remain on Upstox, protected by their brackets and still managed` }
+    : { mode: currentMode() };
+}
+
+/** Put a stock on the live watchlist: streamed, analysed every cycle, eligible for autonomous entries. */
+async function addToWatchlist(symbol: string): Promise<string | null> {
+  const eq = resolveEquity(symbol);
+  if (!eq) return `${symbol} not found among NSE equities${equities.length === 0 ? ' (instrument master not loaded)' : ''}`;
+  if (watchlist.has(eq.instrumentKey)) return null;
+  if (watchlistExtra.size >= MAX_WATCHLIST_EXTRA) return `live watchlist is full (${MAX_WATCHLIST_EXTRA} added stocks) — remove one first`;
+  const item = { ...eq, name: equities.find((e) => e.instrumentKey === eq.instrumentKey)?.name ?? eq.symbol };
+  watchlistExtra.set(eq.instrumentKey, item);
+  addWatch(item);
+  feed.subscribe([eq.instrumentKey], 'full');
+  await loadCandles(eq.instrumentKey);
+  return null;
+}
+
+function removeFromWatchlist(symbol: string): string | null {
+  const item = [...watchlistExtra.values()].find((w) => w.symbol === symbol);
+  if (!item) return DEFAULT_UNIVERSE.some((u) => u.symbol === symbol) ? `${symbol} is in the default universe` : `${symbol} is not on the watchlist`;
+  watchlistExtra.delete(item.instrumentKey);
+  watchlist.delete(item.instrumentKey);
+  analyzer.results.delete(item.instrumentKey);
+  // Keep streaming what something else still needs a price for.
+  const needed = trader.holds(item.instrumentKey)
+    || state.focus?.instrumentKey === item.instrumentKey || state.singleTarget?.instrumentKey === item.instrumentKey;
+  if (!needed) feed.unsubscribe([item.instrumentKey]);
+  return null;
 }
 
 function rollAutoDay(): void {
@@ -789,7 +972,60 @@ function broadcastSse(event: string, data: unknown): void {
   }
 }
 
+let pollingInProgress = false;
+async function pollQuotesOnce(): Promise<void> {
+  if (pollingInProgress) return;
+  const keys = [...new Set([
+    ...watchlist.keys(),
+    ...(state.focus?.instrumentKey ? [state.focus.instrumentKey] : []),
+    ...(state.singleTarget?.instrumentKey ? [state.singleTarget.instrumentKey] : []),
+    ...trader.live().map((p) => p.instrumentKey),
+  ])];
+  if (keys.length === 0) return;
+
+  pollingInProgress = true;
+  try {
+    const res = await client.quotes(keys.slice(0, 50));
+    if (res.ok && res.value.length > 0) {
+      for (const q of res.value) {
+        applyTick({
+          instrumentKey: q.instrument_token,
+          ltp: q.last_price,
+          ts: clock.ms(),
+          ...(q.volume !== undefined ? { volume: q.volume } : {}),
+          ...(q.ohlc?.close !== undefined ? { close: q.ohlc.close } : {}),
+        });
+        const s = watchlist.get(q.instrument_token);
+        if (s && q.ohlc) {
+          if (q.ohlc.open && q.ohlc.open > 0) s.open = q.ohlc.open;
+          if (q.ohlc.high && q.ohlc.high > 0) s.high = Math.max(s.high, q.ohlc.high);
+          if (q.ohlc.low && q.ohlc.low > 0) s.low = s.low === 0 ? q.ohlc.low : Math.min(s.low, q.ohlc.low);
+          if (q.ohlc.close && q.ohlc.close > 0) s.close = q.ohlc.close;
+          if (s.close > 0) s.changePct = ((s.ltp - s.close) / s.close) * 100;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[quote-poller] fallback poll error:', err instanceof Error ? err.message : err);
+  } finally {
+    pollingInProgress = false;
+  }
+}
+
 function startLoops(): void {
+  // Resilient market feed poller: if the WebSocket feed has not ticked recently
+  // (e.g. during connection, backoff, or when waiting for user OAuth login),
+  // poll REST quotes (/v2/market-quote/quotes) using the long-lived analytics token.
+  // This keeps watchlist prices fresh, ensures staleness stays < 2500ms, and prevents
+  // the FEED_STALE breaker from tripping.
+  setInterval(() => {
+    const mins = istMinutes(clock.now());
+    if (mins < SESSION.OPEN - 15 || mins > SESSION.CLOSE + 15) return;
+    const staleness = state.lastTickMs === null ? Infinity : clock.ms() - state.lastTickMs;
+    if (staleness >= 2500) {
+      void pollQuotesOnce();
+    }
+  }, 2_000);
   setInterval(() => {
     void liveCycle().catch((e) => console.error('[live]', e));
   }, cfg.TF_ANALYSIS_INTERVAL_MS);
@@ -803,8 +1039,23 @@ function startLoops(): void {
 
   // Live fills are pulled; the portfolio stream only makes them arrive sooner.
   setInterval(() => {
-    if (broker !== paperBroker && trader.live().length > 0) void broker.sync();
+    if (upstoxBroker && trader.live().some((p) => p.broker === 'UPSTOX')) void upstoxBroker.sync();
   }, 3_000);
+
+  // Transitions the database missed while it was unreachable.
+  setInterval(() => {
+    if (journalBacklog.size > 0) void flushJournal();
+  }, 5_000);
+
+  // A long-running engine must re-seed each morning: daily bars are fetched once
+  // and never extended by ticks, so swing strategies would otherwise keep
+  // reading the boot day's history, and yesterday's 5-min bars must move into
+  // the warmup history.
+  setInterval(() => {
+    const mins = istMinutes(clock.now());
+    if (warmupDay === istDateKey(clock.now()) || mins < SESSION.OPEN - 10 || mins > SESSION.CLOSE) return;
+    void seedWarmupCandles().catch((e) => console.error('[warmup] daily reseed', e));
+  }, 60_000);
 
   // Option chains during market hours; the master reloads each morning.
   setInterval(() => {
@@ -842,12 +1093,22 @@ function startLoops(): void {
   }, 1_500);
 }
 
+/** IST date the candle caches were last seeded for. */
+let warmupDay = '';
+
 async function seedWarmupCandles(): Promise<void> {
   console.log('[warmup] fetching prior sessions, today and daily bars from Upstox REST...');
-  const keys = [...new Set([...watchlist.keys(), ...fnoDesk.feedKeys()])];
+  warmupDay = istDateKey(clock.now());
+  const keys = [...new Set([
+    ...watchlist.keys(), ...fnoDesk.feedKeys(),
+    ...(state.focus ? [state.focus.instrumentKey] : []),
+    ...(state.singleTarget ? [state.singleTarget.instrumentKey] : []),
+  ])];
   for (const key of keys) {
     await loadCandles(key);
     const stock = watchlist.get(key);
+    // The tick handler rebuilds today's range from 0; yesterday's must not leak in.
+    if (stock) Object.assign(stock, { open: 0, high: 0, low: 0 });
     const intra = intradayCandlesCache.get(key);
     if (stock && intra && intra.length > 0) {
       const last = intra[intra.length - 1]!;
@@ -859,6 +1120,180 @@ async function seedWarmupCandles(): Promise<void> {
     }
   }
   console.log(`[warmup] ${keys.length} instruments: history ${historyCache.size}, today ${intradayCandlesCache.size}, daily ${dailyCandlesCache.size}`);
+}
+
+// ─────────────────────────────── restart recovery ───────────────────────────────
+
+/** Re-apply the dashboard's last settings. Anything that no longer validates falls back to the env defaults. */
+async function restoreSettings(): Promise<void> {
+  let s: PersistedSettings | null;
+  try {
+    s = await settingsStore.get<PersistedSettings>('settings');
+  } catch (e) {
+    console.error('[settings] could not load — using env defaults:', e instanceof Error ? e.message : e);
+    return;
+  }
+  if (!s) return;
+
+  const parsed = AutoConfigSchema.safeParse({ ...s.auto, enabled: state.auto.enabled });
+  if (parsed.success) {
+    state.auto = {
+      ...parsed.data,
+      strategies: parsed.data.strategies.filter((id) => STRATEGY_CATALOG.some((d) => d.id === id)),
+      segments: { ...parsed.data.segments, fno: parsed.data.segments.fno && state.fnoEnabled },
+    };
+    const m = modeForSegments(state.auto.segments);
+    if (m) {
+      state.strategyMode = m;
+      strategyManager.setMode(m);
+    }
+  }
+  if (s.sizing) {
+    if (s.sizing.mode === 'FIXED_QTY' || s.sizing.mode === 'FIXED_BUDGET' || s.sizing.mode === 'RISK_BASED') state.sizingMode = s.sizing.mode;
+    if (s.sizing.budget > 0) state.budget = s.sizing.budget;
+    if (s.sizing.fixedQty > 0) state.fixedQty = Math.floor(s.sizing.fixedQty);
+    if (s.sizing.riskPct > 0 && s.sizing.riskPct <= 5) state.riskPct = s.sizing.riskPct;
+  }
+  for (const w of (s.watchlistExtra ?? []).slice(0, MAX_WATCHLIST_EXTRA)) {
+    const eq = resolveEquity(w.symbol);
+    if (!eq) continue;
+    const item = { ...eq, name: w.name || eq.symbol };
+    watchlistExtra.set(eq.instrumentKey, item);
+    addWatch(item);
+  }
+  if (state.auto.targetMode === 'SINGLE_STOCK') {
+    const eq = resolveEquity(state.auto.targetSymbol.toUpperCase());
+    if (eq) {
+      state.singleTarget = eq;
+      state.focus = eq;
+    } else {
+      console.warn(`[settings] SINGLE_STOCK target ${state.auto.targetSymbol} not found — scope reset to ALL_SCANNED`);
+      state.auto = { ...state.auto, targetMode: 'ALL_SCANNED' };
+    }
+  }
+  console.log(`[settings] restored — mode ${state.strategyMode}, scope ${state.auto.targetMode}${state.singleTarget ? ` ${state.singleTarget.symbol}` : ''}, sizing ${state.sizingMode}, +${watchlistExtra.size} watchlist`);
+}
+
+const istDayStartMs = (): number => new Date(`${istDateKey(clock.now())}T00:00:00+05:30`).getTime();
+
+/** Restored Upstox positions whose broker facts could not be read yet (no trading token at boot). */
+const unverified = new Set<string>();
+
+/**
+ * Read what Upstox says about journaled positions: does each bracket still
+ * exist, and did a leg fire on an order today's book no longer shows? Null for
+ * a position whose GTT could not be read — it stays unverified.
+ */
+async function upstoxViews(ps: readonly ManagedPosition[]): Promise<Map<string, UpstoxView | null>> {
+  const out = new Map<string, UpstoxView | null>();
+  if (tokens.trading() === null || ps.length === 0) return out;
+  const book = await client.orderBook();
+  if (!book.ok) return out;
+  const onBook = new Set(book.value.map((o) => o.order_id));
+  for (const p of ps) {
+    if (!p.gttOrderId) continue;
+    const g = await client.getGtt(p.gttOrderId);
+    if (!g.ok) { out.set(p.id, null); continue; }
+    const gtt = g.value.find((d) => d.gtt_order_id === p.gttOrderId);
+    out.set(p.id, {
+      gttFound: gtt !== undefined,
+      exitOrdersOffBook: (gtt?.rules ?? [])
+        .filter((r) => (r.strategy === 'TARGET' || r.strategy === 'STOPLOSS') && r.order_id && !onBook.has(r.order_id))
+        .map((r) => r.order_id!),
+    });
+  }
+  return out;
+}
+
+/** Walk a filled position forward to MANAGING through the legal transitions. */
+async function toManaging(p: ManagedPosition): Promise<void> {
+  if (p.state === 'ENTRY_FILLED') await positionMachine.transition(p, 'BRACKET_ARMED');
+  if (p.state === 'BRACKET_ARMED') await positionMachine.transition(p, 'MANAGING');
+}
+
+const paperBracketOf = (p: ManagedPosition) => ({
+  positionId: p.id, instrumentKey: p.instrumentKey, side: p.side, quantity: p.filledQuantity,
+  product: p.product, entryTrigger: 'IMMEDIATE' as const, entryPrice: p.avgEntry ?? p.entry,
+  targetPrice: p.target, stopLossPrice: p.stopLoss, ...(p.trailingGap ? { trailingGap: p.trailingGap } : {}),
+});
+
+/**
+ * Replay the journal after a (re)start: every non-terminal position is dropped,
+ * re-attached to its own broker, finished, or flagged ORPHANED for a human —
+ * per `planRecovery`. Today's risk counters are rebuilt from the same journal.
+ */
+async function recoverPositions(): Promise<void> {
+  const open = await positionStore.loadOpen();
+  trader.restoreDay(await positionStore.loadSince(istDayStartMs()));
+  if (open.length === 0) return;
+
+  const live = open.filter((p) => p.broker === 'UPSTOX');
+  if (live.length > 0) trader.register('UPSTOX', ensureUpstoxBroker());
+  const views = await upstoxViews(live.filter((p) => p.state !== 'ORPHANED'));
+  const today = istDateKey(clock.now());
+  const summary: Record<string, number> = {};
+
+  for (const p of open) {
+    const plan = planRecovery(p, today, views.get(p.id) ?? null);
+    summary[plan.kind] = (summary[plan.kind] ?? 0) + 1;
+    trader.restore(p);
+    try {
+      switch (plan.kind) {
+        case 'DROP':
+          p.exitReason = plan.reason;
+          await positionMachine.transition(p, plan.to);
+          break;
+        case 'ORPHAN':
+          p.exitReason = plan.reason;
+          await positionMachine.orphan(p, plan.reason);
+          break;
+        case 'EXIT_NEXT_TICK':
+          paperBroker.adopt({ gttOrderId: p.gttOrderId ?? `gtt-restored-${p.id}`, order: paperBracketOf(p), fillPrice: p.avgEntry ?? p.entry, exitPending: true });
+          p.gttOrderId ??= `gtt-restored-${p.id}`;
+          await toManaging(p);
+          if (p.state === 'MANAGING') {
+            p.exitReason = plan.reason;
+            await positionMachine.transition(p, 'EXIT_TRIGGERED');
+          }
+          break;
+        case 'ADOPT':
+          if (p.state === 'ORPHANED') break;
+          if (p.broker === 'PAPER') {
+            paperBroker.adopt({ gttOrderId: p.gttOrderId ?? `gtt-restored-${p.id}`, order: paperBracketOf(p), fillPrice: p.avgEntry ?? p.entry, exitPending: false });
+            p.gttOrderId ??= `gtt-restored-${p.id}`;
+          } else {
+            ensureUpstoxBroker().adopt({
+              positionId: p.id, gttOrderId: p.gttOrderId!, instrumentKey: p.instrumentKey,
+              side: p.side, product: p.product, entryDone: p.filledQuantity > 0,
+            });
+            if (!views.get(p.id)) unverified.add(p.id);
+          }
+          await toManaging(p);
+          break;
+      }
+    } catch (e) {
+      console.error(`[recovery] ${p.symbol} (${p.id}) — ${plan.kind} failed:`, e instanceof Error ? e.message : e);
+    }
+    console.log(`[recovery] ${p.broker} ${p.symbol} ${p.side} x${p.filledQuantity} → ${plan.kind}${'reason' in plan ? ` (${plan.reason})` : ''} → ${p.state}`);
+  }
+  await audit(sql, { kind: 'RECONCILE', actor: 'engine', mode: currentMode(), payload: { restored: open.length, ...summary, unverified: unverified.size } });
+}
+
+/** Once a trading token arrives, verify the live positions that were adopted blind at boot. */
+async function reverifyUpstox(): Promise<void> {
+  const ps = [...unverified].map((id) => trader.positions.get(id)).filter((p): p is ManagedPosition => p !== undefined && p.state !== 'ORPHANED');
+  const views = await upstoxViews(ps);
+  const today = istDateKey(clock.now());
+  for (const p of ps) {
+    const view = views.get(p.id);
+    if (!view) continue;
+    unverified.delete(p.id);
+    const plan = planRecovery(p, today, view);
+    if (plan.kind === 'ORPHAN') {
+      p.exitReason = plan.reason;
+      await positionMachine.orphan(p, plan.reason);
+    }
+  }
 }
 
 // ─────────────────────────────── control API ───────────────────────────────
@@ -930,7 +1365,8 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/state') {
     const snap = snapshot();
     const v = evaluate(snap, cfg.limits, clock);
-    const ranked = stockScanner.rankUniverse(DEFAULT_UNIVERSE, intradayCandlesCache, {
+    // Informational momentum ranking of the watched set; autonomous entries rank by hybrid quality (/analysis/live).
+    const ranked = stockScanner.rankUniverse([...watchlist.values()], intradayCandlesCache, {
       minPrice: state.auto.minPrice,
       maxPrice: state.auto.maxPrice,
     });
@@ -939,7 +1375,8 @@ const server = createServer(async (req, res) => {
       baseMode: state.arm.mode,
       isArmed: currentMode() === 'LIVE',
       armedUntilMs: state.arm.armedUntilMs,
-      liveCapable: broker !== paperBroker,
+      liveCapable: trader.activeBroker === 'UPSTOX',
+      journalBacklog: journalBacklog.size,
       autoTrading: state.auto.enabled,
       autoTargetMode: state.auto.targetMode ?? 'ALL_SCANNED',
       autoTargetSymbol: state.auto.targetSymbol ?? 'RELIANCE',
@@ -1030,6 +1467,14 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === '/auto/config' && req.method === 'GET') return json(200, state.auto);
 
+  if (url.pathname === '/watchlist' && req.method === 'GET') {
+    return json(200, {
+      max: MAX_WATCHLIST_EXTRA,
+      default: DEFAULT_UNIVERSE.map((u) => u.symbol),
+      added: [...watchlistExtra.values()].map((w) => ({ ...w, bars: intradayCandlesCache.get(w.instrumentKey)?.length ?? 0 })),
+    });
+  }
+
   if (url.pathname === '/scan/status' && req.method === 'GET') {
     return json(200, scanner.current ?? { status: 'IDLE' });
   }
@@ -1076,8 +1521,11 @@ const server = createServer(async (req, res) => {
       });
       if (!ex.ok) return json(400, { error: ex.error.message });
       tokens.setTrading(ex.value.accessToken);
+      persistTradingToken(ex.value.accessToken);
       await audit(sql, { kind: 'TOKEN_REFRESH', actor: 'engine', mode: currentMode(), payload: { success: true } });
       void startPortfolioFeed();
+      void feed.reconnect().catch((e) => console.error('[feed reconnect failed]', e));
+      void reverifyUpstox().catch((e) => console.error('[recovery] re-verify', e));
       return json(200, { ok: true, expiresAt: tokens.msUntilExpiry() });
     }
 
@@ -1099,20 +1547,20 @@ const server = createServer(async (req, res) => {
         ? body['targetSymbol'].trim().toUpperCase()
         : state.auto.targetSymbol ?? 'RELIANCE';
 
+      // Turning autonomy off must never be refused, whatever the target.
+      if (targetMode === 'SINGLE_STOCK' && state.singleTarget?.symbol !== targetSymbol) {
+        const bad = await setSingleTarget(targetSymbol);
+        if (bad && enabled) return json(404, { error: bad });
+      }
       state.auto = {
         ...state.auto,
         enabled,
         targetMode,
         targetSymbol,
       };
+      await audit(sql, { kind: 'MODE_CHANGE', actor: 'user', mode: currentMode(), payload: { auto: state.auto as never } });
 
-      if (targetMode === 'SINGLE_STOCK') {
-        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol);
-        if (item) {
-          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
-        }
-      }
-
+      persistSettings();
       return json(200, {
         autoTrading: state.auto.enabled,
         targetMode: state.auto.targetMode,
@@ -1126,19 +1574,17 @@ const server = createServer(async (req, res) => {
         ? body['targetSymbol'].trim().toUpperCase()
         : state.auto.targetSymbol ?? 'RELIANCE';
 
+      if (targetMode === 'SINGLE_STOCK') {
+        const bad = await setSingleTarget(targetSymbol);
+        if (bad) return json(404, { error: bad });
+      }
       state.auto = {
         ...state.auto,
         targetMode,
         targetSymbol,
       };
 
-      if (targetMode === 'SINGLE_STOCK') {
-        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol);
-        if (item) {
-          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
-        }
-      }
-
+      persistSettings();
       return json(200, {
         targetMode: state.auto.targetMode,
         targetSymbol: state.auto.targetSymbol,
@@ -1163,6 +1609,16 @@ const server = createServer(async (req, res) => {
         const val = Number(body['maxPrice']);
         maxPrice = Number.isFinite(val) && val > 0 ? val : 500000;
       }
+      // An inverted range blocks every setup, which looks exactly like "no signals".
+      if (minPrice > 0 && maxPrice < 500000 && minPrice > maxPrice) {
+        return json(400, { error: `min price ₹${minPrice} is above max price ₹${maxPrice}` });
+      }
+
+      // Validate everything that can fail before changing anything.
+      if (targetMode === 'SINGLE_STOCK') {
+        const bad = await setSingleTarget(targetSymbol);
+        if (bad) return json(404, { error: bad });
+      }
 
       state.auto = {
         ...state.auto,
@@ -1172,22 +1628,9 @@ const server = createServer(async (req, res) => {
         maxPrice,
       };
 
-      if (targetMode === 'SINGLE_STOCK') {
-        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol)
-          ?? equities.find((e) => e.symbol === targetSymbol);
-        if (item) {
-          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
-          feed.subscribe([item.instrumentKey], 'full');
-          void loadCandles(item.instrumentKey);
-        }
-      }
-
-      // 3. Strategy Mode
+      // 3. Strategy Mode — drives which segments the live loop may enter.
       const stratMode = body['strategyMode'];
-      if (stratMode === 'INTRADAY' || stratMode === 'SWING' || stratMode === 'BOTH') {
-        state.strategyMode = stratMode;
-        strategyManager.setMode(stratMode);
-      }
+      if (stratMode === 'INTRADAY' || stratMode === 'SWING' || stratMode === 'BOTH') setStrategyMode(stratMode);
 
       // 4. Sizing Mode & Values
       const szMode = body['sizingMode'];
@@ -1211,7 +1654,12 @@ const server = createServer(async (req, res) => {
       if (typeof body['enabled'] === 'boolean') {
         state.auto.enabled = body['enabled'];
       }
+      await audit(sql, {
+        kind: 'MODE_CHANGE', actor: 'user', mode: currentMode(),
+        payload: { auto: state.auto as never, strategyMode: state.strategyMode, sizingMode: state.sizingMode },
+      });
 
+      persistSettings();
       return json(200, {
         ok: true,
         autoTrading: state.auto.enabled,
@@ -1234,8 +1682,8 @@ const server = createServer(async (req, res) => {
       if (m !== 'INTRADAY' && m !== 'SWING' && m !== 'BOTH') {
         return json(400, { error: 'invalid mode; must be INTRADAY, SWING, or BOTH' });
       }
-      state.strategyMode = m;
-      strategyManager.setMode(m);
+      setStrategyMode(m);
+      persistSettings();
       return json(200, { strategyMode: state.strategyMode });
     }
 
@@ -1261,7 +1709,60 @@ const server = createServer(async (req, res) => {
       if (budget !== undefined) state.budget = budget;
       if (fixedQty !== undefined) state.fixedQty = Math.floor(fixedQty);
       if (riskPct !== undefined) state.riskPct = riskPct;
+      persistSettings();
       return json(200, { sizingMode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct });
+    }
+
+    case '/positions/resolve': {
+      const kind = body['resolution'];
+      const note = String(body['note'] ?? '').trim();
+      if (kind !== 'CLOSED' && kind !== 'MANAGING') return json(400, { error: 'resolution must be CLOSED or MANAGING' });
+      if (note.length < 3) return json(400, { error: 'add a note saying what you verified at the broker' });
+      let exitPrice: Paise | null = null;
+      if (kind === 'CLOSED' && body['exitPrice'] !== undefined && body['exitPrice'] !== null && body['exitPrice'] !== '') {
+        const px = Number(body['exitPrice']);
+        if (!Number.isFinite(px) || px <= 0) return json(400, { error: 'exitPrice must be a positive number of rupees' });
+        exitPrice = rupeesToPaise(px);
+      }
+      const positionId = String(body['positionId'] ?? '');
+      const r = await trader.resolveOrphan(positionId, kind === 'CLOSED' ? { kind, exitPrice, note } : { kind, note });
+      if (!r.ok) return json(409, { error: r.detail });
+      const p = trader.positions.get(positionId)!;
+      if (kind === 'MANAGING') {
+        // Re-attach to its broker so its bracket's fills are followed again.
+        if (p.broker === 'UPSTOX' && p.gttOrderId) {
+          ensureUpstoxBroker().adopt({
+            positionId: p.id, gttOrderId: p.gttOrderId, instrumentKey: p.instrumentKey,
+            side: p.side, product: p.product, entryDone: true,
+          });
+        } else if (p.broker === 'PAPER') {
+          p.gttOrderId ??= `gtt-restored-${p.id}`;
+          paperBroker.adopt({ gttOrderId: p.gttOrderId, order: paperBracketOf(p), fillPrice: p.avgEntry ?? p.entry, exitPending: false });
+        }
+      }
+      await audit(sql, { kind: 'RECONCILE', actor: 'user', mode: currentMode(), positionId, payload: { resolution: kind, note, exitPrice: exitPrice !== null ? paiseToRupees(exitPrice) : null } });
+      return json(200, { ok: true, detail: r.detail, state: p.state });
+    }
+
+    case '/watchlist/add': {
+      const symbols = (Array.isArray(body['symbols']) ? body['symbols'] : [body['symbol']])
+        .map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean);
+      if (symbols.length === 0) return json(400, { error: 'symbol or symbols[] required' });
+      const added: string[] = [];
+      const failed: Array<{ symbol: string; error: string }> = [];
+      for (const s of symbols.slice(0, MAX_WATCHLIST_EXTRA)) {
+        const bad = await addToWatchlist(s);
+        if (bad) failed.push({ symbol: s, error: bad }); else added.push(s);
+      }
+      if (added.length > 0) persistSettings();
+      return json(added.length > 0 ? 200 : 409, { added, failed, size: watchlistExtra.size, max: MAX_WATCHLIST_EXTRA });
+    }
+
+    case '/watchlist/remove': {
+      const bad = removeFromWatchlist(String(body['symbol'] ?? '').trim().toUpperCase());
+      if (bad) return json(409, { error: bad });
+      persistSettings();
+      return json(200, { ok: true, size: watchlistExtra.size });
     }
 
     case '/positions/exit': {
@@ -1310,14 +1811,12 @@ const server = createServer(async (req, res) => {
     case '/mode/switch':
     case '/mode/set': {
       const requestedMode = body['mode'] ? String(body['mode']).toUpperCase() : 'LIVE';
-      if (requestedMode === 'PAPER') {
-        broker = paperBroker;
-        trader.setBroker(broker);
-        state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
-        await audit(sql, { kind: 'DISARM', actor: 'user', mode: currentMode(), payload: { switchedFromDashboard: true } });
-        return json(200, { mode: currentMode() });
-      }
+      if (requestedMode === 'PAPER') return json(200, await disarm({ switchedFromDashboard: true }));
 
+      // Enforced here, not in the browser: a stray or scripted POST must not arm real money.
+      if (body['confirmation'] !== LIVE_CONFIRMATION) {
+        return json(400, { error: `To arm LIVE, type the confirmation phrase exactly: ${LIVE_CONFIRMATION}` });
+      }
       if (tokens.trading() === null) {
         return json(409, { error: 'No Upstox trading token — click "Login with Upstox" first to authenticate for live trading.' });
       }
@@ -1328,21 +1827,17 @@ const server = createServer(async (req, res) => {
         return json(409, { error: `Preflight failed: ${failed.map((c) => `${c.name} (${c.detail})`).join('; ')}` });
       }
 
-      broker = ensureUpstoxBroker();
-      trader.setBroker(broker);
+      // Open paper positions stay on the paper broker; only new entries go to Upstox.
+      trader.setBroker('UPSTOX', ensureUpstoxBroker());
       state.arm = armUntilSessionEnd(clock, 'user');
       await audit(sql, { kind: 'ARM', actor: 'user', mode: currentMode(), payload: { until: state.arm.armedUntilMs } });
       void startPortfolioFeed();
+      if (!feed.isConnected) void feed.reconnect().catch((e) => console.error('[feed reconnect error]', e));
       return json(200, { mode: currentMode(), armedUntilMs: state.arm.armedUntilMs });
     }
 
-    case '/mode/disarm': {
-      broker = paperBroker;
-      trader.setBroker(broker);
-      state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
-      await audit(sql, { kind: 'DISARM', actor: 'user', mode: currentMode(), payload: {} });
-      return json(200, { mode: currentMode() });
-    }
+    case '/mode/disarm':
+      return json(200, await disarm({}));
 
     case '/fno/toggle': {
       state.fnoEnabled = typeof body['enabled'] === 'boolean' ? body['enabled'] : !state.fnoEnabled;
@@ -1404,8 +1899,19 @@ const server = createServer(async (req, res) => {
       if (parsed.data.segments.fno && !state.fnoEnabled) {
         return json(409, { error: 'enable the F&O desk before allowing autonomous F&O entries' });
       }
+      if (parsed.data.targetMode === 'SINGLE_STOCK' && state.singleTarget?.symbol !== parsed.data.targetSymbol.toUpperCase()) {
+        const bad = await setSingleTarget(parsed.data.targetSymbol.toUpperCase());
+        if (bad) return json(404, { error: bad });
+      }
       state.auto = parsed.data;
+      // Keep the dashboard's strategy mode truthful about what the loop enters.
+      const m = modeForSegments(state.auto.segments);
+      if (m) {
+        state.strategyMode = m;
+        strategyManager.setMode(m);
+      }
       await audit(sql, { kind: 'MODE_CHANGE', actor: 'user', mode: currentMode(), payload: { auto: state.auto as never } });
+      persistSettings();
       return json(200, state.auto);
     }
 
@@ -1454,7 +1960,7 @@ const server = createServer(async (req, res) => {
     case '/hooks/token':
       // Untrusted hints: they only prompt a pull of authoritative state.
       void audit(sql, { kind: 'WEBHOOK_HINT', actor: 'webhook', mode: currentMode(), payload: { path: url.pathname } });
-      void broker.sync();
+      void upstoxBroker?.sync();
       return json(200, { accepted: true, action: 'resynced' });
   }
 
@@ -1463,6 +1969,10 @@ const server = createServer(async (req, res) => {
 
 async function main(): Promise<void> {
   console.log(`TradeForger engine booting — TF_MODE ${cfg.TF_MODE}, strategy ${cfg.TF_AUTO_TRADING_MODE}, F&O ${cfg.TF_FNO_ENABLED ? cfg.TF_FNO_INSTRUMENT : 'off'}, IST ${istHHMM(clock.now())}`);
+  // Fail closed: without the journal the engine cannot recover positions after
+  // a restart, so it does not trade at all.
+  const applied = await runMigrations(sql);
+  console.log(`[db] schema ${applied.length ? `migrated: ${applied.join(', ')}` : 'up to date'}`);
   await audit(sql, {
     kind: 'ENGINE_BOOT', actor: 'engine', mode: cfg.TF_MODE,
     payload: { version: '0.3.0', sizingMode: cfg.TF_SIZING_MODE, strategyMode: cfg.TF_AUTO_TRADING_MODE, fno: cfg.TF_FNO_ENABLED },
@@ -1475,24 +1985,16 @@ async function main(): Promise<void> {
   const pf = await preflight(sql, client, clock, { requireTrading: wantsLiveBroker });
   for (const c of pf.checks) console.log(`  ${c.passed ? '✓' : c.hard ? '✗' : '·'} ${c.name.padEnd(20)} ${c.detail}`);
 
-  if (wantsLiveBroker && pf.passed) {
-    broker = new UpstoxBroker({
-      client,
-      clock,
-      modeGate: currentMode,
-      onDryRun: (kind, payload) => {
-        console.log(`[DRY RUN ${currentMode()}] ${kind}`, JSON.stringify(payload));
-        void audit(sql, { kind: 'ORDER_REQUEST', actor: 'engine', mode: currentMode(), payload: { dryRun: true, kind, payload: payload as never } });
-      },
-    });
-  } else if (wantsLiveBroker) {
+  const live = wantsLiveBroker && pf.passed;
+  if (wantsLiveBroker && !pf.passed) {
     console.warn('Preflight failed — running the PAPER broker; no order will reach Upstox this session');
     state.arm = { mode: 'PAPER', armedUntilMs: null, armedBy: null };
   }
 
   trader = new Trader({
     clock,
-    broker,
+    broker: live ? ensureUpstoxBroker() : paperBroker,
+    brokerId: live ? 'UPSTOX' : 'PAPER',
     machine: positionMachine,
     perTradeLossPaise: () => pctOf(rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL), cfg.limits.perTradeLossPct),
     onClosed: onPositionClosed,
@@ -1514,6 +2016,10 @@ async function main(): Promise<void> {
     console.error('[registry] failed to load (run npm run migrate) — LIVE autonomous entries will find no approved strategy:', e instanceof Error ? e.message : e);
   }
 
+  await restoreSettings();
+  // Before the loops start: nothing may enter until every journaled position is accounted for.
+  await recoverPositions();
+
   if (state.fnoEnabled) {
     try {
       await fnoDesk.init(masterContracts ?? undefined);
@@ -1526,6 +2032,7 @@ async function main(): Promise<void> {
   }
 
   await seedWarmupCandles();
+  await pollQuotesOnce();
   startLoops();
 
   try {
@@ -1537,7 +2044,7 @@ async function main(): Promise<void> {
 
   server.listen(cfg.TF_ENGINE_PORT, cfg.TF_ENGINE_HOST, () => {
     console.log(`✓ Control API on http://${cfg.TF_ENGINE_HOST}:${cfg.TF_ENGINE_PORT} (bearer auth required)`);
-    console.log(`✓ Broker: ${broker === paperBroker ? 'PAPER' : 'UPSTOX (orders only while armed)'} · mode ${currentMode()}`);
+    console.log(`✓ Broker: ${trader.activeBroker === 'PAPER' ? 'PAPER' : 'UPSTOX (orders only while armed)'} · mode ${currentMode()}`);
     console.log(`✓ AI: local ensemble${cfg.GROQ_API_KEY ? ` + ${cfg.GROQ_MODEL}` : ''}`);
   });
 }

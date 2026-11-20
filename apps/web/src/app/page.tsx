@@ -690,11 +690,15 @@ export default function Dashboard() {
       window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'LIVE' } }));
       showToast('🔴 LIVE TRADING ARMED — Real orders active');
     } else {
-      const r = await postEngine<{ mode?: string; error?: string }>('/mode/disarm', { mode: 'PAPER' });
+      const r = await postEngine<{ mode?: string; detail?: string }>('/mode/disarm', { mode: 'PAPER' });
+      if (!r.ok) {
+        showToast(`❌ Switch to PAPER FAILED: ${r.error} — engine may still be LIVE`, 'error');
+        return;
+      }
       setState((prev) => (prev ? { ...prev, mode: 'PAPER', isArmed: false } : null));
       localStorage.setItem('tf_trading_mode', 'PAPER');
       window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'PAPER' } }));
-      showToast('🟢 Switched to PAPER MODE — Zero-risk simulation');
+      showToast(r.data.detail ? `🟢 PAPER MODE — ${r.data.detail}` : '🟢 Switched to PAPER MODE — Zero-risk simulation');
     }
 
     fetch('/api/mode', {

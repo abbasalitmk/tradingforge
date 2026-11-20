@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { decide, mergeCandles, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target } from './live.ts';
+import {
+  decide, mergeCandles, segmentsForMode, modeForSegments, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+} from './live.ts';
 
 const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typeof decide>[0] => ({
   instrumentKey: 'NSE_EQ|X', symbol: 'X', style: 'INTRADAY', side: 'BUY',
   entry: 100, stopLoss: 98, target: 104, rewardRisk: 2, quality: 80,
   primaryStrategyId: 'ORB_SUPERTREND', agreeing: [], conflicting: [], votes: [], reasons: [],
-  generatedAt: 0, stableSince: 0, stableSeconds: 10, partialBar: true,
+  generatedAt: 0, stableSince: 0, stableSeconds: 10, partialBar: true, invalidReason: null,
   ...over,
 });
 const equity: Target = { instrumentKey: 'NSE_EQ|X', symbol: 'X', fnoUnderlying: false, cashTradeable: true };
@@ -62,6 +64,17 @@ describe('autonomous entry decision', () => {
     expect(decide(setup({ entry: 600 }), equity, priceFiltered, paper).blockers).toContain('price ₹600.00 > max ₹500');
     // setup with entry = 300 within range
     expect(decide(setup({ entry: 300 }), equity, priceFiltered, paper).blockers).toEqual([]);
+  });
+
+  it('maps the dashboard strategy mode onto the segments decide() reads', () => {
+    const swingOnly = { ...on, segments: segmentsForMode('SWING', on.segments) };
+    expect(decide(setup(), equity, swingOnly, paper).blockers).toContain('intraday segment off');
+    expect(decide(setup({ style: 'SWING' }), equity, swingOnly, paper).route).toBe('EQ_SWING');
+
+    const both = segmentsForMode('BOTH', { intraday: false, swing: false, fno: true });
+    expect(both).toEqual({ intraday: true, swing: true, fno: true });
+    expect(modeForSegments(segmentsForMode('INTRADAY', both))).toBe('INTRADAY');
+    expect(modeForSegments({ intraday: false, swing: false, fno: true })).toBeNull();
   });
 
   it('rejects out-of-range user settings', () => {

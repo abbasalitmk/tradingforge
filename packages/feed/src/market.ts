@@ -79,6 +79,15 @@ export class MarketFeed extends EventEmitter {
     return this.lastTickMs === null ? null : this.clock.ms() - this.lastTickMs;
   }
 
+  /** Update the last-tick timestamp (used when ticks are ingested via fallback or poller). */
+  recordTick(ms: number = this.clock.ms()): void {
+    this.lastTickMs = ms;
+  }
+
+  get isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
   private loadProto(): protobuf.Type {
     if (this.responseType) return this.responseType;
     const file = join(dirname(fileURLToPath(import.meta.url)), 'MarketDataFeedV3.proto');
@@ -221,6 +230,12 @@ export class MarketFeed extends EventEmitter {
     this.closing = true;
     this.ws?.close();
     this.ws = null;
+  }
+
+  async reconnect(): Promise<void> {
+    this.reconnects = 0;
+    this.close();
+    await this.connect();
   }
 
   get subscribedCount(): number {
