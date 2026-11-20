@@ -110,7 +110,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               Read-only web control plane · Orders routed via TradeForger Core
             </span>
 
-            <div style={{ height: 20, width: 1, background: 'var(--line)' }} />
+            <div className="tf-hide-sm" style={{ height: 20, width: 1, background: 'var(--line)' }} />
 
             {/* Theme Toggle (Light / Dark / System) */}
             <ThemeToggle />
