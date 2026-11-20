@@ -422,11 +422,12 @@ feed.on('error', (e) => {
     // Upstox answers 403 with an empty body when the account's WebSocket slots
     // are taken; say so once instead of logging the same line every reconnect.
     if (!feedIssue?.startsWith('Upstox refused')) {
-      console.error('[feed] Upstox refused the market-data WebSocket (HTTP 403). The account allows 2 WebSocket '
-        + 'connections in total — another running engine (e.g. the VPS deployment) most likely holds them. '
-        + 'Prices fall back to REST polling every 2 s; stop the other engine to restore tick-by-tick data.');
+      console.error('[feed] Upstox refused the market-data WebSocket (HTTP 403, empty body). Upstox allows 2 WebSocket '
+        + 'connections per account across every app and device; another session using this account or API key holds '
+        + 'them, or Upstox is refusing this key — check other running engines/scripts, then ask Upstox support. '
+        + 'Prices fall back to REST polling every 2 s meanwhile.');
     }
-    feedIssue = 'Upstox refused the WebSocket (HTTP 403) — another engine on this account most likely holds both connection slots';
+    feedIssue = 'Upstox refused the WebSocket (HTTP 403) — another session on this Upstox account holds both connection slots, or Upstox is refusing this API key';
     return;
   }
   feedIssue = e.message;
