@@ -43,6 +43,11 @@ export interface UniverseItem {
   readonly name: string;
 }
 
+export interface RankOptions {
+  readonly minPrice?: number;
+  readonly maxPrice?: number;
+}
+
 /**
  * Autonomous Stock Scanner & Multi-Factor Quality Ranker.
  *
@@ -54,6 +59,7 @@ export class StockScanner {
   rankUniverse(
     universe: readonly UniverseItem[],
     candleMap: ReadonlyMap<string, readonly Candle[]>,
+    options?: RankOptions,
   ): ScoredStock[] {
     const scored: Array<Omit<ScoredStock, 'rank'>> = [];
 
@@ -66,6 +72,13 @@ export class StockScanner {
 
       const last = candles[candles.length - 1]!;
       const price = last.close;
+
+      if (options?.minPrice !== undefined && options.minPrice > 0 && price < options.minPrice) {
+        continue;
+      }
+      if (options?.maxPrice !== undefined && options.maxPrice > 0 && options.maxPrice < 500000 && price > options.maxPrice) {
+        continue;
+      }
       const c = closes(candles);
 
       const atrVal = latest(atr(candles, 14)) ?? 5.0;

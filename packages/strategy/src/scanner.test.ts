@@ -55,5 +55,38 @@ describe('StockScanner', () => {
     expect(setup.rewardToRisk1).toBe(1.5);
     expect(setup.rewardToRisk2).toBe(2.5);
   });
+
+  it('filters out stocks outside minPrice and maxPrice range', () => {
+    const universe = [
+      { instrumentKey: 'NSE_EQ|LOW', symbol: 'LOW', name: 'Low Price Stock' },
+      { instrumentKey: 'NSE_EQ|MID', symbol: 'MID', name: 'Mid Price Stock' },
+      { instrumentKey: 'NSE_EQ|HIGH', symbol: 'HIGH', name: 'High Price Stock' },
+    ];
+
+    // synthesizeCandles starts at price = 1000
+    // Let's create candles with custom prices
+    const mkCandles = (p: number) => {
+      const base = new Date('2026-09-14T03:45:00Z').getTime();
+      return Array.from({ length: 20 }, (_, i) => ({
+        ts: base + i * 5 * 60_000,
+        open: p,
+        high: p + 2,
+        low: p - 2,
+        close: p,
+        volume: 5000,
+      }));
+    };
+
+    const candleMap = new Map<string, Candle[]>([
+      ['NSE_EQ|LOW', mkCandles(50)],    // ₹50
+      ['NSE_EQ|MID', mkCandles(250)],   // ₹250
+      ['NSE_EQ|HIGH', mkCandles(12000)], // ₹12,000 (e.g. Maruti)
+    ]);
+
+    // Filter between 100 and 500
+    const filtered = scanner.rankUniverse(universe, candleMap, { minPrice: 100, maxPrice: 500 });
+    expect(filtered.length).toBe(1);
+    expect(filtered[0]!.symbol).toBe('MID');
+  });
 });
 

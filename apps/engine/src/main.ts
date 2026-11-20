@@ -710,6 +710,12 @@ async function liveCycle(): Promise<void> {
     ranked = ranked.filter(({ a }) => a.symbol.toUpperCase() === sym);
   }
 
+  if (state.auto.minPrice > 0 || (state.auto.maxPrice > 0 && state.auto.maxPrice < 500000)) {
+    const minP = state.auto.minPrice ?? 0;
+    const maxP = (state.auto.maxPrice ?? 0) > 0 ? state.auto.maxPrice : Number.MAX_SAFE_INTEGER;
+    ranked = ranked.filter(({ s }) => s.entry >= minP && s.entry <= maxP);
+  }
+
   for (const { a, s } of ranked) {
     const key = `${a.instrumentKey}|${s.style}`;
     if ((cooldown.get(key) ?? 0) > clock.ms()) continue;
@@ -924,7 +930,10 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/state') {
     const snap = snapshot();
     const v = evaluate(snap, cfg.limits, clock);
-    const ranked = stockScanner.rankUniverse(DEFAULT_UNIVERSE, intradayCandlesCache);
+    const ranked = stockScanner.rankUniverse(DEFAULT_UNIVERSE, intradayCandlesCache, {
+      minPrice: state.auto.minPrice,
+      maxPrice: state.auto.maxPrice,
+    });
     return json(200, {
       mode: currentMode(),
       baseMode: state.arm.mode,
@@ -934,6 +943,8 @@ const server = createServer(async (req, res) => {
       autoTrading: state.auto.enabled,
       autoTargetMode: state.auto.targetMode ?? 'ALL_SCANNED',
       autoTargetSymbol: state.auto.targetSymbol ?? 'RELIANCE',
+      autoMinPrice: state.auto.minPrice ?? 0,
+      autoMaxPrice: state.auto.maxPrice ?? 500000,
       strategyMode: state.strategyMode,
       sizing: { mode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct },
       limits: {
@@ -1131,6 +1142,90 @@ const server = createServer(async (req, res) => {
       return json(200, {
         targetMode: state.auto.targetMode,
         targetSymbol: state.auto.targetSymbol,
+      });
+    }
+
+    case '/strategy/filters': {
+      // 1. Target Scope
+      const targetMode = body['targetMode'] === 'SINGLE_STOCK' ? 'SINGLE_STOCK' : body['targetMode'] === 'ALL_SCANNED' ? 'ALL_SCANNED' : state.auto.targetMode ?? 'ALL_SCANNED';
+      const targetSymbol = typeof body['targetSymbol'] === 'string' && body['targetSymbol'].trim()
+        ? body['targetSymbol'].trim().toUpperCase()
+        : state.auto.targetSymbol ?? 'RELIANCE';
+
+      // 2. Price Filters (Rupees)
+      let minPrice = state.auto.minPrice ?? 0;
+      let maxPrice = state.auto.maxPrice ?? 500000;
+      if (body['minPrice'] !== undefined) {
+        const val = Number(body['minPrice']);
+        minPrice = Number.isFinite(val) && val >= 0 ? val : 0;
+      }
+      if (body['maxPrice'] !== undefined) {
+        const val = Number(body['maxPrice']);
+        maxPrice = Number.isFinite(val) && val > 0 ? val : 500000;
+      }
+
+      state.auto = {
+        ...state.auto,
+        targetMode,
+        targetSymbol,
+        minPrice,
+        maxPrice,
+      };
+
+      if (targetMode === 'SINGLE_STOCK') {
+        const item = DEFAULT_UNIVERSE.find((u) => u.symbol === targetSymbol)
+          ?? equities.find((e) => e.symbol === targetSymbol);
+        if (item) {
+          state.focus = { instrumentKey: item.instrumentKey, symbol: item.symbol };
+          feed.subscribe([item.instrumentKey], 'full');
+          void loadCandles(item.instrumentKey);
+        }
+      }
+
+      // 3. Strategy Mode
+      const stratMode = body['strategyMode'];
+      if (stratMode === 'INTRADAY' || stratMode === 'SWING' || stratMode === 'BOTH') {
+        state.strategyMode = stratMode;
+        strategyManager.setMode(stratMode);
+      }
+
+      // 4. Sizing Mode & Values
+      const szMode = body['sizingMode'];
+      if (szMode === 'FIXED_QTY' || szMode === 'FIXED_BUDGET' || szMode === 'RISK_BASED') {
+        state.sizingMode = szMode;
+      }
+      if (body['budget'] !== undefined) {
+        const b = Number(body['budget']);
+        if (Number.isFinite(b) && b > 0) state.budget = b;
+      }
+      if (body['fixedQty'] !== undefined) {
+        const q = Number(body['fixedQty']);
+        if (Number.isFinite(q) && q > 0) state.fixedQty = Math.floor(q);
+      }
+      if (body['riskPct'] !== undefined) {
+        const r = Number(body['riskPct']);
+        if (Number.isFinite(r) && r > 0 && r <= 5) state.riskPct = r;
+      }
+
+      // 5. Optional Auto-Trading toggle
+      if (typeof body['enabled'] === 'boolean') {
+        state.auto.enabled = body['enabled'];
+      }
+
+      return json(200, {
+        ok: true,
+        autoTrading: state.auto.enabled,
+        targetMode: state.auto.targetMode,
+        targetSymbol: state.auto.targetSymbol,
+        minPrice: state.auto.minPrice,
+        maxPrice: state.auto.maxPrice,
+        strategyMode: state.strategyMode,
+        sizing: {
+          mode: state.sizingMode,
+          budget: state.budget,
+          fixedQty: state.fixedQty,
+          riskPct: state.riskPct,
+        },
       });
     }
 

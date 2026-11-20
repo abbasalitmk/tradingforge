@@ -373,6 +373,8 @@ interface EngineState {
   autoTrading: boolean;
   autoTargetMode?: 'ALL_SCANNED' | 'SINGLE_STOCK';
   autoTargetSymbol?: string;
+  autoMinPrice?: number;
+  autoMaxPrice?: number;
   strategyMode: 'INTRADAY' | 'SWING' | 'BOTH';
   sizing: {
     mode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED';
@@ -450,6 +452,55 @@ export default function Dashboard() {
   const [autoTargetMode, setAutoTargetMode] = useState<'ALL_SCANNED' | 'SINGLE_STOCK'>('ALL_SCANNED');
   const [autoTargetSymbol, setAutoTargetSymbol] = useState<string>('RELIANCE');
   const [manualStockInput, setManualStockInput] = useState<string>('');
+
+  // Unified Filter & Sizing Form State
+  const [formTargetMode, setFormTargetMode] = useState<'ALL_SCANNED' | 'SINGLE_STOCK'>('ALL_SCANNED');
+  const [formTargetSymbol, setFormTargetSymbol] = useState<string>('RELIANCE');
+  const [formMinPrice, setFormMinPrice] = useState<string>('');
+  const [formMaxPrice, setFormMaxPrice] = useState<string>('');
+  const [formStrategyMode, setFormStrategyMode] = useState<'INTRADAY' | 'SWING' | 'BOTH'>('BOTH');
+  const [formSizingMode, setFormSizingMode] = useState<'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED'>('FIXED_BUDGET');
+  const [formBudget, setFormBudget] = useState<string>('10000');
+  const [formFixedQty, setFormFixedQty] = useState<string>('10');
+  const [formRiskPct, setFormRiskPct] = useState<string>('1.0');
+  const [applyingFilters, setApplyingFilters] = useState<boolean>(false);
+
+  // Search Autocomplete State for NSE Symbols
+  const [symbolSearchQuery, setSymbolSearchQuery] = useState('');
+  const [symbolSearchResults, setSymbolSearchResults] = useState<Array<{ symbol: string; name: string }>>([]);
+  const [isSearchingSymbols, setIsSearchingSymbols] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const hasInitForm = useRef(false);
+
+  // Debounced search for NSE symbols
+  useEffect(() => {
+    const q = symbolSearchQuery.trim();
+    if (!q) {
+      setSymbolSearchResults([]);
+      setIsSearchingSymbols(false);
+      setShowSearchDropdown(false);
+      return;
+    }
+    setIsSearchingSymbols(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/market/search?q=${encodeURIComponent(q)}`, { cache: 'no-store' });
+        if (res.ok) {
+          const body = await res.json();
+          if (body?.results && Array.isArray(body.results)) {
+            setSymbolSearchResults(body.results.slice(0, 10));
+            setShowSearchDropdown(true);
+          }
+        }
+      } catch {
+        // silent
+      } finally {
+        setIsSearchingSymbols(false);
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [symbolSearchQuery]);
 
   useEffect(() => {
     const handleSync = (e: Event) => {
@@ -546,6 +597,18 @@ export default function Dashboard() {
         setState(data);
         if (data.autoTargetMode) setAutoTargetMode(data.autoTargetMode);
         if (data.autoTargetSymbol) setAutoTargetSymbol(data.autoTargetSymbol);
+        if (!hasInitForm.current) {
+          hasInitForm.current = true;
+          setFormTargetMode(data.autoTargetMode ?? 'ALL_SCANNED');
+          setFormTargetSymbol(data.autoTargetSymbol ?? 'RELIANCE');
+          setFormMinPrice(data.autoMinPrice ? String(data.autoMinPrice) : '');
+          setFormMaxPrice(data.autoMaxPrice && data.autoMaxPrice < 500000 ? String(data.autoMaxPrice) : '');
+          setFormStrategyMode(data.strategyMode ?? 'BOTH');
+          setFormSizingMode(data.sizing?.mode ?? 'FIXED_BUDGET');
+          setFormBudget(data.sizing?.budget ? String(data.sizing.budget) : '10000');
+          setFormFixedQty(data.sizing?.fixedQty ? String(data.sizing.fixedQty) : '10');
+          setFormRiskPct(data.sizing?.riskPct ? String(data.sizing.riskPct) : '1.0');
+        }
         setOfflineReason(null);
         setLastLiveAt(Date.now());
       } else {
@@ -709,6 +772,83 @@ export default function Dashboard() {
     const next = r.data.strategyMode ?? mode;
     setState((prev) => (prev ? { ...prev, strategyMode: next } : null));
     showToast(`Trading mode set to: ${next}`);
+  };
+
+  const hasPendingChanges = Boolean(
+    state &&
+    (
+      formTargetMode !== (state.autoTargetMode ?? 'ALL_SCANNED') ||
+      (formTargetMode === 'SINGLE_STOCK' && formTargetSymbol.trim().toUpperCase() !== (state.autoTargetSymbol ?? 'RELIANCE').trim().toUpperCase()) ||
+      (formMinPrice.trim() ? Number(formMinPrice) : 0) !== (state.autoMinPrice ?? 0) ||
+      (formMaxPrice.trim() ? Number(formMaxPrice) : 500000) !== (state.autoMaxPrice ?? 500000) ||
+      formStrategyMode !== (state.strategyMode ?? 'BOTH') ||
+      formSizingMode !== (state.sizing?.mode ?? 'FIXED_BUDGET') ||
+      (formSizingMode === 'FIXED_BUDGET' && (Number(formBudget) || 10000) !== (state.sizing?.budget ?? 10000)) ||
+      (formSizingMode === 'FIXED_QTY' && (Number(formFixedQty) || 10) !== (state.sizing?.fixedQty ?? 10)) ||
+      (formSizingMode === 'RISK_BASED' && (Number(formRiskPct) || 1) !== (state.sizing?.riskPct ?? 1))
+    )
+  );
+
+  const handleApplyAllFilters = async () => {
+    setApplyingFilters(true);
+    const minP = formMinPrice.trim() ? Math.max(0, Number(formMinPrice)) : 0;
+    const maxP = formMaxPrice.trim() ? Math.max(0, Number(formMaxPrice)) : 500000;
+    const budgetVal = Math.max(100, Number(formBudget) || 10000);
+    const qtyVal = Math.max(1, Math.floor(Number(formFixedQty) || 10));
+    const riskVal = Math.min(5, Math.max(0.1, Number(formRiskPct) || 1));
+    const sym = formTargetSymbol.trim().toUpperCase() || 'RELIANCE';
+
+    const payload = {
+      targetMode: formTargetMode,
+      targetSymbol: sym,
+      minPrice: minP,
+      maxPrice: maxP,
+      strategyMode: formStrategyMode,
+      sizingMode: formSizingMode,
+      budget: budgetVal,
+      fixedQty: qtyVal,
+      riskPct: riskVal,
+    };
+
+    const r = await postEngine<{
+      ok?: boolean;
+      autoTrading?: boolean;
+      targetMode?: 'ALL_SCANNED' | 'SINGLE_STOCK';
+      targetSymbol?: string;
+      minPrice?: number;
+      maxPrice?: number;
+      strategyMode?: 'INTRADAY' | 'SWING' | 'BOTH';
+      sizing?: { mode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED'; budget: number; fixedQty: number; riskPct: number };
+    }>('/strategy/filters', payload);
+
+    setApplyingFilters(false);
+    if (!r.ok) {
+      showToast(`Filter update FAILED: ${r.error}`, 'error');
+      return;
+    }
+
+    setState((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        autoTargetMode: r.data.targetMode ?? formTargetMode,
+        autoTargetSymbol: r.data.targetSymbol ?? sym,
+        autoMinPrice: r.data.minPrice ?? minP,
+        autoMaxPrice: r.data.maxPrice ?? maxP,
+        strategyMode: r.data.strategyMode ?? formStrategyMode,
+        sizing: r.data.sizing ?? {
+          mode: formSizingMode,
+          budget: budgetVal,
+          fixedQty: qtyVal,
+          riskPct: riskVal,
+        },
+      };
+    });
+
+    setAutoTargetMode(r.data.targetMode ?? formTargetMode);
+    setAutoTargetSymbol(r.data.targetSymbol ?? sym);
+
+    showToast('✓ All trading filters and position sizing successfully applied!', 'ok');
   };
 
   const handleSetSizing = async (sizingMode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED', val: number) => {
@@ -1447,7 +1587,7 @@ export default function Dashboard() {
           background: 'var(--panel)',
           border: `1.5px solid ${isRealMoney ? 'rgba(248,81,73,0.4)' : 'rgba(63,185,80,0.4)'}`,
           borderRadius: 14,
-          padding: '20px 22px',
+          padding: '22px 24px',
           display: 'flex',
           flexDirection: 'column',
           gap: 18,
@@ -1523,6 +1663,7 @@ export default function Dashboard() {
 
           {/* Master Auto-Trading Toggle */}
           <button
+            type="button"
             onClick={handleToggleAutoTrading}
             style={{
               background: s.autoTrading ? 'rgba(63,185,80,0.15)' : 'var(--panel-subtle)',
@@ -1553,10 +1694,88 @@ export default function Dashboard() {
           </button>
         </div>
 
+        {/* Row 2: Applied Filters in Head */}
+        <div
+          style={{
+            background: 'var(--panel-subtle)',
+            borderRadius: 10,
+            border: '1px solid var(--line)',
+            padding: '12px 16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 750, color: 'var(--fg)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>🏷️ APPLIED ACTIVE FILTERS (RUNNING IN ENGINE)</span>
+              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: 'rgba(37,99,235,0.15)', color: 'var(--accent)', fontWeight: 700 }}>
+                ACTIVE
+              </span>
+            </div>
+            {hasPendingChanges && (
+              <span style={{ fontSize: 11.5, color: '#f59e0b', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span>⚠️ Unapplied changes in form</span>
+                <span style={{ color: 'var(--muted)' }}>(click "Apply Settings & Filters" below)</span>
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {/* Target Scope Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Scope:</span>
+              <strong style={{ color: s.autoTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--fg)' }}>
+                {s.autoTargetMode === 'SINGLE_STOCK' ? `🎯 Dedicated: ${s.autoTargetSymbol || 'RELIANCE'}` : '🌐 All Scanned Stocks'}
+              </strong>
+            </div>
+
+            {/* Price Filter Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Price Range:</span>
+              <strong style={{ color: (s.autoMinPrice || (s.autoMaxPrice && s.autoMaxPrice < 500000)) ? 'var(--accent)' : 'var(--fg)' }}>
+                {(s.autoMinPrice || (s.autoMaxPrice && s.autoMaxPrice < 500000))
+                  ? `₹${s.autoMinPrice || 0} – ₹${s.autoMaxPrice && s.autoMaxPrice < 500000 ? s.autoMaxPrice : 'Any'}`
+                  : 'Any Price (No Range Limit)'}
+              </strong>
+            </div>
+
+            {/* Sizing Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Sizing:</span>
+              <strong>
+                {s.sizing.mode === 'FIXED_BUDGET'
+                  ? `💰 Fixed Amount: ₹${s.sizing.budget?.toLocaleString('en-IN') || '10,000'}`
+                  : s.sizing.mode === 'FIXED_QTY'
+                    ? `📦 Fixed Qty: ${s.sizing.fixedQty || 10} shares`
+                    : `🛡️ Risk: ${s.sizing.riskPct || 1}% per trade`}
+              </strong>
+            </div>
+
+            {/* Strategy Mode Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Strategy:</span>
+              <strong>
+                {s.strategyMode === 'BOTH' ? '⚡ Dual (Intraday + Swing)' : s.strategyMode === 'INTRADAY' ? 'Intraday (15m ORB)' : 'Swing (Daily EMA)'}
+              </strong>
+            </div>
+
+            {/* AI Models Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>AI Validation:</span>
+              <strong style={{ color: 'var(--ok)' }}>
+                🤖 Grok + Groq + Quant Consensus
+              </strong>
+            </div>
+          </div>
+        </div>
+
         {/* Divider */}
         <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
 
-        {/* Row 2: Automated Target Scope (Exclusive Selection) */}
+        {/* ── CONFIGURATION & FILTERS FORM ── */}
+
+        {/* Filter 1: Automated Target Scope */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
             <div>
@@ -1575,11 +1794,11 @@ export default function Dashboard() {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 type="button"
-                onClick={() => handleSetAutoScope('ALL_SCANNED')}
+                onClick={() => setFormTargetMode('ALL_SCANNED')}
                 style={{
-                  background: autoTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--panel-subtle)',
-                  color: autoTargetMode === 'ALL_SCANNED' ? '#ffffff' : 'var(--fg)',
-                  border: `1px solid ${autoTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--line)'}`,
+                  background: formTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: formTargetMode === 'ALL_SCANNED' ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${formTargetMode === 'ALL_SCANNED' ? 'var(--accent)' : 'var(--line)'}`,
                   borderRadius: 8,
                   padding: '7px 16px',
                   fontSize: 12.5,
@@ -1588,7 +1807,7 @@ export default function Dashboard() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
-                  boxShadow: autoTargetMode === 'ALL_SCANNED' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
+                  boxShadow: formTargetMode === 'ALL_SCANNED' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
                 }}
               >
                 <span>🌐 All Scanned Stocks (Auto Ranking)</span>
@@ -1596,11 +1815,11 @@ export default function Dashboard() {
 
               <button
                 type="button"
-                onClick={() => handleSetAutoScope('SINGLE_STOCK')}
+                onClick={() => setFormTargetMode('SINGLE_STOCK')}
                 style={{
-                  background: autoTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--panel-subtle)',
-                  color: autoTargetMode === 'SINGLE_STOCK' ? '#ffffff' : 'var(--fg)',
-                  border: `1px solid ${autoTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--line)'}`,
+                  background: formTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: formTargetMode === 'SINGLE_STOCK' ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${formTargetMode === 'SINGLE_STOCK' ? 'var(--accent)' : 'var(--line)'}`,
                   borderRadius: 8,
                   padding: '7px 16px',
                   fontSize: 12.5,
@@ -1609,7 +1828,7 @@ export default function Dashboard() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
-                  boxShadow: autoTargetMode === 'SINGLE_STOCK' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
+                  boxShadow: formTargetMode === 'SINGLE_STOCK' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
                 }}
               >
                 <span>🎯 Dedicated Single Stock</span>
@@ -1618,16 +1837,16 @@ export default function Dashboard() {
           </div>
 
           {/* Sub-Panel: When Dedicated Single Stock is selected */}
-          {autoTargetMode === 'SINGLE_STOCK' && (
+          {formTargetMode === 'SINGLE_STOCK' && (
             <div
               style={{
                 background: 'var(--panel-subtle)',
                 border: '1px solid var(--accent)',
                 borderRadius: 10,
-                padding: '12px 16px',
+                padding: '14px 16px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 10,
+                gap: 12,
                 marginTop: 4,
               }}
             >
@@ -1635,14 +1854,14 @@ export default function Dashboard() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 14 }}>🔒</span>
                   <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
-                    Auto-Trading Locked Stock: <span style={{ color: 'var(--accent)', fontFamily: 'monospace', fontSize: 14 }}>{autoTargetSymbol}</span>
+                    Selected Target Stock: <span style={{ color: 'var(--accent)', fontFamily: 'monospace', fontSize: 15 }}>{formTargetSymbol}</span>
                   </span>
                   <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgba(37,99,235,0.15)', color: 'var(--accent)', fontWeight: 600 }}>
-                    Active Target
+                    Selected
                   </span>
                 </div>
                 <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-                  Automated entry will happen on <strong>{autoTargetSymbol}</strong> only. All other stocks are skipped.
+                  Automated entry will happen on <strong>{formTargetSymbol}</strong> only. All other stocks are skipped.
                 </span>
               </div>
 
@@ -1653,11 +1872,11 @@ export default function Dashboard() {
                   <button
                     key={sym}
                     type="button"
-                    onClick={() => handleSetAutoScope('SINGLE_STOCK', sym)}
+                    onClick={() => setFormTargetSymbol(sym)}
                     style={{
-                      background: autoTargetSymbol === sym ? 'var(--accent)' : 'var(--panel)',
-                      color: autoTargetSymbol === sym ? '#ffffff' : 'var(--fg)',
-                      border: `1px solid ${autoTargetSymbol === sym ? 'var(--accent)' : 'var(--line)'}`,
+                      background: formTargetSymbol === sym ? 'var(--accent)' : 'var(--panel)',
+                      color: formTargetSymbol === sym ? '#ffffff' : 'var(--fg)',
+                      border: `1px solid ${formTargetSymbol === sym ? 'var(--accent)' : 'var(--line)'}`,
                       borderRadius: 6,
                       padding: '4px 10px',
                       fontSize: 11.5,
@@ -1670,60 +1889,91 @@ export default function Dashboard() {
                 ))}
               </div>
 
-              {/* Custom Search/Input for any stock */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Or Enter Any NSE Symbol:</span>
-                <input
-                  type="text"
-                  placeholder="e.g. AXISBANK, MARUTI, WIPRO"
-                  value={manualStockInput}
-                  onChange={(e) => setManualStockInput(e.target.value.toUpperCase())}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && manualStockInput.trim()) {
-                      handleSetAutoScope('SINGLE_STOCK', manualStockInput.trim());
-                      setManualStockInput('');
-                    }
-                  }}
-                  style={{
-                    width: 220,
-                    background: 'var(--panel)',
-                    border: '1px solid var(--line)',
-                    borderRadius: 6,
-                    padding: '6px 10px',
-                    color: 'var(--fg)',
-                    fontSize: 12.5,
-                    textTransform: 'uppercase',
-                    fontFamily: 'monospace',
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (manualStockInput.trim()) {
-                      handleSetAutoScope('SINGLE_STOCK', manualStockInput.trim());
-                      setManualStockInput('');
-                    }
-                  }}
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 14px',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Set Target Stock
-                </button>
+              {/* Searchable Autocomplete for any NSE Stock */}
+              <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Or Search & Select Any NSE Symbol:</span>
+                  <div style={{ position: 'relative', width: 280 }}>
+                    <input
+                      type="text"
+                      placeholder="Type e.g. MARUTI, WIPRO, TATA..."
+                      value={symbolSearchQuery}
+                      onChange={(e) => setSymbolSearchQuery(e.target.value.toUpperCase())}
+                      onFocus={() => {
+                        if (symbolSearchResults.length > 0) setShowSearchDropdown(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        background: 'var(--panel)',
+                        border: '1px solid var(--line)',
+                        borderRadius: 6,
+                        padding: '7px 12px',
+                        color: 'var(--fg)',
+                        fontSize: 12.5,
+                        textTransform: 'uppercase',
+                        fontFamily: 'monospace',
+                      }}
+                    />
+                    {isSearchingSymbols && (
+                      <span style={{ position: 'absolute', right: 10, top: 8, fontSize: 11, color: 'var(--muted)' }}>
+                        Searching...
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Autocomplete Dropdown */}
+                {showSearchDropdown && symbolSearchResults.length > 0 && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 36,
+                      left: 245,
+                      width: 320,
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                      background: 'var(--panel)',
+                      border: '1px solid var(--accent)',
+                      borderRadius: 8,
+                      boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                      zIndex: 100,
+                    }}
+                  >
+                    {symbolSearchResults.map((res) => (
+                      <div
+                        key={res.symbol}
+                        onClick={() => {
+                          setFormTargetSymbol(res.symbol);
+                          setSymbolSearchQuery('');
+                          setShowSearchDropdown(false);
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          borderBottom: '1px solid var(--line)',
+                          cursor: 'pointer',
+                          background: formTargetSymbol === res.symbol ? 'var(--panel-subtle)' : 'transparent',
+                        }}
+                      >
+                        <span style={{ fontWeight: 700, fontFamily: 'monospace', color: 'var(--accent)' }}>
+                          {res.symbol}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {res.name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {autoTargetMode === 'ALL_SCANNED' && (
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', background: 'var(--panel-subtle)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
-              🌐 <strong>All Scanned Stocks Active:</strong> Engine runs 15m ORB + Supertrend across all watchlist stocks, evaluates with AI consensus, and auto-trades the highest-ranked setup.
+          {formTargetMode === 'ALL_SCANNED' && (
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', background: 'var(--panel-subtle)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--line)' }}>
+              🌐 <strong>All Scanned Stocks Active:</strong> Engine runs full algorithmic scanner (ORB, Supertrend, VWAP, Candlestick, Trend Momentum) across universe stocks, filters by your price range, and takes the top AI-consensus trade.
             </div>
           )}
         </div>
@@ -1731,24 +1981,336 @@ export default function Dashboard() {
         {/* Divider */}
         <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
 
-        {/* Row 3: Strategy Profile */}
+        {/* Filter 2: Stock Price Filter (From & To) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🏷️ Stock Price Range Filter (₹)</span>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'var(--panel-subtle)', border: '1px solid var(--line)', color: 'var(--muted)', fontWeight: 600 }}>
+                  Price Boundary
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                Only trade stocks whose price is between Min and Max. High-priced stocks (e.g. Maruti ₹12,000) or low-value penny stocks are excluded.
+              </div>
+            </div>
+
+            {/* Quick Price Range Presets */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[
+                { label: '₹50 – ₹500', min: '50', max: '500' },
+                { label: '₹100 – ₹1,000', min: '100', max: '1000' },
+                { label: '₹200 – ₹2,500', min: '200', max: '2500' },
+                { label: 'Clear (Any Price)', min: '', max: '' },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => {
+                    setFormMinPrice(p.min);
+                    setFormMaxPrice(p.max);
+                  }}
+                  style={{
+                    background: formMinPrice === p.min && formMaxPrice === p.max ? 'var(--accent)' : 'var(--panel-subtle)',
+                    color: formMinPrice === p.min && formMaxPrice === p.max ? '#ffffff' : 'var(--fg)',
+                    border: `1px solid ${formMinPrice === p.min && formMaxPrice === p.max ? 'var(--accent)' : 'var(--line)'}`,
+                    borderRadius: 6,
+                    padding: '5px 10px',
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Price Range Inputs */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'var(--panel-subtle)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--line)' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Min Price (₹):</span>
+            <input
+              type="number"
+              min="0"
+              placeholder="0 (No minimum)"
+              value={formMinPrice}
+              onChange={(e) => setFormMinPrice(e.target.value)}
+              style={{
+                width: 140,
+                background: 'var(--panel)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                padding: '6px 10px',
+                color: 'var(--fg)',
+                fontSize: 12.5,
+              }}
+            />
+
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>to</span>
+
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Max Price (₹):</span>
+            <input
+              type="number"
+              min="0"
+              placeholder="500000 (No maximum)"
+              value={formMaxPrice}
+              onChange={(e) => setFormMaxPrice(e.target.value)}
+              style={{
+                width: 140,
+                background: 'var(--panel)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                padding: '6px 10px',
+                color: 'var(--fg)',
+                fontSize: 12.5,
+              }}
+            />
+
+            <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+              {(formMinPrice || formMaxPrice)
+                ? `Active filter: Only stocks from ₹${formMinPrice || 0} to ₹${formMaxPrice || '∞'}`
+                : 'All stock prices eligible'}
+            </span>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Filter 3: Position Sizing Options */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)' }}>💰 Position Sizing Options</div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                Set how much capital or quantity to allocate per trade.
+              </div>
+            </div>
+
+            {/* Sizing Mode Switcher */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[
+                { id: 'FIXED_BUDGET', label: '💰 Fixed Amount (₹)' },
+                { id: 'FIXED_QTY', label: '📦 Fixed Quantity' },
+                { id: 'RISK_BASED', label: '🛡️ Risk % per Trade' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setFormSizingMode(t.id as any)}
+                  style={{
+                    background: formSizingMode === t.id ? 'var(--accent)' : 'var(--panel-subtle)',
+                    color: formSizingMode === t.id ? '#ffffff' : 'var(--fg)',
+                    border: `1px solid ${formSizingMode === t.id ? 'var(--accent)' : 'var(--line)'}`,
+                    borderRadius: 6,
+                    padding: '6px 12px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Sizing Configuration Inputs */}
+          <div
+            style={{
+              background: 'var(--panel-subtle)',
+              borderRadius: 8,
+              padding: '12px 14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              border: '1px solid var(--line)',
+            }}
+          >
+            {formSizingMode === 'FIXED_BUDGET' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg)' }}>
+                  Selected: Fixed Capital Budget · ₹{Number(formBudget || 10000).toLocaleString('en-IN')} per trade
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                  {[5000, 10000, 25000, 50000, 100000].map((amt) => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => setFormBudget(String(amt))}
+                      style={{
+                        border: `1px solid ${formBudget === String(amt) ? 'var(--accent)' : 'var(--line)'}`,
+                        background: formBudget === String(amt) ? 'var(--accent)' : 'var(--panel)',
+                        color: formBudget === String(amt) ? '#ffffff' : 'var(--fg)',
+                        borderRadius: 4,
+                        padding: '4px 10px',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      ₹{amt.toLocaleString('en-IN')}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Capital Amount: ₹</span>
+                  <input
+                    type="number"
+                    min="100"
+                    placeholder="10000"
+                    value={formBudget}
+                    onChange={(e) => setFormBudget(e.target.value)}
+                    style={{
+                      width: 150,
+                      background: 'var(--panel)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 4,
+                      padding: '6px 10px',
+                      color: 'var(--fg)',
+                      fontSize: 12.5,
+                    }}
+                  />
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                    (Shares allocated = Budget ÷ Stock Entry Price)
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {formSizingMode === 'FIXED_QTY' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg)' }}>
+                  Selected: Fixed Quantity · {formFixedQty || 10} shares/lots per trade
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                  {[5, 10, 25, 50, 100, 250].map((qty) => (
+                    <button
+                      key={qty}
+                      type="button"
+                      onClick={() => setFormFixedQty(String(qty))}
+                      style={{
+                        border: `1px solid ${formFixedQty === String(qty) ? 'var(--accent)' : 'var(--line)'}`,
+                        background: formFixedQty === String(qty) ? 'var(--accent)' : 'var(--panel)',
+                        color: formFixedQty === String(qty) ? '#ffffff' : 'var(--fg)',
+                        borderRadius: 4,
+                        padding: '4px 10px',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {qty} shares
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Shares Quantity:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="10"
+                    value={formFixedQty}
+                    onChange={(e) => setFormFixedQty(e.target.value)}
+                    style={{
+                      width: 120,
+                      background: 'var(--panel)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 4,
+                      padding: '6px 10px',
+                      color: 'var(--fg)',
+                      fontSize: 12.5,
+                    }}
+                  />
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                    (Orders exactly this number of shares or lots every trade)
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {formSizingMode === 'RISK_BASED' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg)' }}>
+                  Selected: Risk-Based Sizing · {formRiskPct || 1}% capital risk per trade
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
+                  {[0.5, 1.0, 1.5, 2.0, 3.0].map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => setFormRiskPct(String(pct))}
+                      style={{
+                        border: `1px solid ${formRiskPct === String(pct) ? 'var(--accent)' : 'var(--line)'}`,
+                        background: formRiskPct === String(pct) ? 'var(--accent)' : 'var(--panel)',
+                        color: formRiskPct === String(pct) ? '#ffffff' : 'var(--fg)',
+                        borderRadius: 4,
+                        padding: '4px 10px',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Risk % per trade:</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    max="5"
+                    min="0.1"
+                    placeholder="1.0"
+                    value={formRiskPct}
+                    onChange={(e) => setFormRiskPct(e.target.value)}
+                    style={{
+                      width: 110,
+                      background: 'var(--panel)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 4,
+                      padding: '6px 10px',
+                      color: 'var(--fg)',
+                      fontSize: 12.5,
+                    }}
+                  />
+                  <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
+                    (Sizing = Capital × Risk% ÷ StopLoss distance. Max 5% safety limit)
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Filter 4: Strategy Profile */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Strategy Profile:</span>
             {(['INTRADAY', 'SWING', 'BOTH'] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => handleSetStrategyMode(m)}
+                type="button"
+                onClick={() => setFormStrategyMode(m)}
                 style={{
-                  background: s.strategyMode === m ? 'var(--accent)' : 'var(--panel-subtle)',
-                  color: s.strategyMode === m ? '#ffffff' : 'var(--fg)',
-                  border: `1px solid ${s.strategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
+                  background: formStrategyMode === m ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: formStrategyMode === m ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${formStrategyMode === m ? 'var(--accent)' : 'var(--line)'}`,
                   borderRadius: 6,
                   padding: '6px 14px',
                   fontSize: 12,
                   fontWeight: 600,
                   cursor: 'pointer',
-                  boxShadow: s.strategyMode === m ? '0 1px 3px rgba(37,99,235,0.25)' : 'none',
+                  boxShadow: formStrategyMode === m ? '0 1px 3px rgba(37,99,235,0.25)' : 'none',
                 }}
               >
                 {m === 'BOTH' ? '⚡ DUAL (Intraday + Swing)' : m}
@@ -1757,304 +2319,63 @@ export default function Dashboard() {
           </div>
 
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {s.strategyMode === 'BOTH' ? 'Intraday ORB (15m) + Swing EMA Breakouts' : s.strategyMode === 'INTRADAY' ? '15m Opening Range Breakouts' : 'Daily EMA Swing Breakouts'}
-          </div>
-        </div>
-      </div>
-
-      {/* Position Sizing Control Panel */}
-      <div
-        style={{
-          background: 'var(--panel)',
-          border: '1px solid var(--line)',
-          borderRadius: 10,
-          padding: '16px 18px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 14,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>Position Sizing Options</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-              Set how much capital or quantity to allocate per trade.
-            </div>
-          </div>
-
-          {/* Sizing Mode Switcher */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[
-              { id: 'FIXED_BUDGET', label: '💰 Fixed Amount (₹)' },
-              { id: 'FIXED_QTY', label: '📦 Fixed Quantity' },
-              { id: 'RISK_BASED', label: '🛡️ Risk % per Trade' },
-            ].map((t) => (
-              <button
-                key={t.id}
-                onClick={() =>
-                  handleSetSizing(
-                    t.id as any,
-                    t.id === 'FIXED_BUDGET'
-                      ? s.sizing.budget || 10000
-                      : t.id === 'FIXED_QTY'
-                        ? s.sizing.fixedQty || 10
-                        : s.sizing.riskPct || 1,
-                  )
-                }
-                style={{
-                  background: s.sizing.mode === t.id ? 'var(--accent)' : 'var(--panel-subtle)',
-                  color: s.sizing.mode === t.id ? '#ffffff' : 'var(--fg)',
-                  border: `1px solid ${s.sizing.mode === t.id ? 'var(--accent)' : 'var(--line)'}`,
-                  borderRadius: 6,
-                  padding: '6px 12px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
+            {formStrategyMode === 'BOTH' ? 'Intraday ORB (15m) + Swing EMA Breakouts' : formStrategyMode === 'INTRADAY' ? '15m Opening Range Breakouts' : 'Daily EMA Swing Breakouts'}
           </div>
         </div>
 
-        {/* Detailed Sizing Configurator */}
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Master Action Bar: Apply Settings & Filters */}
         <div
           style={{
-            background: 'var(--panel-subtle)',
-            borderRadius: 8,
-            padding: '14px 16px',
             display: 'flex',
-            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
             gap: 12,
+            background: hasPendingChanges ? 'rgba(37,99,235,0.08)' : 'var(--panel-subtle)',
+            border: `1.5px solid ${hasPendingChanges ? 'var(--accent)' : 'var(--line)'}`,
+            borderRadius: 10,
+            padding: '14px 18px',
           }}
         >
-          {s.sizing.mode === 'FIXED_BUDGET' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
-                Active: Fixed Capital Budget · ₹{s.sizing.budget?.toLocaleString('en-IN') || '10,000'} per trade
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
-                {[5000, 10000, 25000, 50000, 100000].map((amt) => (
-                  <button
-                    key={amt}
-                    onClick={() => {
-                      setCustomSizingInput(String(amt));
-                      handleSetSizing('FIXED_BUDGET', amt);
-                    }}
-                    style={{
-                      border: `1px solid ${s.sizing.budget === amt ? 'var(--accent)' : 'var(--line)'}`,
-                      background: s.sizing.budget === amt ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
-                      color: s.sizing.budget === amt ? 'var(--accent)' : 'var(--fg)',
-                      borderRadius: 4,
-                      padding: '5px 12px',
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ₹{amt.toLocaleString('en-IN')}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Amount: ₹</span>
-                <input
-                  type="number"
-                  placeholder={String(s.sizing.budget || 10000)}
-                  value={customSizingInput}
-                  onChange={(e) => setCustomSizingInput(e.target.value)}
-                  style={{
-                    width: 150,
-                    background: 'var(--panel)',
-                    border: '1px solid var(--line)',
-                    borderRadius: 4,
-                    padding: '6px 10px',
-                    color: 'var(--fg)',
-                    fontSize: 12.5,
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    const val = Number(customSizingInput);
-                    if (val > 0) {
-                      handleSetSizing('FIXED_BUDGET', val);
-                      setCustomSizingInput('');
-                    }
-                  }}
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 4,
-                    padding: '6px 14px',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Apply Amount
-                </button>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
-                  (Shares allocated = Budget ÷ Stock Entry Price)
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 750, color: 'var(--fg)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>⚙️ Save & Apply Filter Configuration</span>
+              {hasPendingChanges && (
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgba(245,158,11,0.2)', color: '#d97706', fontWeight: 700 }}>
+                  UNSAVED CHANGES
                 </span>
-              </div>
+              )}
             </div>
-          )}
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+              Sets target scope, price limits, sizing model, and strategies into the live engine simultaneously.
+            </div>
+          </div>
 
-          {s.sizing.mode === 'FIXED_QTY' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
-                Active: Fixed Quantity · {s.sizing.fixedQty || 10} shares/lots per trade
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
-                {[5, 10, 25, 50, 100, 250].map((qty) => (
-                  <button
-                    key={qty}
-                    onClick={() => {
-                      setCustomSizingInput(String(qty));
-                      handleSetSizing('FIXED_QTY', qty);
-                    }}
-                    style={{
-                      border: `1px solid ${s.sizing.fixedQty === qty ? 'var(--accent)' : 'var(--line)'}`,
-                      background: s.sizing.fixedQty === qty ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
-                      color: s.sizing.fixedQty === qty ? 'var(--accent)' : 'var(--fg)',
-                      borderRadius: 4,
-                      padding: '5px 12px',
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {qty} shares
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Quantity:</span>
-                <input
-                  type="number"
-                  placeholder={String(s.sizing.fixedQty || 10)}
-                  value={customSizingInput}
-                  onChange={(e) => setCustomSizingInput(e.target.value)}
-                  style={{
-                    width: 120,
-                    background: 'var(--panel)',
-                    border: '1px solid var(--line)',
-                    borderRadius: 4,
-                    padding: '6px 10px',
-                    color: 'var(--fg)',
-                    fontSize: 12.5,
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    const val = Number(customSizingInput);
-                    if (val > 0) {
-                      handleSetSizing('FIXED_QTY', val);
-                      setCustomSizingInput('');
-                    }
-                  }}
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 4,
-                    padding: '6px 14px',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Apply Quantity
-                </button>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
-                  (Orders exactly this number of shares or lots every trade)
-                </span>
-              </div>
-            </div>
-          )}
-
-          {s.sizing.mode === 'RISK_BASED' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>
-                Active: Risk-Based Sizing · {s.sizing.riskPct || 1}% capital risk per trade
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>Quick Presets:</span>
-                {[0.5, 1.0, 1.5, 2.0, 3.0].map((pct) => (
-                  <button
-                    key={pct}
-                    onClick={() => {
-                      setCustomSizingInput(String(pct));
-                      handleSetSizing('RISK_BASED', pct);
-                    }}
-                    style={{
-                      border: `1px solid ${s.sizing.riskPct === pct ? 'var(--accent)' : 'var(--line)'}`,
-                      background: s.sizing.riskPct === pct ? 'rgba(74,158,255,0.15)' : 'var(--panel)',
-                      color: s.sizing.riskPct === pct ? 'var(--accent)' : 'var(--fg)',
-                      borderRadius: 4,
-                      padding: '5px 12px',
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {pct}%
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Custom Risk %:</span>
-                <input
-                  type="number"
-                  step="0.1"
-                  max="5"
-                  min="0.1"
-                  placeholder={String(s.sizing.riskPct || 1)}
-                  value={customSizingInput}
-                  onChange={(e) => setCustomSizingInput(e.target.value)}
-                  style={{
-                    width: 110,
-                    background: 'var(--panel)',
-                    border: '1px solid var(--line)',
-                    borderRadius: 4,
-                    padding: '6px 10px',
-                    color: 'var(--fg)',
-                    fontSize: 12.5,
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    const val = Number(customSizingInput);
-                    if (val > 0 && val <= 5) {
-                      handleSetSizing('RISK_BASED', val);
-                      setCustomSizingInput('');
-                    } else if (val > 5) {
-                      showToast('Risk % above 5% per trade is refused for risk safety', 'error');
-                    }
-                  }}
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 4,
-                    padding: '6px 14px',
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Apply Risk %
-                </button>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 6 }}>
-                  (Sizing = Capital × Risk% ÷ StopLoss distance. Max 5% safety limit)
-                </span>
-              </div>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={handleApplyAllFilters}
+            disabled={applyingFilters}
+            style={{
+              background: hasPendingChanges ? 'linear-gradient(135deg, #2563eb, #1d4ed8)' : 'var(--accent)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 8,
+              padding: '10px 24px',
+              fontSize: 13.5,
+              fontWeight: 800,
+              cursor: applyingFilters ? 'wait' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              boxShadow: hasPendingChanges ? '0 0 14px rgba(37,99,235,0.4)' : 'none',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span>{applyingFilters ? 'Applying...' : '✓ Apply Settings & Filters'}</span>
+          </button>
         </div>
       </div>
       </div>

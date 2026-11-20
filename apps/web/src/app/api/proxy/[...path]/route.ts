@@ -20,6 +20,7 @@ const GET_PATHS = new Set(['/state', '/health', '/auth/status', '/fno/chain']);
 const POST_PATHS = new Set([
   '/strategy/autotrade',
   '/strategy/target',
+  '/strategy/filters',
   '/strategy/mode',
   '/sizing',
   '/scanner/analyze',

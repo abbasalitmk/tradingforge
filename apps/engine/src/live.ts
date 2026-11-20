@@ -9,6 +9,10 @@ export const AutoConfigSchema = z.object({
   targetMode: z.enum(['ALL_SCANNED', 'SINGLE_STOCK']).default('ALL_SCANNED'),
   /** When targetMode is SINGLE_STOCK, entries are restricted to this symbol */
   targetSymbol: z.string().default('RELIANCE'),
+  /** Price filter: minimum stock entry price in Rupees (0 = no min) */
+  minPrice: z.number().min(0).default(0),
+  /** Price filter: maximum stock entry price in Rupees (500000 = no max) */
+  maxPrice: z.number().min(0).default(500000),
   segments: z.object({
     intraday: z.boolean(),
     swing: z.boolean(),
@@ -33,6 +37,8 @@ export const DEFAULT_AUTO: AutoConfig = {
   enabled: false,
   targetMode: 'ALL_SCANNED',
   targetSymbol: 'RELIANCE',
+  minPrice: 0,
+  maxPrice: 500000,
   segments: { intraday: true, swing: false, fno: false },
   minQuality: 70,
   minRewardRisk: 1.5,
@@ -110,6 +116,12 @@ export function decide(
   if (setup.quality < cfg.minQuality) blockers.push(`quality ${setup.quality} < ${cfg.minQuality}`);
   if (setup.rewardRisk < cfg.minRewardRisk) blockers.push(`R:R ${setup.rewardRisk.toFixed(2)} < ${cfg.minRewardRisk}`);
   if (setup.stableSeconds < cfg.confirmSeconds) blockers.push(`stable ${setup.stableSeconds}s < ${cfg.confirmSeconds}s`);
+  if (cfg.minPrice > 0 && setup.entry < cfg.minPrice) {
+    blockers.push(`price ₹${setup.entry.toFixed(2)} < min ₹${cfg.minPrice}`);
+  }
+  if (cfg.maxPrice > 0 && cfg.maxPrice < 500000 && setup.entry > cfg.maxPrice) {
+    blockers.push(`price ₹${setup.entry.toFixed(2)} > max ₹${cfg.maxPrice}`);
+  }
   if (cfg.strategies.length > 0 && !cfg.strategies.includes(setup.primaryStrategyId)) {
     blockers.push(`${setup.primaryStrategyId} not enabled`);
   }

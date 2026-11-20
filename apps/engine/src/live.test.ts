@@ -54,6 +54,16 @@ describe('autonomous entry decision', () => {
     expect(d.blockers).toEqual(expect.arrayContaining(['ORB_SUPERTREND not enabled', 'daily entry cap 5 reached']));
   });
 
+  it('blocks entries when setup price is outside minPrice and maxPrice filters', () => {
+    const priceFiltered = { ...on, minPrice: 200, maxPrice: 500 };
+    // setup has entry = 100, which is < minPrice 200
+    expect(decide(setup(), equity, priceFiltered, paper).blockers).toContain('price ₹100.00 < min ₹200');
+    // setup with entry = 600 > maxPrice 500
+    expect(decide(setup({ entry: 600 }), equity, priceFiltered, paper).blockers).toContain('price ₹600.00 > max ₹500');
+    // setup with entry = 300 within range
+    expect(decide(setup({ entry: 300 }), equity, priceFiltered, paper).blockers).toEqual([]);
+  });
+
   it('rejects out-of-range user settings', () => {
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, minRewardRisk: 0.5 }).success).toBe(false);
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, confirmSeconds: 0 }).success).toBe(false);
