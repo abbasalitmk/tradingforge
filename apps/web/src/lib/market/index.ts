@@ -25,7 +25,12 @@ let service: MarketService | null = null;
 export function market(): MarketService | null {
   if (service) return service;
   const cfg = schema.parse({
-    UPSTOX_ANALYTICS_TOKEN: process.env['UPSTOX_ANALYTICS_TOKEN'] || process.env['UPSTOCK_ANALYTICS_KEY'] || undefined,
+    UPSTOX_ANALYTICS_TOKEN:
+      process.env['UPSTOX_ANALYTICS_TOKEN'] ||
+      process.env['UPSTOCK_ANALYTICS_KEY'] ||
+      process.env['UPSTOCK_ANALYTICS_TOKEN'] ||
+      process.env['UPSTOX_ACCESS_TOKEN'] ||
+      undefined,
     XAI_API_KEY: process.env['XAI_API_KEY'] || undefined,
     GROK_MODEL: process.env['GROK_MODEL'] || undefined,
     GROK_BASE_URL: process.env['GROK_BASE_URL'] || undefined,

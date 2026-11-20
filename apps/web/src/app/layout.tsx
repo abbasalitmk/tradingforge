@@ -121,47 +121,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           style={{
             maxWidth: 1440,
             margin: '0 auto',
-            padding: '24px 24px 80px',
-            minHeight: 'calc(100vh - 120px)',
+            padding: '24px 24px 40px',
+            minHeight: '100vh',
           }}
         >
           {children}
         </main>
-
-        {/* Regulatory & Safety Footer (Non-dismissible per §4.8) */}
-        <footer
-          style={{
-            position: 'sticky',
-            bottom: 0,
-            zIndex: 90,
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '10px 24px',
-            borderTop: '1px solid var(--line)',
-            background: 'var(--glass-bg)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
-            color: 'var(--muted)',
-            fontSize: 11.5,
-            boxShadow: '0 -2px 10px rgba(0,0,0,0.03)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: 960 }}>
-            <span style={{ fontSize: 13 }}>⚖️</span>
-            <span>
-              <strong>Regulatory Posture:</strong> Algorithmic signals & AI consensus are research tools, not financial advice.
-              Past and simulated backtests do not predict live market returns. All executed orders must be verified in your Upstox console.
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }} className="mono">
-            <span>SEBI Risk Guard: 10 Active Circuit Breakers</span>
-            <span>•</span>
-            <span>NSE / BSE Real-Time</span>
-          </div>
-        </footer>
       </body>
     </html>
   );
