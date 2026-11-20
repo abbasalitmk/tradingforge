@@ -1,6 +1,19 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+
+/** True on phone-width screens, where wide tables become stacked cards. */
+export function useNarrow(maxWidth = 720): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [maxWidth]);
+  return narrow;
+}
 
 export interface StrategyInfo {
   id: string;
@@ -83,11 +96,11 @@ export function Panel({ title, subtitle, right, children }: {
     >
       <div
         style={{
-          padding: '14px 18px',
+          padding: '11px 14px',
           borderBottom: '1px solid var(--line)',
           display: 'flex',
           flexWrap: 'wrap',
-          gap: 12,
+          gap: 10,
           justifyContent: 'space-between',
           alignItems: 'center',
           background: 'var(--panel)',
@@ -99,7 +112,7 @@ export function Panel({ title, subtitle, right, children }: {
         </div>
         {right}
       </div>
-      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>{children}</div>
+      <div className="tf-panel-body" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>{children}</div>
     </section>
   );
 }

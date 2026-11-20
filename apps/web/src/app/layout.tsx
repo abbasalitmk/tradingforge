@@ -41,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {/* Floating Glassmorphic Top Navigation Header */}
         <header
+          className="tf-header"
           style={{
             position: 'sticky',
             top: 0,
@@ -48,7 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '10px 24px',
+            padding: '8px 20px',
             background: 'var(--glass-bg)',
             backdropFilter: 'blur(16px)',
             WebkitBackdropFilter: 'blur(16px)',
@@ -82,7 +83,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </span>
                 <TradingModeToggle compact />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
+              <div className="tf-hide-sm" style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
                 <span>Autonomous Trading Desk</span>
                 <span>•</span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -118,10 +119,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
         {/* Main Content Area */}
         <main
+          className="tf-main"
           style={{
             maxWidth: 1440,
             margin: '0 auto',
-            padding: '24px 24px 40px',
             minHeight: '100vh',
           }}
         >

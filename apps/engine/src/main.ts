@@ -306,6 +306,8 @@ interface PersistedSettings {
   strategyMode: AutoTradingStrategyMode;
   sizing: { mode: SizingMode; budget: number; fixedQty: number; riskPct: number };
   watchlistExtra: Array<{ instrumentKey: string; symbol: string; name: string }>;
+  /** F&O desk loaded (chains, master). Autonomous F&O entries also need auto.segments.fno. */
+  fnoEnabled?: boolean;
 }
 
 function persistSettings(): void {
@@ -315,6 +317,7 @@ function persistSettings(): void {
     strategyMode: state.strategyMode,
     sizing: { mode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct },
     watchlistExtra: [...watchlistExtra.values()],
+    fnoEnabled: state.fnoEnabled,
   };
   void settingsStore.set('settings', s).catch((e) => console.error('[settings] not persisted:', e instanceof Error ? e.message : e));
 }
@@ -863,6 +866,27 @@ async function disarm(payload: Record<string, unknown>): Promise<{ mode: Mode; d
     : { mode: currentMode() };
 }
 
+/**
+ * Load or unload the F&O desk (instrument master, option chains, feed keys).
+ * Turning it off also stops autonomous F&O entries: without the desk the
+ * engine cannot price or choose a contract.
+ */
+async function setFnoDesk(on: boolean): Promise<string | null> {
+  if (on && fnoDesk.universe === null) {
+    try {
+      await fnoDesk.init(masterContracts ?? undefined);
+      feed.subscribe(fnoDesk.feedKeys(), 'full');
+      void fnoDesk.refreshAll();
+    } catch (e) {
+      state.fnoEnabled = false;
+      return `could not load F&O instrument master: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+  state.fnoEnabled = on;
+  if (!on) state.auto = { ...state.auto, segments: { ...state.auto.segments, fno: false } };
+  return null;
+}
+
 /** Put a stock on the live watchlist: streamed, analysed every cycle, eligible for autonomous entries. */
 async function addToWatchlist(symbol: string): Promise<string | null> {
   const eq = resolveEquity(symbol);
@@ -1098,12 +1122,13 @@ async function pollQuotesOnce(): Promise<void> {
       for (const q of res.value) {
         // Intraday, a quote's ohlc.close is the LTP itself; the previous close
         // is LTP minus net_change. Using ohlc.close pinned day change at 0%.
-        const prevClose = q.net_change !== undefined ? q.last_price - q.net_change : undefined;
+        const prevClose = q.net_change != null ? q.last_price - q.net_change : undefined;
         applyTick({
           instrumentKey: q.instrument_token,
           ltp: q.last_price,
           ts: clock.ms(),
-          ...(q.volume !== undefined ? { volume: q.volume } : {}),
+          // Indices report no volume; leave it out rather than feed the candle builder a null.
+          ...(q.volume != null ? { volume: q.volume } : {}),
           ...(prevClose !== undefined && prevClose > 0 ? { close: prevClose } : {}),
         });
         const s = watchlist.get(q.instrument_token);
@@ -1248,6 +1273,8 @@ async function restoreSettings(): Promise<void> {
   }
   if (!s) return;
 
+  // The desk is loaded later in boot when this is set (see main()).
+  if (typeof s.fnoEnabled === 'boolean') state.fnoEnabled = s.fnoEnabled;
   const parsed = AutoConfigSchema.safeParse({ ...s.auto, enabled: state.auto.enabled });
   if (parsed.success) {
     state.auto = {
@@ -1538,6 +1565,8 @@ const server = createServer(async (req, res) => {
         ticks: state.ticks,
         feedStaleness: feed.staleness(),
         subscribedCount: feed.subscribedCount,
+        priceSource: priceSource(),
+        feedIssue,
         ordersCount: trader.ordersToday,
         signalsCount: state.signalsCount,
       },
@@ -1597,6 +1626,15 @@ const server = createServer(async (req, res) => {
       priceSource: priceSource(),
       feedIssue,
       breakers: verdictNow().trips.map((t) => ({ id: t.id, detail: t.detail })),
+      fno: {
+        deskEnabled: state.fnoEnabled,
+        instrument: cfg.TF_FNO_INSTRUMENT,
+        maxLots: cfg.TF_FNO_MAX_LOTS,
+        underlyings: [...fnoDesk.states.values()].map((d) => ({
+          symbol: d.symbol, expiry: d.expiry, lotSize: d.lotSize, error: d.error,
+          spot: ltpOf(d.underlyingKey) ?? d.chain?.spot ?? null,
+        })),
+      },
       strategies: STRATEGY_CATALOG.map((d) => ({
         id: d.id, name: d.name, style: d.style, approved: registry.approved(d.id)?.id ?? null,
         record: strategyRecords.get(d.id) ?? null,
@@ -1981,18 +2019,25 @@ const server = createServer(async (req, res) => {
       return json(200, await disarm({}));
 
     case '/fno/toggle': {
-      state.fnoEnabled = typeof body['enabled'] === 'boolean' ? body['enabled'] : !state.fnoEnabled;
-      if (state.fnoEnabled && fnoDesk.universe === null) {
-        try {
-          await fnoDesk.init(masterContracts ?? undefined);
-          feed.subscribe(fnoDesk.feedKeys(), 'full');
-          void fnoDesk.refreshAll();
-        } catch (e) {
-          state.fnoEnabled = false;
-          return json(502, { error: `could not load F&O instrument master: ${e instanceof Error ? e.message : e}` });
-        }
-      }
+      const bad = await setFnoDesk(typeof body['enabled'] === 'boolean' ? body['enabled'] : !state.fnoEnabled);
+      if (bad) return json(502, { error: bad });
+      persistSettings();
       return json(200, { enabled: state.fnoEnabled });
+    }
+
+    case '/auto/fno': {
+      // One switch for autonomous F&O: loads the desk when needed and allows
+      // (or stops) F&O entries. Turning it off leaves the desk for analysis.
+      if (typeof body['enabled'] !== 'boolean') return json(400, { error: 'enabled must be true or false' });
+      const on = body['enabled'];
+      if (on) {
+        const bad = await setFnoDesk(true);
+        if (bad) return json(502, { error: bad });
+      }
+      state.auto = { ...state.auto, segments: { ...state.auto.segments, fno: on } };
+      await audit(sql, { kind: 'MODE_CHANGE', actor: 'user', mode: currentMode(), payload: { fnoAuto: on } });
+      persistSettings();
+      return json(200, { fnoAuto: state.auto.segments.fno, deskEnabled: state.fnoEnabled });
     }
 
     case '/fno/analyze': {

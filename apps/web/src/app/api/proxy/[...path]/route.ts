@@ -18,6 +18,7 @@ export const runtime = 'nodejs';
 const GET_PATHS = new Set(['/state', '/health', '/auth/status', '/fno/chain', '/analysis/live', '/auto/config', '/watchlist', '/memory/trades', '/research/strategies']);
 
 const POST_PATHS = new Set([
+  '/auto/fno',
   '/research/validate',
   '/research/approve',
   '/research/propose',

@@ -93,7 +93,7 @@ export default function Hint({ term, explanation, example, children }: HintProps
             bottom: 'calc(100% + 8px)',
             left: '50%',
             transform: 'translateX(-50%)',
-            width: 260,
+            width: 'min(260px, 80vw)',
             background: 'var(--panel)',
             border: '1px solid var(--line)',
             borderRadius: 10,

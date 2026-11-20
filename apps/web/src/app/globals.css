@@ -335,3 +335,21 @@ body, header, footer, section, div, button, input {
   border-radius: 50%;
   animation: tfPulse 2s infinite ease-in-out;
 }
+
+/* ── Compact, phone-friendly layout ───────────────────────────────────
+   Most components style themselves inline; these rules only tighten the
+   shell and rescue the few elements that cannot fit a phone screen. */
+html, body {
+  overflow-x: clip; /* never a sideways page scroll; wide tables scroll inside their own wrappers */
+  -webkit-text-size-adjust: 100%;
+}
+.tf-main { padding: 16px 20px 32px; }
+
+@media (max-width: 720px) {
+  .tf-header { padding: 6px 10px !important; }
+  .tf-hide-sm { display: none !important; }
+  .tf-main { padding: 10px 10px 24px !important; }
+  .tf-panel-body { padding: 10px !important; gap: 10px !important; }
+  .tf-dropdown { left: 0 !important; width: min(320px, calc(100vw - 28px)) !important; }
+  [role="tablist"] button { padding: 7px 11px !important; font-size: 12px !important; }
+}

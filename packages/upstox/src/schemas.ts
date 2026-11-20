@@ -148,14 +148,20 @@ export type OrderBookEntry = z.infer<typeof orderBookEntry>;
 export type PositionEntry = z.infer<typeof positionEntry>;
 
 /** GET /v2/market-quote/quotes — one entry per instrument, keyed by "SEGMENT:SYMBOL". */
+// Indices carry no volume (Upstox sends null), and thinly traded or suspended
+// instruments can lack other fields; only the LTP is required.
 export const fullQuote = z.object({
   instrument_token: z.string(),
   symbol: z.string().optional(),
   last_price: z.number(),
-  volume: z.number().optional(),
+  volume: z.number().nullable().optional(),
   average_price: z.number().nullable().optional(),
-  net_change: z.number().optional(),
-  ohlc: z.object({ open: z.number(), high: z.number(), low: z.number(), close: z.number() }).partial().optional(),
+  net_change: z.number().nullable().optional(),
+  ohlc: z.object({
+    open: z.number().nullable(), high: z.number().nullable(), low: z.number().nullable(), close: z.number().nullable(),
+  }).partial().nullable().optional(),
 }).passthrough();
 export const fullQuoteResponse = envelope(z.record(z.string(), fullQuote));
+/** The envelope alone, so each instrument can be validated on its own. */
+export const quoteEnvelope = envelope(z.record(z.string(), z.unknown()));
 export type FullQuote = z.infer<typeof fullQuote>;

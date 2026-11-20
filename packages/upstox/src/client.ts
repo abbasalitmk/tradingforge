@@ -142,10 +142,22 @@ export class UpstoxClient {
       plane: 'data',
     });
     if (!r.ok) return r;
-    const parsed = S.fullQuoteResponse.safeParse(r.value);
-    return parsed.success
-      ? ok(Object.values(parsed.data.data))
-      : err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${parsed.error.message}`));
+    const env = S.quoteEnvelope.safeParse(r.value);
+    if (!env.success) return err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${env.error.message}`));
+    // Validate per instrument: one odd entry (an index with null volume, a
+    // suspended stock) must never cost every other instrument its price.
+    const out: S.FullQuote[] = [];
+    const bad: string[] = [];
+    for (const [key, raw] of Object.entries(env.data.data)) {
+      const q = S.fullQuote.safeParse(raw);
+      if (q.success) out.push(q.data);
+      else bad.push(`${key}: ${q.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join(', ')}`);
+    }
+    if (out.length === 0 && bad.length > 0) {
+      return err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${bad.slice(0, 3).join('; ')}`));
+    }
+    if (bad.length > 0) console.warn(`[upstox] skipped ${bad.length} malformed quote(s): ${bad.slice(0, 3).join('; ')}`);
+    return ok(out);
   }
 
   async historicalCandles(

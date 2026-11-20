@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Panel, Pill, Stat, Note, api, rupees, num, sideColor, qualityColor, type Side } from './ui.tsx';
+import { Panel, Pill, Stat, Note, api, rupees, num, sideColor, qualityColor, useNarrow, type Side } from './ui.tsx';
 
 /** One engine position as GET /state returns it. */
 export interface BlotterPosition {
@@ -93,6 +93,7 @@ export default function TradeBlotter({ positions, realisedToday, unrealised, now
   onExit: (positionId: string) => void;
   onResolve: (p: BlotterPosition) => void;
 }) {
+  const narrow = useNarrow();
   const [trades, setTrades] = useState<TradeLogEntry[] | null>(null);
   const [tradesError, setTradesError] = useState<string | null>(null);
 
@@ -125,7 +126,7 @@ export default function TradeBlotter({ positions, realisedToday, unrealised, now
       subtitle="Which stocks the engine bought or sold, live P&L on open positions, and every trade closed today (net of charges)."
       right={<Pill color={open.length ? 'var(--accent)' : 'var(--muted)'}>{open.length} open · {closedToday.length} closed today</Pill>}
     >
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 6 }}>
         <Stat label="Open positions" value={open.length} />
         <Stat label="Capital deployed" value={rupees(deployed, 0)} />
         <Stat label="Unrealised P&L" value={signed(unrealised)} color={pnlColor(unrealised)} />
@@ -137,6 +138,43 @@ export default function TradeBlotter({ positions, realisedToday, unrealised, now
       <div style={{ fontSize: 12.5, fontWeight: 700 }}>Open positions</div>
       {open.length === 0 ? (
         <Note>No open positions. When autonomous mode enters a trade it appears here within two seconds.</Note>
+      ) : narrow ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {open.map((p) => {
+            const entry = p.avgEntry ?? p.entry;
+            const pct = entry > 0 && p.filledQuantity > 0 ? (p.pnlRupees / (entry * p.filledQuantity)) * 100 : null;
+            return (
+              <div key={p.id} style={card(p.state === 'ORPHANED' ? 'var(--danger)' : sideColor(p.side))}>
+                <div style={row}>
+                  <span>
+                    <strong>{p.contract?.tradingSymbol ?? p.symbol}</strong>{' '}
+                    <span style={{ color: sideColor(p.side), fontWeight: 700, fontSize: 11 }}>{p.side === 'BUY' ? 'LONG' : 'SHORT'}</span>{' '}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: p.broker === 'UPSTOX' ? 'var(--danger)' : 'var(--muted)' }}>{p.broker === 'UPSTOX' ? 'LIVE' : 'PAPER'}</span>
+                  </span>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: pnlColor(p.pnlRupees) }}>
+                    {signed(p.pnlRupees)}{pct !== null && <span style={{ fontSize: 10.5 }}> {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%</span>}
+                  </span>
+                </div>
+                <div style={{ ...row, ...mono }}>
+                  <span>{p.filledQuantity} × {rupees(entry)} → {rupees(p.ltp)}</span>
+                </div>
+                <div style={{ ...row, ...mono, fontSize: 11 }}>
+                  <span style={{ color: 'var(--danger)' }}>SL {rupees(p.stopLoss)}</span>
+                  <span style={{ color: 'var(--ok)' }}>T {rupees(p.target)}</span>
+                </div>
+                <div style={{ ...row, fontSize: 10.5, color: 'var(--muted)' }}>
+                  <span>{p.strategyId ?? '—'}{p.quality != null ? ` · Q${p.quality}` : ''} · {istTime(p.openedAt)} · {held(p.filledAt ?? p.openedAt, now)}</span>
+                  {p.state === 'ORPHANED'
+                    ? <button type="button" onClick={() => onResolve(p)} style={smallBtn('var(--danger)', true)}>Resolve</button>
+                    : (p.state === 'MANAGING' || p.state === 'ENTRY_ACKED') && (
+                      <button type="button" onClick={() => onExit(p.id)} style={smallBtn('var(--danger)', false)}>{p.state === 'ENTRY_ACKED' ? 'Cancel' : 'Exit'}</button>
+                    )}
+                </div>
+                {p.state !== 'MANAGING' && <div style={{ fontSize: 10.5, color: p.state === 'ORPHANED' ? 'var(--danger)' : 'var(--muted)' }}>{STATE_LABEL[p.state] ?? p.state}{p.exitReason ? ` · ${p.exitReason}` : ''}</div>}
+              </div>
+            );
+          })}
+        </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
@@ -197,7 +235,26 @@ export default function TradeBlotter({ positions, realisedToday, unrealised, now
       <div style={{ fontSize: 12.5, fontWeight: 700 }}>Closed today {chargesToday > 0 && <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: 11 }}>· charges {rupees(chargesToday)}</span>}</div>
       {tradesError && <Note kind="danger">Trade log unavailable: {tradesError}</Note>}
       {!tradesError && closedToday.length === 0 && <Note>No trades closed today yet.</Note>}
-      {closedToday.length > 0 && (
+      {closedToday.length > 0 && narrow && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {closedToday.map((t) => (
+            <div key={t.positionId} style={card(pnlColor(t.netPnl))}>
+              <div style={row}>
+                <span><strong>{t.symbol}</strong> <span style={{ color: sideColor(t.side), fontWeight: 700, fontSize: 11 }}>{t.side} × {t.quantity}</span></span>
+                <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: pnlColor(t.netPnl) }}>{signed(t.netPnl)}</span>
+              </div>
+              <div style={{ ...row, ...mono, fontSize: 11 }}>
+                <span>{rupees(t.entryPrice)} → {rupees(t.exitPrice)}</span>
+                <span style={{ color: 'var(--muted)' }}>{t.rMultiple === null ? '' : `${t.rMultiple >= 0 ? '+' : ''}${num(t.rMultiple)}R`} · chg {rupees(t.charges)}</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
+                {istTime(t.entryTime)} → {istTime(t.exitTime)} · {t.exitReason ?? '—'} · {t.strategyId ?? '—'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {closedToday.length > 0 && !narrow && (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
             <thead><tr style={{ borderBottom: '1px solid var(--line)' }}>
@@ -234,6 +291,13 @@ export default function TradeBlotter({ positions, realisedToday, unrealised, now
     </Panel>
   );
 }
+
+const card = (accent: string): React.CSSProperties => ({
+  border: '1px solid var(--line)', borderLeft: `3px solid ${accent}`, borderRadius: 8,
+  padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, background: 'var(--panel-subtle)',
+});
+const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+const mono: React.CSSProperties = { fontFamily: 'ui-monospace, monospace', fontSize: 11.5 };
 
 const smallBtn = (color: string, solid: boolean): React.CSSProperties => ({
   background: solid ? color : 'transparent', color: solid ? '#ffffff' : color, border: `1px solid ${color}`,

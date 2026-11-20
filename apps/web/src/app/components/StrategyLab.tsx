@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Panel, Pill, Note, api, num, buttonStyle } from './ui.tsx';
+import { Panel, Pill, Note, api, num, buttonStyle, useNarrow } from './ui.tsx';
 
 interface Metrics {
   trades: number;
@@ -74,6 +74,7 @@ export default function StrategyLab({ records, mode, onToast }: {
   const [data, setData] = useState<ResearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const narrow = useNarrow();
 
   const load = useCallback(async () => {
     const r = await api<ResearchResponse>('/api/proxy/research/strategies');
@@ -130,7 +131,46 @@ export default function StrategyLab({ records, mode, onToast }: {
       {running.length > 0 && (
         <Note>Running: {running.map((j) => `${j.kind.toLowerCase()} ${j.strategyId} — ${j.stage}`).join(' · ')}</Note>
       )}
-      <div style={{ overflowX: 'auto' }}>
+      {narrow && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {data.strategies.map((st) => {
+            const shown = [...st.versions].sort((a, b) => b.version - a.version)[0];
+            const oos = shown?.validation?.outOfSample;
+            const rec = records[st.id] ?? null;
+            const job = data.jobs.find((j) => j.strategyId === st.id && j.status === 'RUNNING');
+            return (
+              <div key={st.id} style={{ border: '1px solid var(--line)', borderLeft: `3px solid ${shown ? STATUS_COLOR[shown.status] : 'var(--line)'}`, borderRadius: 8, padding: '7px 10px', fontSize: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <strong>{st.name}</strong>
+                  {shown && <Pill color={STATUS_COLOR[shown.status]}>v{shown.version} {shown.status}</Pill>}
+                </div>
+                <div style={sub}>
+                  {oos ? `OOS ${oos.expectancyR >= 0 ? '+' : ''}${num(oos.expectancyR)}R · ${oos.trades} trades · ${(oos.winRate * 100).toFixed(0)}% · PF ${num(oos.profitFactor)}` : 'not validated'}
+                  {rec ? ` · ${mode === 'LIVE' ? 'live' : 'paper'} ${rec.expectancyR >= 0 ? '+' : ''}${num(rec.expectancyR)}R (${rec.trades})` : ''}
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+                  {job ? <span style={{ fontSize: 11, color: 'var(--accent)' }}>{job.stage}…</span> : (
+                    <>
+                      {shown && shown.status !== 'RETIRED' && (
+                        <button type="button" disabled={busy !== null} style={small('var(--accent)')}
+                          onClick={() => void run(shown.id, 'validate', { versionId: shown.id }, `Validating ${st.name} v${shown.version}`)}>
+                          {shown.validation ? 'Re-validate' : 'Validate'}
+                        </button>
+                      )}
+                      {shown?.status === 'VALIDATED' && <button type="button" disabled={busy !== null} style={small('var(--ok)')} onClick={() => approve(shown, st.name)}>Approve</button>}
+                      {data.aiAvailable && shown?.validation && (
+                        <button type="button" disabled={busy !== null} style={small('var(--muted)')}
+                          onClick={() => void run(`p-${st.id}`, 'propose', { strategyId: st.id }, `AI proposal requested for ${st.name}`)}>AI improve</button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto', display: narrow ? 'none' : undefined }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
           <thead><tr style={{ borderBottom: '1px solid var(--line)' }}>
             {['Strategy', 'Version', 'Validation (out-of-sample)', `${mode === 'LIVE' ? 'Live' : 'Paper'} record`, 'Actions'].map((h) => <th key={h} style={th}>{h}</th>)}

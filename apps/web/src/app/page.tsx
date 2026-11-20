@@ -415,6 +415,8 @@ interface EngineState {
     ticks: number;
     feedStaleness: number | null;
     subscribedCount: number;
+    priceSource?: 'WEBSOCKET' | 'REST_POLL' | 'NONE';
+    feedIssue?: string | null;
     ordersCount: number;
     signalsCount: number;
   };
@@ -531,6 +533,22 @@ export default function Dashboard() {
 
   type TabId = 'overview' | 'autopilot' | 'scanner' | 'breakouts' | 'analysis' | 'positions' | 'fno';
   const [activeTab, setActiveTab] = useState<TabId>('overview');
+  // Deep links: /#autopilot opens that tab, and the address follows the tab, so a
+  // phone bookmark or a shared link lands where it was meant to.
+  useEffect(() => {
+    const TABS: readonly TabId[] = ['overview', 'autopilot', 'scanner', 'breakouts', 'analysis', 'positions', 'fno'];
+    const fromHash = () => {
+      const h = window.location.hash.slice(1) as TabId;
+      if (TABS.includes(h)) setActiveTab(h);
+    };
+    fromHash();
+    window.addEventListener('hashchange', fromHash);
+    return () => window.removeEventListener('hashchange', fromHash);
+  }, []);
+  useEffect(() => {
+    const want = activeTab === 'overview' ? '' : `#${activeTab}`;
+    if (window.location.hash !== want) window.history.replaceState(null, '', want || window.location.pathname);
+  }, [activeTab]);
   const [manualRefreshing, setManualRefreshing] = useState(false);
 
   const handleSelectAndAnalyze = (symbol: string) => {
@@ -1412,20 +1430,27 @@ export default function Dashboard() {
             <div style={{ fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ color: 'var(--fg)' }}>Upstox Real-Time API Integration</span>
               {(() => {
-                const fresh = s.telemetry.feedStaleness !== null && s.telemetry.feedStaleness < 5000;
+                const src = s.telemetry.priceSource;
+                const fresh = s.telemetry.feedStaleness !== null && s.telemetry.feedStaleness < 6000;
+                const age = s.telemetry.feedStaleness === null ? 'never' : `${Math.round(s.telemetry.feedStaleness / 1000)}s ago`;
+                const [label, tone] = src === 'WEBSOCKET' ? ['✓ Live ticks (WebSocket)', 'ok']
+                  : src === 'REST_POLL' && fresh ? ['✓ Prices live via REST (every 2 s)', 'ok']
+                    : src === 'REST_POLL' ? [`⚠ Prices slow — last ${age}`, 'warn']
+                      : [`⚠ No prices — last ${age}`, 'danger'];
                 return (
                   <span
+                    title={s.telemetry.feedIssue ?? undefined}
                     style={{
                       fontSize: 11,
                       padding: '2px 8px',
                       borderRadius: 999,
-                      background: fresh ? 'var(--ok-subtle)' : 'var(--warn-subtle)',
-                      border: `1px solid ${fresh ? 'var(--ok)' : 'var(--warn)'}`,
-                      color: fresh ? 'var(--ok)' : 'var(--warn)',
+                      background: `var(--${tone}-subtle)`,
+                      border: `1px solid var(--${tone})`,
+                      color: `var(--${tone})`,
                       fontWeight: 600,
                     }}
                   >
-                    {fresh ? '✓ Market data feed fresh' : '⚠ Market data feed stale / no ticks'}
+                    {label}
                   </span>
                 );
               })()}
@@ -1976,6 +2001,7 @@ export default function Dashboard() {
                 {/* Autocomplete Dropdown */}
                 {showSearchDropdown && symbolSearchResults.length > 0 && (
                   <div
+                    className="tf-dropdown"
                     style={{
                       position: 'absolute',
                       top: 36,
@@ -2923,7 +2949,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ maxWidth: 1320, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
       {toastEl}
 
       {/* Prominent Live Data Status Bar with exact refreshed time */}
@@ -3113,7 +3139,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Quick Navigation Cards */}
+        {/* Quick Navigation Cards — hidden: the tab bar already reaches every section. Kept for reference.
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
           <div
             onClick={() => setActiveTab('scanner')}
@@ -3231,6 +3257,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+        */}
 
         {/* Overview Engine Controls (KPIs, Strategy, Arming, Upstox API) */}
         {s ? renderOverviewEngineControls(s) : renderDefaultOverviewCards()}

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Panel, Chip, Pill, Stat, Note, inputStyle, buttonStyle, api, rupees, num, sideColor, qualityColor, type Side } from './ui.tsx';
+import { Panel, Chip, Pill, Stat, Note, inputStyle, buttonStyle, api, rupees, num, sideColor, qualityColor, useNarrow, type Side } from './ui.tsx';
 import StrategyLab from './StrategyLab.tsx';
 
 interface AutoConfig {
@@ -69,6 +69,12 @@ interface LiveAnalysisResponse {
   priceSource?: 'WEBSOCKET' | 'REST_POLL' | 'NONE';
   feedIssue?: string | null;
   breakers?: Array<{ id: string; detail: string }>;
+  fno?: {
+    deskEnabled: boolean;
+    instrument: 'OPTIONS' | 'FUTURES';
+    maxLots: number;
+    underlyings: Array<{ symbol: string; expiry: string | null; lotSize: number | null; error: string | null; spot: number | null }>;
+  };
   strategies: Array<{
     id: string; name: string; style: 'INTRADAY' | 'SWING'; approved: string | null;
     record: { trades: number; expectancyR: number } | null;
@@ -84,11 +90,11 @@ interface WatchlistResponse {
 
 type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
-  | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'> & { fno: boolean };
+  | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
-  maxEntriesPerDay: a.maxEntriesPerDay, strategies: [...a.strategies], fno: a.segments.fno,
+  maxEntriesPerDay: a.maxEntriesPerDay, strategies: [...a.strategies],
   maxOpenPositions: a.maxOpenPositions, maxPerStrategy: a.maxPerStrategy, maxSameSide: a.maxSameSide,
   trailStop: a.trailStop, pauseLosingStrategies: a.pauseLosingStrategies, skipFailedStrategies: a.skipFailedStrategies,
 });
@@ -113,6 +119,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
   const [saving, setSaving] = useState(false);
   const [addSymbol, setAddSymbol] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [fnoBusy, setFnoBusy] = useState(false);
+  const narrow = useNarrow();
   const serverDraft = useRef<Draft | null>(null);
 
   const loadLive = useCallback(async () => {
@@ -141,6 +149,22 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
 
   const dirty = draft !== null && serverDraft.current !== null && !sameDraft(draft, serverDraft.current);
 
+  /** One switch for autonomous F&O: loads the desk if needed and allows or stops F&O entries. */
+  const setFnoAuto = async (on: boolean) => {
+    if (on && !window.confirm(
+      'Turn ON automated F&O trading?\n\n'
+      + '• Setups on F&O underlyings route to index options (or futures, per TF_FNO_INSTRUMENT).\n'
+      + '• An option can lose its entire premium; size is capped per trade and by the max-lots limit.\n'
+      + '• Every entry still has to pass the same rules (validated strategy, R:R, limits, AI review).',
+    )) return;
+    setFnoBusy(true);
+    const r = await api<{ fnoAuto: boolean; deskEnabled: boolean }>('/api/proxy/auto/fno', { enabled: on });
+    setFnoBusy(false);
+    if (!r.ok) return onToast(`F&O auto-trading NOT changed: ${r.error}`, 'error');
+    onToast(r.data.fnoAuto ? '📈 F&O auto-trading ON' : 'F&O auto-trading OFF');
+    void loadLive();
+  };
+
   const save = async () => {
     if (!draft || !live) return;
     setSaving(true);
@@ -157,7 +181,6 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       trailStop: draft.trailStop,
       pauseLosingStrategies: draft.pauseLosingStrategies,
       skipFailedStrategies: draft.skipFailedStrategies,
-      segments: { fno: draft.fno },
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -199,13 +222,13 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
   }));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Panel
         title="Autopilot status"
         subtitle={`Every ${Math.round(live.intervalMs / 1000)}s the engine re-analyses ${live.analyzed} instruments with every enabled strategy and acts on at most one eligible setup per cycle.`}
         right={<Pill color={a.enabled ? 'var(--ok)' : 'var(--muted)'}>{a.enabled ? '● AUTO ON' : '○ AUTO OFF'}</Pill>}
       >
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 6 }}>
           <Stat label="Mode" value={live.mode} color={live.mode === 'LIVE' ? 'var(--danger)' : undefined} />
           <Stat label="Scope" value={a.targetMode === 'SINGLE_STOCK' ? a.targetSymbol : 'All watched'} />
           <Stat label="Eligible now" value={eligible.length} color={eligible.length ? 'var(--ok)' : undefined} />
@@ -222,6 +245,41 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
         )}
         {live.feedIssue && <Note kind="warn">Market feed: {live.feedIssue}. Prices come from REST polling every 2 s, so entries and exits react slower than tick data.</Note>}
         {!a.enabled && <Note>Autonomous entries are off — the table below shows what it <em>would</em> do. Turn it on from the command hub.</Note>}
+      </Panel>
+
+      <Panel
+        title="F&O auto-trading"
+        subtitle="Index setups become option (or futures) trades: strike by delta, premium stop, time stop against theta."
+        right={
+          <button
+            type="button" disabled={fnoBusy} onClick={() => void setFnoAuto(!a.segments.fno)}
+            aria-pressed={a.segments.fno}
+            style={{
+              ...buttonStyle, padding: '6px 14px', opacity: fnoBusy ? 0.6 : 1,
+              background: a.segments.fno ? 'var(--ok)' : 'var(--panel-subtle)',
+              color: a.segments.fno ? '#ffffff' : 'var(--fg)',
+              border: `1px solid ${a.segments.fno ? 'var(--ok)' : 'var(--line)'}`, boxShadow: 'none',
+            }}
+          >
+            {fnoBusy ? '…' : a.segments.fno ? '● F&O ON — turn off' : '○ F&O OFF — turn on'}
+          </button>
+        }
+      >
+        {live.fno && live.fno.deskEnabled ? (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {live.fno.underlyings.map((u) => (
+                <span key={u.symbol} style={{ fontSize: 11.5, padding: '4px 9px', borderRadius: 8, border: `1px solid ${u.error ? 'var(--danger)' : 'var(--line)'}`, background: 'var(--panel-subtle)' }}>
+                  <strong>{u.symbol}</strong>{u.spot !== null ? ` ${num(u.spot)}` : ''}
+                  <span style={{ color: u.error ? 'var(--danger)' : 'var(--muted)' }}> · {u.error ?? `exp ${u.expiry ?? '—'} · lot ${u.lotSize ?? '—'}`}</span>
+                </span>
+              ))}
+            </div>
+            <Note>{live.fno.instrument === 'FUTURES' ? 'Futures' : 'Long options (buy calls / puts)'} · max {live.fno.maxLots} lot(s) per trade{a.segments.fno ? '' : ' · desk loaded for analysis, entries off'}</Note>
+          </>
+        ) : (
+          <Note>F&O desk not loaded. Turning F&O on loads the contract master and option chains (a few seconds).</Note>
+        )}
       </Panel>
 
       <Panel
@@ -281,10 +339,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Segments:</span>
           <Pill color={a.segments.intraday ? 'var(--ok)' : 'var(--muted)'}>Intraday {a.segments.intraday ? 'on' : 'off'}</Pill>
           <Pill color={a.segments.swing ? 'var(--ok)' : 'var(--muted)'}>Swing {a.segments.swing ? 'on' : 'off'}</Pill>
-          <Chip on={draft.fno} onClick={() => setDraft({ ...draft, fno: !draft.fno })} title="Route index/F&O-underlying setups to options or futures (the F&O desk must be enabled)">
-            F&O {draft.fno ? 'on' : 'off'}
-          </Chip>
-          <Note>Intraday / Swing follow the Strategy mode in the filter form.</Note>
+          <Pill color={a.segments.fno ? 'var(--ok)' : 'var(--muted)'}>F&O {a.segments.fno ? 'on' : 'off'}</Pill>
+          <Note>Intraday / Swing follow the Strategy mode in the filter form; F&O has its own switch above.</Note>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -312,6 +368,23 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       >
         {live.setups.length === 0 ? (
           <Note>No strategy currently sees a setup on the watched instruments. Intraday strategies only fire 09:20–14:45 IST on today&apos;s bars.</Note>
+        ) : narrow ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {shown.map((s) => (
+              <div key={`${s.instrumentKey}|${s.style}`} style={{ border: '1px solid var(--line)', borderLeft: `3px solid ${s.eligible ? 'var(--ok)' : 'var(--line)'}`, borderRadius: 8, padding: '7px 10px', fontSize: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span><strong>{s.symbol}</strong> <span style={{ color: sideColor(s.side), fontWeight: 700 }}>{s.side}</span> <span style={{ color: 'var(--muted)' }}>{s.style === 'SWING' ? 'Swing' : 'Intraday'}</span></span>
+                  <span style={{ fontWeight: 700, color: qualityColor(s.quality) }}>Q{s.quality} · R:R {num(s.rewardRisk)}</span>
+                </div>
+                <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted)' }}>
+                  {rupees(s.entry)} · SL {rupees(s.stopLoss)} · T {rupees(s.target)} · {s.primaryStrategyId}
+                </div>
+                <div style={{ fontSize: 11, color: s.eligible ? 'var(--ok)' : 'var(--warn)' }}>
+                  {s.eligible ? `✓ eligible · ${ROUTE_LABEL[s.route ?? ''] ?? ''}` : s.blockers.join(' · ')}
+                </div>
+              </div>
+            ))}
+          </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
