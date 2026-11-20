@@ -68,7 +68,12 @@ const FIELDS: Array<{ key: keyof FilterText; label: string; placeholder: string 
   { key: 'minRewardRisk', label: 'Min R:R', placeholder: 'any' },
 ];
 
-export default function MarketScanner({ catalog, onAnalyze }: { catalog: Catalog | null; onAnalyze: (symbol: string) => void }) {
+export default function MarketScanner({ catalog, onAnalyze, onWatch }: {
+  catalog: Catalog | null;
+  onAnalyze: (symbol: string) => void;
+  /** Put the stock on the engine's live watchlist, where autonomous mode can trade it. */
+  onWatch?: (symbol: string) => void;
+}) {
   const [category, setCategory] = useState('NIFTY50');
   const [f, setF] = useState<FilterText>(EMPTY);
   const [style, setStyle] = useState<'ANY' | 'INTRADAY' | 'SWING'>('ANY');
@@ -250,10 +255,19 @@ export default function MarketScanner({ catalog, onAnalyze }: { catalog: Catalog
                       </div>
                     </td>
                     <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{r.rvol === null ? '—' : `${num(r.rvol)}x`}</td>
-                    <td style={{ padding: '9px 10px' }}>
+                    <td style={{ padding: '9px 10px', whiteSpace: 'nowrap' }}>
                       <button type="button" onClick={() => onAnalyze(r.symbol)} style={{ ...buttonStyle, padding: '4px 10px', fontSize: 11 }}>
                         Analyse
                       </button>
+                      {onWatch && (
+                        <button
+                          type="button" onClick={() => onWatch(r.symbol)}
+                          title="Stream and analyse this stock every cycle; autonomous mode may trade it"
+                          style={{ ...buttonStyle, padding: '4px 10px', fontSize: 11, marginLeft: 6, background: 'var(--panel-subtle)', color: 'var(--accent-fg)', border: '1px solid var(--accent)', boxShadow: 'none' }}
+                        >
+                          Watch live
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

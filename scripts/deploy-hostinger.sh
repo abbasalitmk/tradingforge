@@ -106,6 +106,10 @@ REMOTE_INIT
   fi
 fi
 
+# Postgres holds the position journal; compose refuses to start without a password.
+ssh "${SSH_OPTS[@]}" "${HOSTINGER_VPS_USER}@${HOSTINGER_VPS_HOST}" \
+  "grep -q '^POSTGRES_PASSWORD=.\\+' ${TARGET_DIR}/.env || { sed -i '/^POSTGRES_PASSWORD=/d' ${TARGET_DIR}/.env; echo \"POSTGRES_PASSWORD=\$(openssl rand -hex 24)\" >> ${TARGET_DIR}/.env; echo '  ✓ Generated POSTGRES_PASSWORD on the VPS'; }"
+
 # 5. Build and Run Containers on Hostinger
 echo "  · Rebuilding and launching Docker containers on Hostinger VPS..."
 ssh "${SSH_OPTS[@]}" "${HOSTINGER_VPS_USER}@${HOSTINGER_VPS_HOST}" \

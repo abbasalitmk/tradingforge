@@ -114,6 +114,28 @@ describe('per-position broker routing', () => {
   });
 });
 
+describe('loss streak', () => {
+  it('counts strategy exits but not operator exits', async () => {
+    const s = setup();
+    s.tick(100);
+    const a = await s.trader.open(intent());
+    await s.settle();
+    s.tick(65); // stop-loss
+    await s.settle();
+    expect(s.trader.consecutiveLosses).toBe(1);
+
+    s.tick(100);
+    const b = await s.trader.open(intent());
+    await s.settle();
+    s.tick(90);
+    await s.trader.exit(b.ok ? b.position.id : '', 'MANUAL');
+    await s.settle();
+    expect(b.ok && b.position.realisedPnl! < 0).toBe(true);
+    expect(s.trader.consecutiveLosses).toBe(1);
+    expect(a.ok).toBe(true);
+  });
+});
+
 describe('journal and recovery', () => {
   it('sends no order when the journal cannot record the intent', async () => {
     const clock = new FixedClock(at('10:00'));
@@ -159,7 +181,9 @@ describe('journal and recovery', () => {
     expect(shut.ok).toBe(true);
     expect(p!.state).toBe('CLOSED');
     expect(p!.realisedPnl).toBe(-P(10) * 65);
-    expect(s.trader.consecutiveLosses).toBe(1);
+    expect(s.trader.realisedPnl).toBe(-P(10) * 65);
+    // An operator's resolution is real P&L but not evidence the strategy is failing.
+    expect(s.trader.consecutiveLosses).toBe(0);
   });
 });
 

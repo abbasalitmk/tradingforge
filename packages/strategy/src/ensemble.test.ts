@@ -102,9 +102,11 @@ describe('screener', () => {
     expect(out.map((x) => x.symbol)).toEqual(['B', 'C']);
   });
 
-  const trending: ScanCandidate = { ...q('TREND', 1050, 1000, 1e6), intraday: at.candles, daily: dailies };
+  // A real quote's LTP is the last traded price — the candles' last close here.
+  const trending: ScanCandidate = { ...q('TREND', at.candles.at(-1)!.close, 1000, 1e6), intraday: at.candles, daily: dailies };
   const flatSeries = intraday('2026-01-05', 6, { seed: 9, start: 1000, drift: 0, vol: 0.0002, volume: 20_000 });
-  const flat: ScanCandidate = { ...q('FLAT', 1000, 1000, 1e6), intraday: flatSeries.filter((c) => c.ts <= at.candles.at(-1)!.ts), daily: [] };
+  const flatBars = flatSeries.filter((c) => c.ts <= at.candles.at(-1)!.ts);
+  const flat: ScanCandidate = { ...q('FLAT', flatBars.at(-1)!.close, 1000, 1e6), intraday: flatBars, daily: [] };
 
   it('caps a setup whose stop is inside costs and noise, however many strategies agree', () => {
     const r = screen([flat], {}, at.clock);
@@ -122,6 +124,15 @@ describe('screener', () => {
     expect(screen([flat, trending], { limit: 1 }, at.clock)).toHaveLength(1);
   });
 
+  it('drops a setup the live price has already played out', () => {
+    const [top] = screen([trending], {}, at.clock);
+    expect(top).toBeDefined();
+    const s = top!.setup;
+    const through = s.side === 'BUY' ? s.stopLoss * 0.99 : s.stopLoss * 1.01;
+    const played = screen([{ ...trending, ltp: through }], { style: s.style }, at.clock);
+    expect(played.find((r) => r.setup.style === s.style && r.setup.primaryStrategyId === s.primaryStrategyId)).toBeUndefined();
+  });
+
   it('applies style, side, quality and reward:risk filters', () => {
     expect(screen([trending], { style: 'INTRADAY' }, at.clock).every((r) => r.setup.style === 'INTRADAY')).toBe(true);
     expect(screen([trending], { style: 'SWING' }, at.clock).every((r) => r.setup.style === 'SWING')).toBe(true);
@@ -134,7 +145,7 @@ describe('screener', () => {
   it('reports ATR%, RVOL, change and turnover for each result', () => {
     const r = screen([trending], {}, at.clock)[0]!;
     expect(r.atrPct).toBeGreaterThan(0);
-    expect(r.changePct).toBe(5);
-    expect(r.turnoverCr).toBeCloseTo((1050 * 1e6) / 1e7, 2);
+    expect(r.changePct).toBeCloseTo(((trending.ltp - 1000) / 1000) * 100, 2);
+    expect(r.turnoverCr).toBeCloseTo((trending.ltp * 1e6) / 1e7, 2);
   });
 });

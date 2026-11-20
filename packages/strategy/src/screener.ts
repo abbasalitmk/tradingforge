@@ -95,11 +95,13 @@ export function screen(
   const out: ScanResult[] = [];
   for (const c of candidates) {
     const { best } = analyzeHybrid(
-      { instrumentKey: c.instrumentKey, symbol: c.symbol, intraday: c.intraday, daily: c.daily, clock },
+      // Scans hold closed bars only; the quote's LTP is what an order would fill at.
+      { instrumentKey: c.instrumentKey, symbol: c.symbol, intraday: c.intraday, daily: c.daily, clock, ltp: c.ltp },
       { ...opts, ...(f.strategies && f.strategies.length ? { strategies: f.strategies } : {}) },
     );
     for (const setup of [best.INTRADAY, best.SWING]) {
-      if (!setup) continue;
+      // A setup the market already played out (through its stop or target) is not an opportunity.
+      if (!setup || setup.invalidReason) continue;
       if (f.style && f.style !== 'ANY' && setup.style !== f.style) continue;
       if (f.side && f.side !== 'ANY' && setup.side !== f.side) continue;
       if (f.minQuality !== undefined && setup.quality < f.minQuality) continue;

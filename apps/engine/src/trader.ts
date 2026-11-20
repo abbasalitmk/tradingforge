@@ -84,6 +84,14 @@ export interface TraderDeps {
   readonly onClosed?: (p: ManagedPosition) => void;
 }
 
+/**
+ * Exits a person chose — not the strategy's stop, target, time stop or the
+ * session's square-off. They are real P&L, but they say nothing about whether
+ * the strategy is failing, so they neither extend nor reset the loss streak.
+ */
+export const isOperatorExit = (reason: string | null | undefined): boolean =>
+  !!reason && (reason === 'MANUAL' || reason === 'KILL_SWITCH' || reason.startsWith('RESOLVED'));
+
 const LIVE_STATES = new Set(['ENTRY_SENT', 'ENTRY_ACKED', 'ENTRY_FILLED', 'BRACKET_ARMED', 'MANAGING', 'EXIT_TRIGGERED', 'ORPHANED']);
 const REJECT_WINDOW_MS = 5 * 60_000;
 
@@ -174,7 +182,9 @@ export class Trader {
       .sort((a, b) => a.closedAt! - b.closedAt!);
     this.realisedPnl = closed.reduce((s, p) => s + p.realisedPnl!, 0) as Paise;
     this.consecutiveLosses = 0;
-    for (const p of closed) this.consecutiveLosses = p.realisedPnl! < 0 ? this.consecutiveLosses + 1 : 0;
+    for (const p of closed) {
+      if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = p.realisedPnl! < 0 ? this.consecutiveLosses + 1 : 0;
+    }
     this.orderTimes = [
       ...today.filter((p) => p.state !== 'REJECTED' && istDateKey(new Date(p.openedAt)) === this.day).map((p) => p.openedAt),
       ...closed.map((p) => p.closedAt!),
@@ -359,7 +369,7 @@ export class Trader {
     p.closedAt = at;
     this.orderTimes.push(at);
     this.realisedPnl = (this.realisedPnl + pnl) as Paise;
-    this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
+    if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
     await m.transition(p, 'CLOSED');
     this.log(`[TRADE CLOSED] ${p.contract?.tradingSymbol ?? p.symbol} ${p.exitReason} @ ₹${(price / 100).toFixed(2)} P&L ₹${(pnl / 100).toFixed(2)}`);
     this.d.onClosed?.(p);
@@ -444,7 +454,6 @@ export class Trader {
       if (pnl !== null) {
         this.rollDay();
         this.realisedPnl = (this.realisedPnl + pnl) as Paise;
-        this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
       }
       await m.transition(p, 'CLOSED');
       this.log(`[RESOLVED] ${p.symbol} closed by operator — ${r.note}`);

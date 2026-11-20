@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import StockAnalysis from './components/StockAnalysis.tsx';
 import MarketScanner from './components/MarketScanner.tsx';
+import AutoPilot from './components/AutoPilot.tsx';
+import OrphanResolver from './components/OrphanResolver.tsx';
+import TradeBlotter from './components/TradeBlotter.tsx';
 import Hint from './components/Hint.tsx';
 import BeginnerCard from './components/BeginnerCard.tsx';
 import LiveStatusBar from './components/LiveStatusBar.tsx';
@@ -84,6 +87,15 @@ interface PositionItem {
   };
   underlyingSymbol?: string;
   exitReason?: string | null;
+  /** Order path the position lives on; its exits always go back there. */
+  broker?: 'PAPER' | 'UPSTOX';
+  style?: 'INTRADAY' | 'SWING';
+  strategyId?: string | null;
+  quality?: number | null;
+  capitalRupees?: number;
+  filledAt?: number | null;
+  closedAt?: number | null;
+  exitPrice?: number | null;
 }
 
 type Buildup = 'LONG_BUILDUP' | 'SHORT_BUILDUP' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NEUTRAL';
@@ -439,6 +451,9 @@ export default function Dashboard() {
   const [fnoTogglePending, setFnoTogglePending] = useState(false);
   const [armOpen, setArmOpen] = useState(false);
   const [armPhrase, setArmPhrase] = useState('');
+  const [resolving, setResolving] = useState<PositionItem | null>(null);
+  /** Position id → last announced phase, so each fill and exit is announced exactly once. */
+  const announced = useRef<Map<string, 'OPEN' | 'CLOSED'> | null>(null);
   const [armPending, setArmPending] = useState(false);
   const [armError, setArmError] = useState<string | null>(null);
   const [market, setMarket] = useState<MarketOverview | null>(null);
@@ -514,7 +529,7 @@ export default function Dashboard() {
     return () => window.removeEventListener('tf:mode-change', handleSync);
   }, []);
 
-  type TabId = 'overview' | 'scanner' | 'breakouts' | 'analysis' | 'positions' | 'fno';
+  type TabId = 'overview' | 'autopilot' | 'scanner' | 'breakouts' | 'analysis' | 'positions' | 'fno';
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [manualRefreshing, setManualRefreshing] = useState(false);
 
@@ -529,6 +544,32 @@ export default function Dashboard() {
     setToast({ text, kind });
     setTimeout(() => setToast((cur) => (cur && cur.text === text ? null : cur)), kind === 'error' ? 8000 : 3000);
   };
+
+  // Announce every fill and every exit once, as the engine reports it. The first
+  // poll only records what already exists, so a page load does not replay history.
+  useEffect(() => {
+    if (!state) return;
+    const first = announced.current === null;
+    const seen = announced.current ?? new Map<string, 'OPEN' | 'CLOSED'>();
+    for (const p of state.positions) {
+      const phase = p.state === 'CLOSED' ? 'CLOSED' : p.filledQuantity > 0 ? 'OPEN' : null;
+      if (!phase || seen.get(p.id) === phase) continue;
+      seen.set(p.id, phase);
+      if (first) continue;
+      const sym = p.contract?.tradingSymbol ?? p.symbol;
+      const where = p.broker === 'UPSTOX' ? 'LIVE' : 'paper';
+      if (phase === 'OPEN') {
+        showToast(`🟢 ${p.side === 'BUY' ? 'Bought' : 'Sold short'} ${p.filledQuantity} × ${sym} @ ₹${(p.avgEntry ?? p.entry).toFixed(2)} (${where})${p.strategyId ? ` · ${p.strategyId}` : ''}${p.quality != null ? ` Q${p.quality}` : ''}`);
+      } else {
+        showToast(
+          `${p.pnlRupees >= 0 ? '✅' : '🔻'} Closed ${sym}${p.exitPrice != null ? ` @ ₹${p.exitPrice.toFixed(2)}` : ''} · ${p.exitReason ?? 'exit'} · P&L ${p.pnlRupees >= 0 ? '+' : ''}₹${p.pnlRupees.toFixed(2)} (${where})`,
+          p.pnlRupees >= 0 ? 'ok' : 'error',
+        );
+      }
+    }
+    announced.current = seen;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.positions]);
 
   const handleManualRefresh = async () => {
     setManualRefreshing(true);
@@ -672,21 +713,25 @@ export default function Dashboard() {
         return;
       }
 
-      const confirmed = window.confirm(
+      // The engine refuses to arm without this exact phrase; asking here just saves a round trip.
+      const typed = window.prompt(
         '⚠️ SWITCH TO LIVE TRADING WITH REAL MONEY?\n\n' +
         '• Real orders will be routed directly to your Upstox account.\n' +
-        '• Sizing limits, risk guards and stop losses are active.\n\n' +
-        'Click OK to activate LIVE TRADING.'
+        '• Open paper positions stay on paper; only new entries go to Upstox.\n\n' +
+        `Type exactly: ${ARM_PHRASE}`
       );
-      if (!confirmed) return;
+      if (typed === null) return;
+      if (typed.trim() !== ARM_PHRASE) {
+        showToast('Live switch cancelled — confirmation phrase did not match', 'error');
+        return;
+      }
 
-      const r = await postEngine<{ mode?: string; error?: string }>('/mode/arm', { mode: 'LIVE' });
+      const r = await postEngine<{ mode?: string; error?: string }>('/mode/arm', { mode: 'LIVE', confirmation: ARM_PHRASE });
       if (!r.ok) {
         showToast(`❌ Live switch rejected: ${r.error}`, 'error');
         return;
       }
       setState((prev) => (prev ? { ...prev, mode: 'LIVE', isArmed: true } : null));
-      localStorage.setItem('tf_trading_mode', 'LIVE');
       window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'LIVE' } }));
       showToast('🔴 LIVE TRADING ARMED — Real orders active');
     } else {
@@ -696,16 +741,9 @@ export default function Dashboard() {
         return;
       }
       setState((prev) => (prev ? { ...prev, mode: 'PAPER', isArmed: false } : null));
-      localStorage.setItem('tf_trading_mode', 'PAPER');
       window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'PAPER' } }));
       showToast(r.data.detail ? `🟢 PAPER MODE — ${r.data.detail}` : '🟢 Switched to PAPER MODE — Zero-risk simulation');
     }
-
-    fetch('/api/mode', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mode: target }),
-    }).catch(() => undefined);
   };
 
   const handleSetAutoScope = async (mode: 'ALL_SCANNED' | 'SINGLE_STOCK', symbol?: string) => {
@@ -741,7 +779,7 @@ export default function Dashboard() {
       nextEnabled &&
       !window.confirm(
         `Turn ON Automated Trading in ${state.mode} mode?\n\n` +
-        `• Target Scope: ${autoTargetMode === 'SINGLE_STOCK' ? `SINGLE STOCK (${autoTargetSymbol} ONLY)` : 'ALL SCANNED STOCKS (Top Ranked Breakout)'}\n` +
+        `• Target Scope: ${autoTargetMode === 'SINGLE_STOCK' ? `SINGLE STOCK (${autoTargetSymbol} ONLY)` : 'ALL WATCHED STOCKS (best setup by ensemble quality)'}\n` +
         `• Sizing: ${state.sizing.mode} (${state.sizing.mode === 'FIXED_BUDGET' ? `₹${state.sizing.budget?.toLocaleString('en-IN')}` : state.sizing.mode === 'FIXED_QTY' ? `${state.sizing.fixedQty} shares` : `${state.sizing.riskPct}% risk`})\n` +
         `• Strategy: ${state.strategyMode}\n\n` +
         `Click OK to activate automated execution.`
@@ -912,6 +950,13 @@ export default function Dashboard() {
     }
     setKillModalOpen(false);
     showToast(`⚠️ Kill switch ${r.data.fired ?? level} accepted by engine — verify on Upstox`);
+  };
+
+  /** Add a scanner result to the engine's live watchlist (streamed, analysed, auto-eligible). */
+  const handleWatchLive = async (symbol: string) => {
+    const r = await postEngine<{ added?: string[]; failed?: Array<{ symbol: string; error: string }> }>('/watchlist/add', { symbol });
+    if (!r.ok) return showToast(`Could not watch ${symbol}: ${r.error}`, 'error');
+    showToast(`👁 ${symbol} added to the live watchlist — analysed every cycle`);
   };
 
   const handleExitPosition = async (positionId: string) => {
@@ -1225,7 +1270,9 @@ export default function Dashboard() {
         {dot(marketError ? 'var(--danger)' : market ? 'var(--ok)' : 'var(--muted)')}
         <span style={{ fontWeight: 600 }}>Market data</span>
         <span style={{ color: 'var(--muted)' }}>
-          {marketError ?? (market ? `live from Upstox · updated ${agoSec(market.asOf, now)}` : 'loading…')}
+          {marketError
+            ? `${marketError}${market ? ` — panels show data from ${agoSec(market.asOf, now)}` : ''}`
+            : market ? `live from Upstox · updated ${agoSec(market.asOf, now)}` : 'loading…'}
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2323,7 +2370,7 @@ export default function Dashboard() {
           </div>
 
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {formStrategyMode === 'BOTH' ? 'Intraday ORB (15m) + Swing EMA Breakouts' : formStrategyMode === 'INTRADAY' ? '15m Opening Range Breakouts' : 'Daily EMA Swing Breakouts'}
+            {formStrategyMode === 'BOTH' ? 'Intraday (5-min) and swing (daily) strategies both trade' : formStrategyMode === 'INTRADAY' ? 'Intraday strategies on 5-min bars · squared off by 15:10 IST' : 'Swing strategies on daily bars · delivery, held overnight'}
           </div>
         </div>
 
@@ -2467,6 +2514,7 @@ export default function Dashboard() {
                                 : ''}
                               {pos.product ? `${pos.product} · ` : ''}
                               {pos.state} · {pos.gttOrderId ? 'OCO ARMED' : 'NO GTT'}
+                              {pos.broker && <> · <span style={{ fontWeight: 700, color: pos.broker === 'UPSTOX' ? 'var(--danger)' : 'var(--muted)' }}>{pos.broker === 'UPSTOX' ? 'LIVE' : 'PAPER'}</span></>}
                             </div>
                             {pos.exitReason && <div style={{ fontSize: 10, color: 'var(--warn)' }}>exit: {pos.exitReason}</div>}
                           </td>
@@ -2496,6 +2544,24 @@ export default function Dashboard() {
                             SL: ₹{pos.stopLoss.toFixed(isFo ? 2 : 0)} | T: ₹{pos.target.toFixed(isFo ? 2 : 0)}
                           </td>
                           <td style={{ padding: '9px 12px' }}>
+                            {pos.state === 'ORPHANED' ? (
+                              <button
+                                onClick={() => setResolving(pos)}
+                                title="The engine cannot account for this position and has halted entries. Check the broker, then record what is true."
+                                style={{
+                                  background: 'var(--danger)',
+                                  color: '#ffffff',
+                                  border: '1px solid var(--danger)',
+                                  borderRadius: 4,
+                                  padding: '3px 8px',
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Resolve
+                              </button>
+                            ) : (
                             <button
                               onClick={() => handleExitPosition(pos.id)}
                               style={{
@@ -2511,6 +2577,7 @@ export default function Dashboard() {
                             >
                               Exit
                             </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -2773,7 +2840,7 @@ export default function Dashboard() {
           <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>Active Auto Strategy</div>
-              <Hint term="Strategy Modes" explanation="Intraday exits before 15:15 IST today. Swing holds multi-day breakouts. Dual trades both." />
+              <Hint term="Strategy Modes" explanation="Intraday: 5-min strategies, squared off by 15:10 IST. Swing: daily-bar strategies, delivery positions held overnight. Both: either kind may enter. This controls what autonomous mode trades." />
             </div>
             <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ color: 'var(--accent)' }}>DUAL (Intraday + Swing)</span>
@@ -2861,9 +2928,9 @@ export default function Dashboard() {
 
       {/* Prominent Live Data Status Bar with exact refreshed time */}
       <LiveStatusBar
-        lastUpdated={lastLiveAt ?? (market?.asOf ? new Date(market.asOf).getTime() : Date.now())}
+        lastUpdated={lastLiveAt ?? market?.asOf ?? 0}
         feedStaleness={s?.telemetry.feedStaleness ?? null}
-        subscribedCount={s?.telemetry.subscribedCount ?? (market?.watchlist?.length ?? 50)}
+        subscribedCount={s?.telemetry.subscribedCount ?? 0}
         ordersCount={s?.telemetry.ordersCount ?? 0}
         isEngineConnected={!isOffline && s !== null}
         onRefresh={handleManualRefresh}
@@ -2887,6 +2954,7 @@ export default function Dashboard() {
       >
         {[
           { id: 'overview', label: '📊 Dashboard Overview', badge: null },
+          { id: 'autopilot', label: '🤖 Autopilot', badge: s ? (s.autoTrading ? 'ON' : 'OFF') : null },
           { id: 'scanner', label: '🔍 Market Scanner', badge: '500+ Stocks' },
           { id: 'breakouts', label: '⚡ Breakout Radar', badge: `${rankedStocks.length > 0 ? rankedStocks.length : 'Top Setups'}` },
           { id: 'analysis', label: `🎯 Stock Deep Analysis`, badge: focusSymbol },
@@ -3210,6 +3278,7 @@ export default function Dashboard() {
         <MarketScanner
           catalog={catalog}
           onAnalyze={(symbol) => handleSelectAndAnalyze(symbol)}
+          onWatch={handleWatchLive}
         />
       </div>
 
@@ -3238,7 +3307,7 @@ export default function Dashboard() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 18 }}>⚡</span>
             <div style={{ fontSize: 12, color: 'var(--fg-secondary)', lineHeight: 1.4 }}>
-              <strong>Breakout Radar:</strong> Stocks ranked by institutional volume surge (RVOL) and technical breakout alignment. Click any stock row to preview its candlestick chart.
+              <strong>Breakout Radar:</strong> Stocks ranked by institutional volume surge (RVOL) and technical breakout alignment. Click any stock row to preview its candlestick chart. Informational — autonomous entries rank setups by ensemble quality instead (see the Autopilot tab).
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -3265,7 +3334,7 @@ export default function Dashboard() {
               }}
             >
               <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span>Autonomous Stock Breakout Scanner</span>
+                <span>Momentum Breakout Ranking (informational)</span>
                 <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Sorted by Breakout Score</span>
                 {sessionBadge}
               </div>
@@ -3522,6 +3591,30 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* ── AUTOPILOT TAB: what autonomous mode is doing and why ── */}
+      <div
+        role="tabpanel"
+        id="panel-autopilot"
+        aria-labelledby="tab-autopilot"
+        tabIndex={0}
+        hidden={activeTab !== 'autopilot'}
+        style={{ display: activeTab === 'autopilot' ? 'flex' : 'none', flexDirection: 'column', gap: 16 }}
+      >
+        {s ? (
+          <>
+            <TradeBlotter
+              positions={s.positions}
+              realisedToday={s.pnl.realised}
+              unrealised={s.pnl.unrealised}
+              now={now}
+              onExit={(id) => void handleExitPosition(id)}
+              onResolve={(p) => setResolving(s.positions.find((x) => x.id === p.id) ?? null)}
+            />
+            {activeTab === 'autopilot' && <AutoPilot onToast={showToast} />}
+          </>
+        ) : tradingUnavailable}
+      </div>
+
       {/* ── 5. POSITIONS & RISK TAB ── */}
       <div
         role="tabpanel"
@@ -3624,6 +3717,11 @@ export default function Dashboard() {
                 </span>
               )}
               <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>Index options / futures · option-chain analytics</span>
+              {marketFno && (
+                <span style={{ fontSize: 11, fontWeight: 600, color: marketFnoError ? 'var(--danger)' : 'var(--muted)' }}>
+                  {marketFnoError ? `refresh failed (${marketFnoError}) · data from ${agoSec(marketFno.asOf, now)}` : `updated ${agoSec(marketFno.asOf, now)}`}
+                </span>
+              )}
             </div>
             {s?.fno && !isOffline && (
               <button
@@ -4006,6 +4104,7 @@ export default function Dashboard() {
       )}
 
       {killModalOpen && renderKillModal()}
+      {resolving && <OrphanResolver position={resolving} onClose={() => setResolving(null)} onDone={showToast} />}
     </div>
   );
 }

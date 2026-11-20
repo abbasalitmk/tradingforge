@@ -1,4 +1,4 @@
-import { type Candle, type Clock, type Side, type Signal, paiseToRupees } from '@tradeforger/core';
+import { type Candle, type Clock, type Side, type Signal, paiseToRupees, rupeesToPaise } from '@tradeforger/core';
 import { STRATEGY_CATALOG, type Params, type StrategyDefinition } from './catalog.ts';
 
 export interface StrategyVote {
@@ -30,6 +30,8 @@ export interface HybridSetup {
   readonly votes: StrategyVote[];
   readonly reasons: string[];
   readonly generatedAt: number;
+  /** Set when the live price has already gone through the stop or target: the setup has played out. */
+  readonly invalidReason?: string | null;
 }
 
 export interface HybridInput {
@@ -40,6 +42,12 @@ export interface HybridInput {
   /** Daily bars, oldest first. */
   readonly daily: readonly Candle[];
   readonly clock: Clock;
+  /**
+   * Live price, when known. Setups are re-priced to it (`repriceToMarket`):
+   * daily strategies decide on the last completed close and scanners often
+   * hold only closed 5-minute bars, but an order fills at the live price.
+   */
+  readonly ltp?: number | null;
 }
 
 export interface HybridOptions {
@@ -172,5 +180,45 @@ export function analyzeHybrid(
     };
   };
 
-  return { votes, best: { INTRADAY: bestFor('INTRADAY'), SWING: bestFor('SWING') } };
+  const live = (s: HybridSetup | null): HybridSetup | null => {
+    if (!s || input.ltp === undefined || input.ltp === null) return s;
+    const { setup, invalid } = repriceToMarket(s, input.ltp);
+    return { ...setup, invalidReason: invalid };
+  };
+  return { votes, best: { INTRADAY: live(bestFor('INTRADAY')), SWING: live(bestFor('SWING')) } };
+}
+
+/**
+ * Re-price a setup to the live market.
+ *
+ * Entry moves to the LTP; the stop and target stay where the strategy put them
+ * (they are structural levels), so R:R shows what would actually be traded — a
+ * move toward the target shrinks it, and an R:R floor does the rest. A price
+ * already through either level means the setup has played out and must not be
+ * entered at all.
+ */
+export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
+  if (!(ltp > 0) || ltp === s.entry) return { setup: s, invalid: null };
+  const long = s.side === 'BUY';
+  const fmt = (n: number) => `₹${n.toFixed(2)}`;
+  if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
+    return { setup: s, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
+  }
+  if (long ? ltp >= s.target : ltp <= s.target) {
+    return { setup: s, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
+  }
+  const rewardRisk = Math.round((Math.abs(s.target - ltp) / Math.abs(ltp - s.stopLoss)) * 100) / 100;
+  const entryPaise = rupeesToPaise(ltp);
+  const votes = s.votes.map((v) => (v.strategyId === s.primaryStrategyId && v.signal
+    ? { ...v, signal: { ...v.signal, entry: entryPaise } }
+    : v));
+  // Material moves only: a few paise of drift on a forming bar is not news.
+  const moved = Math.abs(ltp - s.entry) / s.entry >= 0.001;
+  return {
+    setup: {
+      ...s, entry: ltp, rewardRisk, votes,
+      reasons: moved ? [...s.reasons, `entry re-priced from ${fmt(s.entry)} (signal bar close) to live ${fmt(ltp)}`] : s.reasons,
+    },
+    invalid: null,
+  };
 }

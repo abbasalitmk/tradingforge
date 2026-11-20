@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import {
   SystemClock, istHHMM, istDateKey, istMinutes, SESSION, rupeesToPaise, paiseToRupees,
-  type Paise, type Candle, type Tick, type Side, type Signal, type SizingMode, type Mode, type Product, pctOf,
+  type Paise, type Candle, type Tick, type Side, type Signal, type SizingMode, type Mode, type Product, pctOf, computeIndianCharges,
 } from '@tradeforger/core';
 import { db, audit, closeDb, runMigrations } from '@tradeforger/db';
 import { TokenStore, UpstoxClient } from '@tradeforger/upstox';
@@ -28,14 +28,14 @@ import {
 import { STRATEGY_CATALOG, type ScanFilters } from '@tradeforger/strategy';
 import { loadConfig, LIVE_CONFIRMATION, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
-import { Trader, type ManagedPosition } from './trader.ts';
+import { Trader, isOperatorExit, type ManagedPosition } from './trader.ts';
 import { PositionStore, EngineStateStore } from './journal.ts';
 import { planRecovery, type UpstoxView } from './recovery.ts';
 import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
 import {
   LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments,
-  type AutoConfig, type LiveAnalysis, type LiveSetup, type Target,
+  type AutoConfig, type DecisionContext, type StrategyRecord, type LiveAnalysis, type LiveSetup, type Target,
 } from './live.ts';
 import { MarketScanner } from './scan.ts';
 import { ResearchLab } from './research.ts';
@@ -415,8 +415,29 @@ function applyTick(t: Tick): void {
 
 feed.on('tick', applyTick);
 
-feed.on('error', (e) => console.error('[feed]', e.message));
+/** Why the market-data WebSocket is not delivering, for the dashboard. Null while connected. */
+let feedIssue: string | null = null;
+feed.on('error', (e) => {
+  if (/\b403\b/.test(e.message)) {
+    // Upstox answers 403 with an empty body when the account's WebSocket slots
+    // are taken; say so once instead of logging the same line every reconnect.
+    if (!feedIssue?.startsWith('Upstox refused')) {
+      console.error('[feed] Upstox refused the market-data WebSocket (HTTP 403). The account allows 2 WebSocket '
+        + 'connections in total — another running engine (e.g. the VPS deployment) most likely holds them. '
+        + 'Prices fall back to REST polling every 2 s; stop the other engine to restore tick-by-tick data.');
+    }
+    feedIssue = 'Upstox refused the WebSocket (HTTP 403) — another engine on this account most likely holds both connection slots';
+    return;
+  }
+  feedIssue = e.message;
+  console.error('[feed]', e.message);
+});
+/** Where prices are actually coming from right now. */
+const priceSource = (): 'WEBSOCKET' | 'REST_POLL' | 'NONE' =>
+  feed.isConnected ? 'WEBSOCKET'
+    : state.lastTickMs !== null && clock.ms() - state.lastTickMs < 10_000 ? 'REST_POLL' : 'NONE';
 feed.on('open', () => {
+  feedIssue = null;
   const keys = [...new Set([
     ...watchlist.keys(), ...fnoDesk.feedKeys(), ...trader.live().map((p) => p.instrumentKey),
     ...(state.focus ? [state.focus.instrumentKey] : []),
@@ -461,7 +482,8 @@ async function primePrice(instrumentKey: string): Promise<number | null> {
 }
 
 function onPositionClosed(p: ManagedPosition): void {
-  void memory.record(p, currentMode());
+  // The strategy's record must include this trade before its next entry is judged.
+  void memory.record(p, currentMode()).then(() => refreshStrategyRecords()).catch(() => undefined);
   void audit(sql, {
     kind: 'POSITION_CLOSED',
     actor: 'engine',
@@ -511,7 +533,7 @@ interface EntryMeta {
   readonly strategyVersion?: string | undefined;
   readonly quality: number;
 }
-type EntryResult = { ok: true } | { ok: false; reason: string };
+type EntryResult = { ok: true; detail?: string } | { ok: false; reason: string };
 
 /**
  * Cash-segment entry for a confirmed setup: sizing, the AI size multiplier,
@@ -542,6 +564,23 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
   const qty = Math.floor(sized.result.quantity * ai.sizeMultiplier);
   if (qty < 1) return { ok: false, reason: 'AI caution reduced size below one share' };
 
+  // Edge after costs. The strategy's R:R ignores brokerage, STT, exchange fees,
+  // GST and stamp duty; on a tight intraday stop those are a large slice of the
+  // risk, and a trade that clears the floor only before costs has no edge.
+  const [entryRs, stopRs, targetRs] = [signal.entry, signal.stopLoss, signal.target].map(paiseToRupees) as [number, number, number];
+  const long = signal.side === 'BUY';
+  const style = signal.style === 'SWING' ? 'SWING' : 'INTRADAY';
+  const roundTrip = (exitRs: number): number => computeIndianCharges({
+    style, qty, buyPrice: long ? entryRs : exitRs, sellPrice: long ? exitRs : entryRs,
+  }).totalCharges;
+  const costAtTarget = roundTrip(targetRs);
+  const netReward = Math.abs(targetRs - entryRs) * qty - costAtTarget;
+  const netRisk = Math.abs(entryRs - stopRs) * qty + roundTrip(stopRs);
+  const netRR = netRisk > 0 ? netReward / netRisk : 0;
+  if (netRR < state.auto.minNetRewardRisk) {
+    return { ok: false, reason: `R:R after ₹${costAtTarget.toFixed(2)} round-trip charges is ${netRR.toFixed(2)} (min ${state.auto.minNetRewardRisk}) — charges eat the edge at ${qty} shares` };
+  }
+
   if (lastLtp.get(key) === undefined) await primePrice(key);
   const r = await trader.open({
     segment: 'EQ',
@@ -555,14 +594,18 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     entry: signal.entry,
     stopLoss: signal.stopLoss,
     target: signal.target,
-    trailingGap: null,
+    // Trail at the initial risk distance: the stop starts where the strategy put
+    // it and only ever moves to lock in gains (held at the exchange in the GTT).
+    trailingGap: state.auto.trailStop ? (Math.abs(signal.entry - signal.stopLoss) as Paise) : null,
     costPaise: (signal.entry * qty) as Paise,
     timeStopMin: null,
     strategyId: meta.strategyId,
     ...(meta.strategyVersion ? { strategyVersion: meta.strategyVersion } : {}),
     quality: meta.quality,
   });
-  return r.ok ? { ok: true } : { ok: false, reason: r.reason };
+  return r.ok
+    ? { ok: true, detail: `${qty} × ₹${entryRs.toFixed(2)} · net R:R ${netRR.toFixed(2)} after ~₹${costAtTarget.toFixed(2)} charges${state.auto.trailStop ? ' · trailing stop' : ''}` }
+    : { ok: false, reason: r.reason };
 }
 
 // ─────────────────────────────── F&O path ───────────────────────────────
@@ -671,8 +714,9 @@ async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: En
 async function analyzeFno(symbol: string): Promise<{ analytics: unknown; plan: FnoPlanView | null; rejected: string[] }> {
   const s = await fnoDesk.refresh(symbol, 10_000);
   if (!s) return { analytics: null, plan: null, rejected: [`${symbol} is not configured on the F&O desk`] };
-  const candles = intradayCandlesCache.get(s.signalKey) ?? [];
-  const scored = stockScanner.rankUniverse([{ instrumentKey: s.signalKey, symbol, name: symbol }], intradayCandlesCache)[0];
+  const bars = liveBars([s.signalKey]);
+  const candles = bars.get(s.signalKey) ?? [];
+  const scored = stockScanner.rankUniverse([{ instrumentKey: s.signalKey, symbol, name: symbol }], bars)[0];
   if (!scored?.tradeSetup) {
     return { analytics: s.analytics, plan: null, rejected: [`not enough candles on ${s.signalKey} (${candles.length})`] };
   }
@@ -700,6 +744,19 @@ const candleSource = {
   ltp: ltpOf,
 };
 const analyzer = new LiveAnalyzer(clock, candleSource);
+
+/**
+ * What every view ranks on: prior sessions for warmup, today's closed bars and
+ * the forming bar. Today's cache alone is empty until ~10:30 and a bar behind.
+ */
+function liveBars(keys: Iterable<string>): Map<string, Candle[]> {
+  const out = new Map<string, Candle[]>();
+  for (const k of keys) {
+    const partial = candleSource.partial(k);
+    out.set(k, partial ? mergeCandles(candleSource.intraday(k), [partial]) : candleSource.intraday(k));
+  }
+  return out;
+}
 
 const scanner = new MarketScanner({
   client, clock,
@@ -832,6 +889,43 @@ function removeFromWatchlist(symbol: string): string | null {
   return null;
 }
 
+/** Each strategy's own recent record in the current mode (LIVE vs simulated), refreshed every minute. */
+let strategyRecords = new Map<string, StrategyRecord>();
+/** Rolling window per strategy: recent behaviour matters more than last quarter's. */
+const RECORD_WINDOW = 50;
+
+async function refreshStrategyRecords(): Promise<void> {
+  const live = currentMode() === 'LIVE';
+  const trades = (await memory.recent(1000))
+    .filter((t) => (t.mode === 'LIVE') === live && t.strategyId && t.rMultiple !== null && !isOperatorExit(t.exitReason));
+  const by = new Map<string, number[]>();
+  for (const t of trades) {
+    const list = by.get(t.strategyId!) ?? [];
+    if (list.length < RECORD_WINDOW) list.push(t.rMultiple!); // newest first
+    by.set(t.strategyId!, list);
+  }
+  strategyRecords = new Map([...by].map(([id, rs]) => [id, { trades: rs.length, expectancyR: rs.reduce((a, r) => a + r, 0) / rs.length }]));
+}
+
+/** Everything `decide()` needs to know about the account right now. */
+function decisionContext(): DecisionContext {
+  const open = trader.live();
+  const byStrategy: Record<string, number> = {};
+  for (const p of open) if (p.strategyId) byStrategy[p.strategyId] = (byStrategy[p.strategyId] ?? 0) + 1;
+  return {
+    mode: currentMode(),
+    approved: (id) => registry.approved(id) !== null,
+    entriesToday: state.autoEntries.count,
+    open: {
+      total: open.length,
+      byStrategy,
+      bySide: { BUY: open.filter((p) => p.side === 'BUY').length, SELL: open.filter((p) => p.side === 'SELL').length },
+    },
+    record: (id) => strategyRecords.get(id) ?? null,
+    verdict: (id) => registry.activeVerdict(id),
+  };
+}
+
 function rollAutoDay(): void {
   const today = istDateKey(clock.now());
   if (state.autoEntries.day !== today) state.autoEntries = { day: today, count: 0 };
@@ -862,7 +956,7 @@ async function act(a: LiveAnalysis, s: LiveSetup): Promise<void> {
     : await enterEquity(lead, s.route === 'EQ_SWING' ? 'D' : 'I', ai, meta);
   if (r.ok) {
     state.autoEntries.count++;
-    log('PLACED', `${ai.verdict} · size ×${ai.sizeMultiplier}`);
+    log('PLACED', `${ai.verdict} · size ×${ai.sizeMultiplier}${r.detail ? ` · ${r.detail}` : ''}`);
   } else {
     log('REJECTED', r.reason);
   }
@@ -879,7 +973,7 @@ async function liveCycle(): Promise<void> {
   rollAutoDay();
   const results = analyzer.analyze(
     targets(), registry.activeParams(), state.auto.strategies, state.auto,
-    { mode: currentMode(), approved: (id) => registry.approved(id) !== null, entriesToday: state.autoEntries.count },
+    decisionContext(),
   );
   void refreshFocusAi();
   if (!state.auto.enabled || acting || !verdictNow().allowEntries) return;
@@ -973,10 +1067,19 @@ function broadcastSse(event: string, data: unknown): void {
 }
 
 let pollingInProgress = false;
+/** Upstox's full-quote endpoint takes up to 500 instruments per call. */
+const QUOTE_BATCH = 500;
+
+/**
+ * REST fallback while the WebSocket is not ticking: one full-quote poll of
+ * everything the engine prices — the watchlist, focus and single-stock target,
+ * F&O underlyings and every open position.
+ */
 async function pollQuotesOnce(): Promise<void> {
   if (pollingInProgress) return;
   const keys = [...new Set([
     ...watchlist.keys(),
+    ...(state.fnoEnabled ? fnoDesk.feedKeys() : []),
     ...(state.focus?.instrumentKey ? [state.focus.instrumentKey] : []),
     ...(state.singleTarget?.instrumentKey ? [state.singleTarget.instrumentKey] : []),
     ...trader.live().map((p) => p.instrumentKey),
@@ -985,23 +1088,28 @@ async function pollQuotesOnce(): Promise<void> {
 
   pollingInProgress = true;
   try {
-    const res = await client.quotes(keys.slice(0, 50));
-    if (res.ok && res.value.length > 0) {
+    for (let i = 0; i < keys.length; i += QUOTE_BATCH) {
+      const res = await client.quotes(keys.slice(i, i + QUOTE_BATCH));
+      if (!res.ok) {
+        console.warn('[quote-poller] fallback poll error:', res.error.message);
+        continue;
+      }
       for (const q of res.value) {
+        // Intraday, a quote's ohlc.close is the LTP itself; the previous close
+        // is LTP minus net_change. Using ohlc.close pinned day change at 0%.
+        const prevClose = q.net_change !== undefined ? q.last_price - q.net_change : undefined;
         applyTick({
           instrumentKey: q.instrument_token,
           ltp: q.last_price,
           ts: clock.ms(),
           ...(q.volume !== undefined ? { volume: q.volume } : {}),
-          ...(q.ohlc?.close !== undefined ? { close: q.ohlc.close } : {}),
+          ...(prevClose !== undefined && prevClose > 0 ? { close: prevClose } : {}),
         });
         const s = watchlist.get(q.instrument_token);
         if (s && q.ohlc) {
           if (q.ohlc.open && q.ohlc.open > 0) s.open = q.ohlc.open;
           if (q.ohlc.high && q.ohlc.high > 0) s.high = Math.max(s.high, q.ohlc.high);
           if (q.ohlc.low && q.ohlc.low > 0) s.low = s.low === 0 ? q.ohlc.low : Math.min(s.low, q.ohlc.low);
-          if (q.ohlc.close && q.ohlc.close > 0) s.close = q.ohlc.close;
-          if (s.close > 0) s.changePct = ((s.ltp - s.close) / s.close) * 100;
         }
       }
     }
@@ -1013,6 +1121,10 @@ async function pollQuotesOnce(): Promise<void> {
 }
 
 function startLoops(): void {
+  // Strategy records drive the losing-strategy pause; trades also refresh them on close.
+  void refreshStrategyRecords().catch((e) => console.error('[records]', e));
+  setInterval(() => void refreshStrategyRecords().catch((e) => console.error('[records]', e)), 60_000);
+
   // Resilient market feed poller: if the WebSocket feed has not ticked recently
   // (e.g. during connection, backoff, or when waiting for user OAuth login),
   // poll REST quotes (/v2/market-quote/quotes) using the long-lived analytics token.
@@ -1224,13 +1336,20 @@ const paperBracketOf = (p: ManagedPosition) => ({
  */
 async function recoverPositions(): Promise<void> {
   const open = await positionStore.loadOpen();
-  trader.restoreDay(await positionStore.loadSince(istDayStartMs()));
+  const todays = await positionStore.loadSince(istDayStartMs());
+  trader.restoreDay(todays);
+  // The daily entry cap counts entries the broker accepted (act() counts r.ok);
+  // a restart must not hand autonomous mode a fresh day's quota.
+  const today = istDateKey(clock.now());
+  state.autoEntries = {
+    day: today,
+    count: todays.filter((p) => istDateKey(new Date(p.openedAt)) === today && p.state !== 'REJECTED').length,
+  };
   if (open.length === 0) return;
 
   const live = open.filter((p) => p.broker === 'UPSTOX');
   if (live.length > 0) trader.register('UPSTOX', ensureUpstoxBroker());
   const views = await upstoxViews(live.filter((p) => p.state !== 'ORPHANED'));
-  const today = istDateKey(clock.now());
   const summary: Record<string, number> = {};
 
   for (const p of open) {
@@ -1316,6 +1435,7 @@ function positionView(p: ManagedPosition): Record<string, unknown> {
     symbol: p.symbol,
     segment: p.segment,
     product: p.product,
+    broker: p.broker,
     side: p.side,
     state: p.state,
     quantity: p.quantity,
@@ -1328,7 +1448,18 @@ function positionView(p: ManagedPosition): Record<string, unknown> {
     pnlRupees: paiseToRupees(pnl),
     gttOrderId: p.gttOrderId,
     openedAt: p.openedAt,
+    filledAt: p.filledAt,
+    closedAt: p.closedAt,
+    exitPrice: p.exitPrice !== null ? paiseToRupees(p.exitPrice) : null,
     exitReason: p.exitReason,
+    style: p.style,
+    strategyId: p.strategyId ?? null,
+    strategyVersion: p.strategyVersion ?? null,
+    quality: p.quality ?? null,
+    capitalRupees: paiseToRupees(p.costPaise),
+    // Best and worst move per unit while open, in rupees.
+    mfeRupees: paiseToRupees(p.mfePaise as Paise),
+    maeRupees: paiseToRupees(p.maePaise as Paise),
     ...(p.contract ? { contract: p.contract } : {}),
     ...(p.underlyingSymbol ? { underlyingSymbol: p.underlyingSymbol } : {}),
   };
@@ -1358,6 +1489,7 @@ const server = createServer(async (req, res) => {
     return json(200, {
       ok: true, mode: currentMode(), istTime: istHHMM(clock.now()), ticks: state.ticks,
       feedStaleness: feed.staleness(), subscribed: feed.subscribedCount,
+      priceSource: priceSource(), feedIssue,
       allowEntries: v.allowEntries, allowExits: v.allowExits, trips: v.trips.map((t) => t.id),
     });
   }
@@ -1366,7 +1498,7 @@ const server = createServer(async (req, res) => {
     const snap = snapshot();
     const v = evaluate(snap, cfg.limits, clock);
     // Informational momentum ranking of the watched set; autonomous entries rank by hybrid quality (/analysis/live).
-    const ranked = stockScanner.rankUniverse([...watchlist.values()], intradayCandlesCache, {
+    const ranked = stockScanner.rankUniverse([...watchlist.values()], liveBars(watchlist.keys()), {
       minPrice: state.auto.minPrice,
       maxPrice: state.auto.maxPrice,
     });
@@ -1461,7 +1593,14 @@ const server = createServer(async (req, res) => {
         .sort((x, y) => y.quality - x.quality),
       analyzed: results.length,
       autoLog,
-      strategies: STRATEGY_CATALOG.map((d) => ({ id: d.id, name: d.name, style: d.style, approved: registry.approved(d.id)?.id ?? null })),
+      priceSource: priceSource(),
+      feedIssue,
+      breakers: verdictNow().trips.map((t) => ({ id: t.id, detail: t.detail })),
+      strategies: STRATEGY_CATALOG.map((d) => ({
+        id: d.id, name: d.name, style: d.style, approved: registry.approved(d.id)?.id ?? null,
+        record: strategyRecords.get(d.id) ?? null,
+        verdict: registry.activeVerdict(d.id),
+      })),
     });
   }
 
@@ -1531,9 +1670,9 @@ const server = createServer(async (req, res) => {
 
     case '/scanner/analyze': {
       const symbol = String(body['symbol'] ?? 'RELIANCE').toUpperCase();
-      const item = DEFAULT_UNIVERSE.find((u) => u.symbol === symbol);
-      if (!item) return json(404, { error: `${symbol} is not in the universe` });
-      const scored = stockScanner.rankUniverse([item], intradayCandlesCache)[0];
+      const item = [...watchlist.values()].find((u) => u.symbol === symbol);
+      if (!item) return json(404, { error: `${symbol} is not on the live watchlist` });
+      const scored = stockScanner.rankUniverse([item], liveBars([item.instrumentKey]))[0];
       if (!scored?.tradeSetup) return json(404, { error: `not enough candles to analyse ${symbol}` });
       const sig = stockScanner.toSignal(scored, state.strategyMode === 'SWING' ? 'SWING' : 'INTRADAY');
       const consensus = await aiReviewer.review(sig);
@@ -1754,8 +1893,9 @@ const server = createServer(async (req, res) => {
         const bad = await addToWatchlist(s);
         if (bad) failed.push({ symbol: s, error: bad }); else added.push(s);
       }
-      if (added.length > 0) persistSettings();
-      return json(added.length > 0 ? 200 : 409, { added, failed, size: watchlistExtra.size, max: MAX_WATCHLIST_EXTRA });
+      if (added.length === 0) return json(409, { error: failed.map((f) => f.error).join('; '), added, failed });
+      persistSettings();
+      return json(200, { added, failed, size: watchlistExtra.size, max: MAX_WATCHLIST_EXTRA });
     }
 
     case '/watchlist/remove': {
@@ -1878,7 +2018,7 @@ const server = createServer(async (req, res) => {
       const [a] = analyzer.analyze(
         [{ instrumentKey, symbol, cashTradeable: instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false }],
         registry.activeParams(), state.auto.strategies, state.auto,
-        { mode: currentMode(), approved: (id) => registry.approved(id) !== null, entriesToday: state.autoEntries.count },
+        decisionContext(),
       );
       void refreshFocusAi();
       return json(200, { focus: state.focus, analysis: a ? analysisView(a) : null });

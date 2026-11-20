@@ -1,11 +1,19 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 export type TradingMode = 'PAPER' | 'LIVE';
 
-const STORAGE_KEY = 'tf_trading_mode';
+const ARM_PHRASE = 'I UNDERSTAND THIS USES REAL MONEY';
+const POLL_MS = 3_000;
 
+/**
+ * The header's PAPER / LIVE switch. What it shows is ALWAYS the engine's own
+ * effective mode, polled — never a browser-side memory of the last click. An
+ * arm expires at the session end, a kill switch disarms, an engine restart
+ * boots in PAPER, and another browser can arm: a remembered "LIVE" (or
+ * "PAPER") would then be a lie about real money.
+ */
 export default function TradingModeToggle({
   onChange,
   compact = false,
@@ -13,103 +21,83 @@ export default function TradingModeToggle({
   onChange?: (mode: TradingMode) => void;
   compact?: boolean;
 }) {
-  const [mode, setMode] = useState<TradingMode>('PAPER');
-  const [mounted, setMounted] = useState(false);
+  /** null = engine unreachable or not yet heard from. */
+  const [mode, setMode] = useState<TradingMode | null>(null);
+  const [engineMode, setEngineMode] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
-    // 1. Read from localStorage
-    const saved = localStorage.getItem(STORAGE_KEY) as TradingMode | null;
-    if (saved === 'LIVE' || saved === 'PAPER') {
-      setMode(saved);
-      onChange?.(saved);
-    } else {
-      // 2. Fall back to /api/mode
-      fetch('/api/mode')
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.mode === 'LIVE' || data.mode === 'PAPER') {
-            setMode(data.mode);
-            localStorage.setItem(STORAGE_KEY, data.mode);
-            onChange?.(data.mode);
-          }
-        })
-        .catch(() => undefined);
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/proxy/health', { cache: 'no-store' });
+      const data = (await res.json().catch(() => null)) as { mode?: string } | null;
+      if (!res.ok || !data?.mode) throw new Error('offline');
+      const next: TradingMode = data.mode === 'LIVE' ? 'LIVE' : 'PAPER';
+      setEngineMode(data.mode);
+      setMode((prev) => {
+        if (prev !== next) onChange?.(next);
+        return next;
+      });
+    } catch {
+      setMode(null);
+      setEngineMode(null);
     }
+  }, [onChange]);
 
-    const handleSync = (e: Event) => {
-      const custom = e as CustomEvent<{ mode: TradingMode }>;
-      if (custom.detail?.mode) {
-        setMode(custom.detail.mode);
-      }
-    };
+  useEffect(() => {
+    void refresh();
+    const t = setInterval(() => void refresh(), POLL_MS);
+    // Another control on the page changed the mode: confirm with the engine now.
+    const handleSync = () => void refresh();
     window.addEventListener('tf:mode-change', handleSync);
-    return () => window.removeEventListener('tf:mode-change', handleSync);
-  }, []);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('tf:mode-change', handleSync);
+    };
+  }, [refresh]);
 
   const switchMode = async (target: TradingMode) => {
-    if (target === mode) return;
+    if (target === mode || switching) return;
 
+    let body: Record<string, string> = { mode: 'PAPER' };
     if (target === 'LIVE') {
-      const confirmed = window.confirm(
+      const typed = window.prompt(
         '⚠️ Enable LIVE TRADING with Real Money?\n\n' +
-        '• Real orders will be routed directly to your Upstox account.\n' +
-        '• Ensure you have completed "Login with Upstox" for today\'s session.\n' +
-        '• Fixed risk limits and stop losses will be enforced.\n\n' +
-        'Click OK to switch to LIVE TRADING.'
+        '• New entries will be sent to your Upstox account.\n' +
+        '• Open paper positions stay on paper.\n' +
+        '• You must have completed "Login with Upstox" today.\n\n' +
+        `Type exactly: ${ARM_PHRASE}`,
       );
-      if (!confirmed) return;
+      if (typed === null) return;
+      if (typed.trim() !== ARM_PHRASE) {
+        alert('LIVE not enabled: the confirmation phrase did not match.');
+        return;
+      }
+      body = { mode: 'LIVE', confirmation: ARM_PHRASE };
     }
 
     setSwitching(true);
-
     try {
-      // 1. Notify engine
-      if (target === 'LIVE') {
-        const res = await fetch('/api/proxy/mode/arm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode: 'LIVE' }),
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Engine rejected switch to LIVE mode (HTTP ${res.status})`);
-        }
-      } else {
-        await fetch('/api/proxy/mode/disarm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode: 'PAPER' }),
-        }).catch(() => undefined);
-      }
-
-      // 2. Persist to server cookie
-      await fetch('/api/mode', {
+      const res = await fetch(target === 'LIVE' ? '/api/proxy/mode/arm' : '/api/proxy/mode/disarm', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: target }),
-      }).catch(() => undefined);
-
-      // 3. Update state & broadcast sync
-      setMode(target);
-      localStorage.setItem(STORAGE_KEY, target);
-      onChange?.(target);
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+      if (!res.ok) throw new Error(data.error || `engine refused (HTTP ${res.status})`);
+      if (data.detail) alert(data.detail);
       window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: target } }));
     } catch (err) {
-      setMode('PAPER');
-      localStorage.setItem(STORAGE_KEY, 'PAPER');
-      onChange?.('PAPER');
-      window.dispatchEvent(new CustomEvent('tf:mode-change', { detail: { mode: 'PAPER' } }));
-      alert(`⚠️ Could not switch to LIVE Trading:\n\n${err instanceof Error ? err.message : String(err)}`);
+      alert(`⚠️ Could not switch to ${target}:\n\n${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      await refresh();
       setSwitching(false);
     }
   };
 
-  if (!mounted) {
+  if (mode === null) {
     return (
       <div
+        title="The trading engine is not reachable — its mode is unknown. Do not assume PAPER."
         style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -117,13 +105,13 @@ export default function TradingModeToggle({
           padding: '2px 8px',
           borderRadius: 999,
           background: 'var(--panel-subtle)',
-          border: '1px solid var(--line)',
+          border: '1px solid var(--warn)',
           fontSize: 11,
-          color: 'var(--muted)',
+          color: 'var(--warn)',
           fontWeight: 700,
         }}
       >
-        <span>PAPER MODE</span>
+        <span>ENGINE OFFLINE · MODE UNKNOWN</span>
       </div>
     );
   }
@@ -146,7 +134,7 @@ export default function TradingModeToggle({
           type="button"
           onClick={() => switchMode('PAPER')}
           disabled={switching}
-          title="Switch to simulated Paper Mode (Risk-Free)"
+          title={`Engine mode: ${engineMode ?? 'unknown'} — switch to simulated Paper Mode`}
           style={{
             border: 'none',
             background: !isLive ? 'var(--ok-subtle)' : 'transparent',
@@ -170,7 +158,7 @@ export default function TradingModeToggle({
           type="button"
           onClick={() => switchMode('LIVE')}
           disabled={switching}
-          title="Switch to LIVE Trading with Real Money (Upstox)"
+          title={`Engine mode: ${engineMode ?? 'unknown'} — switch to LIVE Trading with Real Money (Upstox)`}
           style={{
             border: 'none',
             background: isLive ? 'var(--danger-subtle)' : 'transparent',

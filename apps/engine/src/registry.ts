@@ -71,6 +71,27 @@ export class StrategyRegistry {
     return this.list(strategyId).find((v) => v.status === 'APPROVED') ?? null;
   }
 
+  /**
+   * Validation verdict on the parameters the live analyzer actually runs (see
+   * `activeParams`): the approved version, else the version holding the
+   * catalog defaults. Null when those parameters were never validated.
+   */
+  activeVerdict(strategyId: string): { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null {
+    const oos = (v: StrategyVersion): number | null =>
+      (v.validation as { outOfSample?: { expectancyR?: number } } | null)?.outOfSample?.expectancyR ?? null;
+    const approved = this.approved(strategyId);
+    if (approved) return { status: 'APPROVED', oosExpectancyR: oos(approved) };
+    const def = getStrategy(strategyId);
+    if (!def) return null;
+    const key = (p: Params): string => JSON.stringify(Object.entries(clampParams(def, p)).sort(([a], [b]) => a.localeCompare(b)));
+    const active = key(def.defaults);
+    const v = this.list(strategyId)
+      .filter((x) => x.validation !== null && x.validation !== undefined && key(x.params) === active)
+      .sort((a, b) => b.version - a.version)[0];
+    if (!v || (v.status !== 'VALIDATED' && v.status !== 'REJECTED')) return null;
+    return { status: v.status, oosExpectancyR: oos(v) };
+  }
+
   /** Params the live analyzer runs: the approved version where one exists, else defaults. */
   activeParams(): Record<string, Params> {
     const out: Record<string, Params> = {};

@@ -55,11 +55,35 @@ services:
       - XAI_API_KEY=${XAI_API_KEY:-}
       - GROK_MODEL=${GROK_MODEL:-grok-2-latest}
       - GROK_BASE_URL=${GROK_BASE_URL:-https://api.x.ai/v1}
-      - DATABASE_URL=${DATABASE_URL:-}
+      # The position journal lives here; the engine migrates it at boot and will
+      # not start without it. Never the host's DATABASE_URL: inside this
+      # container, localhost is the container itself.
+      - DATABASE_URL=postgresql://tradeforger:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/tradeforger
     ports:
       - "127.0.0.1:4000:4000"
     volumes:
       - engine-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tf-network
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=tradeforger
+      - POSTGRES_USER=tradeforger
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # No published port: only the engine, on the internal network, reaches it.
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeforger -d tradeforger"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     networks:
       - tf-network
 
@@ -86,5 +110,6 @@ networks:
 
 volumes:
   engine-data:
+  pg-data:
   caddy-data:
   caddy-config:

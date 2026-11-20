@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { rupeesToPaise, type Candle, type Clock, type Mode } from '@tradeforger/core';
+import type { Candle, Clock, Mode } from '@tradeforger/core';
 import { analyzeHybrid, type HybridSetup, type StrategyVote, type Params } from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
@@ -22,6 +22,12 @@ export const AutoConfigSchema = z.object({
   minQuality: z.number().min(40).max(100),
   minRewardRisk: z.number().min(1).max(10),
   /**
+   * Reward:risk once round-trip charges are counted (reward minus costs over
+   * risk plus costs). Charges are ~0.15% of turnover whatever the size, so on a
+   * tight intraday stop they cost a quarter of R or more.
+   */
+  minNetRewardRisk: z.number().min(0.5).max(10).default(1.25),
+  /**
    * A setup must hold the same side and lead strategy this long before entry.
    * Analysis reads the still-forming bar every 2 s; without this, a signal that
    * flickers into existence for one tick would be traded.
@@ -30,6 +36,28 @@ export const AutoConfigSchema = z.object({
   /** Strategy ids allowed to trigger entries. Empty = every catalog strategy. */
   strategies: z.array(z.string()).max(50),
   maxEntriesPerDay: z.number().int().min(0).max(50),
+  /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
+  maxOpenPositions: z.number().int().min(1).max(50).default(5),
+  maxPerStrategy: z.number().int().min(1).max(50).default(2),
+  maxSameSide: z.number().int().min(1).max(50).default(3),
+  /**
+   * Trail the stop at the initial risk distance once the trade moves in our
+   * favour (exchange-side, via the GTT's trailing_gap). Off by default: it
+   * changes the exit profile the strategies were validated with.
+   */
+  trailStop: z.boolean().default(false),
+  /**
+   * Stop a strategy leading new entries once its own recorded trades in this
+   * mode show negative expectancy after costs over a meaningful sample.
+   */
+  pauseLosingStrategies: z.boolean().default(true),
+  /**
+   * A strategy whose active parameters FAILED validation (walk-forward,
+   * out-of-sample, cost stress) does not lead entries in any mode — paper
+   * included. Paper exists to give unproven strategies a record, not to keep
+   * trading ones history has already shown lose.
+   */
+  skipFailedStrategies: z.boolean().default(true),
 });
 export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
@@ -42,10 +70,26 @@ export const DEFAULT_AUTO: AutoConfig = {
   segments: { intraday: true, swing: false, fno: false },
   minQuality: 70,
   minRewardRisk: 1.5,
+  minNetRewardRisk: 1.25,
   confirmSeconds: 6,
   strategies: [],
   maxEntriesPerDay: 5,
+  maxOpenPositions: 5,
+  maxPerStrategy: 2,
+  maxSameSide: 3,
+  trailStop: false,
+  pauseLosingStrategies: true,
+  skipFailedStrategies: true,
 };
+
+/** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
+export const MIN_TRADES_TO_JUDGE = 20;
+
+/** A strategy's own recorded result in the current mode, operator exits excluded. */
+export interface StrategyRecord {
+  readonly trades: number;
+  readonly expectancyR: number;
+}
 
 /**
  * The dashboard's strategy mode, expressed as the cash segments the live loop
@@ -106,6 +150,16 @@ export interface DecisionContext {
   /** Strategy has a human-APPROVED registry version. */
   readonly approved: (strategyId: string) => boolean;
   readonly entriesToday: number;
+  /** What is open right now, for the portfolio limits. */
+  readonly open?: {
+    readonly total: number;
+    readonly byStrategy: Readonly<Record<string, number>>;
+    readonly bySide: Readonly<Record<'BUY' | 'SELL', number>>;
+  };
+  /** Recorded performance of a strategy in this mode, if any. */
+  readonly record?: (strategyId: string) => StrategyRecord | null;
+  /** Validation verdict on the parameters in use; null = never validated. */
+  readonly verdict?: (strategyId: string) => { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null;
 }
 
 /**
@@ -155,43 +209,32 @@ export function decide(
   }
   if (ctx.entriesToday >= cfg.maxEntriesPerDay) blockers.push(`daily entry cap ${cfg.maxEntriesPerDay} reached`);
 
+  // Portfolio: several entries from one strategy, or all on one side, are one
+  // correlated bet sized as several. Cap the concentration, not just the count.
+  if (ctx.open) {
+    if (ctx.open.total >= cfg.maxOpenPositions) blockers.push(`${ctx.open.total} positions open (max ${cfg.maxOpenPositions})`);
+    const byLead = ctx.open.byStrategy[setup.primaryStrategyId] ?? 0;
+    if (byLead >= cfg.maxPerStrategy) blockers.push(`${byLead} open from ${setup.primaryStrategyId} (max ${cfg.maxPerStrategy})`);
+    const sameSide = ctx.open.bySide[setup.side] ?? 0;
+    if (sameSide >= cfg.maxSameSide) blockers.push(`${sameSide} ${setup.side === 'BUY' ? 'long' : 'short'} positions open (max ${cfg.maxSameSide})`);
+  }
+
+  const verdict = ctx.verdict?.(setup.primaryStrategyId) ?? null;
+  if (cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {
+    const oos = verdict.oosExpectancyR;
+    blockers.push(`${setup.primaryStrategyId} failed validation${oos !== null ? ` (${oos.toFixed(2)}R out-of-sample)` : ''} — improve it in Strategy Lab`);
+  }
+
+  const rec = ctx.record?.(setup.primaryStrategyId) ?? null;
+  if (cfg.pauseLosingStrategies && rec && rec.trades >= MIN_TRADES_TO_JUDGE && rec.expectancyR < 0) {
+    blockers.push(`${setup.primaryStrategyId} paused: ${rec.expectancyR.toFixed(2)}R expectancy over its last ${rec.trades} ${ctx.mode === 'LIVE' ? 'live' : 'paper'} trades`);
+  }
+
   return { route, blockers };
 }
 
-/**
- * Re-price a setup to the live market.
- *
- * Daily-bar strategies decide on the last completed session's close, but the
- * order fills at today's price. Entry moves to the LTP; the stop and target
- * stay where the strategy put them (they are structural levels), so R:R shows
- * what would actually be traded — a gap toward the target shrinks it and the
- * R:R floor in `decide()` does the rest. A price already through either level
- * means the setup has played out and must not be entered at all.
- */
-export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
-  if (!(ltp > 0) || ltp === s.entry) return { setup: s, invalid: null };
-  const long = s.side === 'BUY';
-  const fmt = (n: number) => `₹${n.toFixed(2)}`;
-  if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
-    return { setup: s, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
-  }
-  if (long ? ltp >= s.target : ltp <= s.target) {
-    return { setup: s, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
-  }
-  const risk = Math.abs(ltp - s.stopLoss);
-  const rewardRisk = Math.round((Math.abs(s.target - ltp) / risk) * 100) / 100;
-  const entryPaise = rupeesToPaise(ltp);
-  const votes = s.votes.map((v) => (v.strategyId === s.primaryStrategyId && v.signal
-    ? { ...v, signal: { ...v.signal, entry: entryPaise } }
-    : v));
-  return {
-    setup: {
-      ...s, entry: ltp, rewardRisk, votes,
-      reasons: [...s.reasons, `entry re-priced from ${fmt(s.entry)} (signal close) to live ${fmt(ltp)}`],
-    },
-    invalid: null,
-  };
-}
+// Shared with the dashboard and scanner so every view prices a setup the same way.
+export { repriceToMarket } from '@tradeforger/strategy';
 
 /** Merge candle arrays by timestamp; later sources win (the live bar beats a stale REST bar). */
 export function mergeCandles(...sources: ReadonlyArray<readonly Candle[]>): Candle[] {
@@ -240,19 +283,16 @@ export class LiveAnalyzer {
     for (const t of targets) {
       const partial = this.src.partial(t.instrumentKey);
       const intraday = partial ? mergeCandles(this.src.intraday(t.instrumentKey), [partial]) : [...this.src.intraday(t.instrumentKey)];
+      const ltp = this.src.ltp(t.instrumentKey);
+      // Every setup is priced at the live LTP: swing strategies read yesterday's close.
       const r = analyzeHybrid(
-        { instrumentKey: t.instrumentKey, symbol: t.symbol, intraday, daily: this.src.daily(t.instrumentKey), clock: this.clock },
+        { instrumentKey: t.instrumentKey, symbol: t.symbol, intraday, daily: this.src.daily(t.instrumentKey), clock: this.clock, ltp },
         { params, ...(strategies && strategies.length ? { strategies } : {}) },
       );
 
       const setups: LiveSetup[] = [];
-      const ltp = this.src.ltp(t.instrumentKey);
-      for (const raw of [r.best.INTRADAY, r.best.SWING]) {
-        if (!raw) continue;
-        // Intraday setups already read the forming bar; swing ones read yesterday's close.
-        const { setup: s, invalid } = raw.style === 'SWING' && ltp !== null
-          ? repriceToMarket(raw, ltp)
-          : { setup: raw, invalid: null };
+      for (const s of [r.best.INTRADAY, r.best.SWING]) {
+        if (!s) continue;
         const key = `${t.instrumentKey}|${s.style}`;
         seen.add(key);
         const sig = `${s.side}|${s.primaryStrategyId}`;
@@ -264,7 +304,7 @@ export class LiveAnalyzer {
           stableSince: since,
           stableSeconds: Math.floor((now - since) / 1000),
           partialBar: partial !== null && s.style === 'INTRADAY',
-          invalidReason: invalid,
+          invalidReason: s.invalidReason ?? null,
         };
         const d = decide(base, t, cfg, ctx);
         setups.push({ ...base, route: d.route, blockers: d.blockers, eligible: d.route !== null && d.blockers.length === 0 });

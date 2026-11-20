@@ -6,6 +6,7 @@ import {
   closes, latest, ema, atr, supertrend, rsi,
   vwap, relativeVolume, openingRange, orbState,
 } from '@tradeforger/indicators';
+import { sessionStartIndex } from './strategies/common.ts';
 
 export interface ScoredStock {
   readonly instrumentKey: string;
@@ -54,6 +55,11 @@ export interface RankOptions {
  * Scans candidate stocks across the active universe, measures volume expansion,
  * opening range breakout momentum, SuperTrend & VWAP alignment, and ranks stocks
  * from best to worst to identify the single highest-probability setup of the day.
+ *
+ * Give it prior sessions plus today's bars: the indicators need the warmup, and
+ * the session-anchored measures (opening range, VWAP, change) read only the last
+ * bar's session — so ranking is live from the first bars of the day instead of
+ * waiting for fifteen of today's bars.
  */
 export class StockScanner {
   rankUniverse(
@@ -150,7 +156,8 @@ export class StockScanner {
       const target1 = Math.round((side === 'BUY' ? price + stopDistance * 1.5 : price - stopDistance * 1.5) * 100) / 100;
       const target2 = Math.round((side === 'BUY' ? price + stopDistance * 2.5 : price - stopDistance * 2.5) * 100) / 100;
 
-      const firstBar = candles[0];
+      // Callers may pass prior sessions as indicator warmup; "change" is since today's open.
+      const firstBar = candles[sessionStartIndex(candles)];
       const openPrice = firstBar?.open ?? price;
       const changePct = openPrice > 0 ? ((price - openPrice) / openPrice) * 100 : 0;
 

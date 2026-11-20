@@ -215,6 +215,7 @@ function SetupCard({ label, setup, names }: { label: string; setup: SetupView | 
         <Pill color={qualityColor(setup.quality)}>Quality {setup.quality}</Pill>
         <span style={{ fontSize: 11, color: 'var(--muted)' }}>R:R {num(setup.rewardRisk)}</span>
       </div>
+      {setup.invalidReason && <Note kind="warn">Played out — {setup.invalidReason}. Not tradeable.</Note>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         <Stat label="Entry" value={rupees(setup.entry)} />
         <Stat label="Stop" value={rupees(setup.stopLoss)} color="var(--danger)" />
@@ -306,7 +307,7 @@ export default function StockAnalysis({ symbol, onSymbolChange, catalog }: {
   }, [symbol]);
 
   // AI: on a new stock, and again whenever the leading setup changes side or strategy.
-  const best = view ? [view.best.INTRADAY, view.best.SWING].filter((s): s is SetupView => s !== null).sort((a, b) => b.quality - a.quality)[0] ?? null : null;
+  const best = view ? [view.best.INTRADAY, view.best.SWING].filter((s): s is SetupView => s !== null && !s.invalidReason).sort((a, b) => b.quality - a.quality)[0] ?? null : null;
   const aiKey = `${symbol}|${strategyParam}|${best ? `${best.style}|${best.side}|${best.primaryStrategyId}` : 'none'}`;
   const aiKeyRef = useRef(aiKey);
   aiKeyRef.current = aiKey;

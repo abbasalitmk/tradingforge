@@ -38,6 +38,8 @@ export interface SetupView {
   conflicting: string[];
   reasons: string[];
   votes: Array<{ strategyId: string; name: string; style: string; side: Side | null; confidence: number }>;
+  /** The live price is already through the stop or past the target: played out, not tradeable. */
+  invalidReason?: string | null;
 }
 
 export const num = (n: number | null | undefined, d = 2): string =>

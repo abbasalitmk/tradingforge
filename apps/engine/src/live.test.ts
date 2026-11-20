@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  decide, mergeCandles, segmentsForMode, modeForSegments, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  decide, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typeof decide>[0] => ({
@@ -88,5 +88,76 @@ describe('candle merge', () => {
   it('dedupes by timestamp, sorts, and lets the later source win', () => {
     const m = mergeCandles([c(2, 10), c(1, 9)], [c(2, 11), c(3, 12)]);
     expect(m.map((x) => x.close)).toEqual([9, 11, 12]);
+  });
+});
+
+describe('swing setups re-priced to the live market', () => {
+  const swing = {
+    instrumentKey: 'NSE_EQ|X', symbol: 'X', style: 'SWING' as const, side: 'BUY' as const,
+    entry: 100, stopLoss: 95, target: 110, rewardRisk: 2, quality: 80, primaryStrategyId: 'EMA_TREND_SWING',
+    agreeing: [], conflicting: [],
+    votes: [{ strategyId: 'EMA_TREND_SWING', name: 'EMA', style: 'SWING' as const, side: 'BUY' as const, confidence: 80, reasons: [],
+      signal: { entry: 10_000, stopLoss: 9_500, target: 11_000 } as never }],
+    reasons: [], generatedAt: 0,
+  };
+
+  it('moves entry to the LTP, keeps the levels, and recomputes R:R', () => {
+    const { setup: s, invalid } = repriceToMarket(swing, 102);
+    expect(invalid).toBeNull();
+    expect(s.entry).toBe(102);
+    expect([s.stopLoss, s.target]).toEqual([95, 110]);
+    expect(s.rewardRisk).toBeCloseTo(8 / 7, 2);
+    expect((s.votes[0]!.signal as { entry: number }).entry).toBe(10_200);
+  });
+
+  it('invalidates a setup the market has already played out', () => {
+    expect(repriceToMarket(swing, 94).invalid).toContain('through stop');
+    expect(repriceToMarket(swing, 111).invalid).toContain('past target');
+  });
+
+  it('a gap toward the target is caught by the R:R floor in decide()', () => {
+    const { setup: s } = repriceToMarket(swing, 108);
+    const d = decide({ ...s, stableSince: 0, stableSeconds: 60, partialBar: false, invalidReason: null }, equity,
+      { ...on, segments: { ...on.segments, swing: true } }, paper);
+    expect(d.blockers.join()).toContain('R:R');
+  });
+});
+
+describe('portfolio limits and strategy gating', () => {
+  const open = (total: number, byStrategy: Record<string, number> = {}, bySide = { BUY: 0, SELL: 0 }) => ({ total, byStrategy, bySide });
+
+  it('caps open positions in total, per lead strategy and per side', () => {
+    const d = decide(setup(), equity, on, { ...paper, open: open(5, { ORB_SUPERTREND: 2 }, { BUY: 3, SELL: 0 }) });
+    expect(d.blockers).toEqual(expect.arrayContaining([
+      '5 positions open (max 5)', '2 open from ORB_SUPERTREND (max 2)', '3 long positions open (max 3)',
+    ]));
+    // A short is a different bet from the open longs.
+    expect(decide(setup({ side: 'SELL' }), equity, on, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
+  });
+
+  it('pauses a strategy only once its own record is meaningful and losing', () => {
+    const losing = { ...paper, record: () => ({ trades: 25, expectancyR: -0.12 }) };
+    expect(decide(setup(), equity, on, losing).blockers.join()).toContain('ORB_SUPERTREND paused');
+    expect(decide(setup(), equity, on, { ...paper, record: () => ({ trades: 8, expectancyR: -0.9 }) }).blockers).toEqual([]);
+    expect(decide(setup(), equity, { ...on, pauseLosingStrategies: false }, losing).blockers).toEqual([]);
+  });
+
+  it('gives configs saved before these limits existed the safe defaults', () => {
+    const {
+      maxOpenPositions: _a, maxPerStrategy: _b, maxSameSide: _c, trailStop: _d, pauseLosingStrategies: _e,
+      minNetRewardRisk: _f, skipFailedStrategies: _g, ...old
+    } = DEFAULT_AUTO;
+    const parsed = AutoConfigSchema.parse(old);
+    expect([parsed.maxOpenPositions, parsed.maxPerStrategy, parsed.maxSameSide, parsed.trailStop, parsed.pauseLosingStrategies, parsed.minNetRewardRisk, parsed.skipFailedStrategies])
+      .toEqual([5, 2, 3, false, true, 1.25, true]);
+  });
+
+  it('keeps a strategy that failed validation from leading entries, in paper too', () => {
+    const failed = { ...paper, verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.37 }) };
+    expect(decide(setup(), equity, on, failed).blockers.join()).toContain('ORB_SUPERTREND failed validation (-0.37R out-of-sample)');
+    expect(decide(setup(), equity, { ...on, skipFailedStrategies: false }, failed).blockers).toEqual([]);
+    // Never validated is not the same as failed: paper is where it earns a record.
+    expect(decide(setup(), equity, on, { ...paper, verdict: () => null }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...paper, verdict: () => ({ status: 'VALIDATED' as const, oosExpectancyR: 0.2 }) }).blockers).toEqual([]);
   });
 });
