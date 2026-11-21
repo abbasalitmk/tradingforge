@@ -26,6 +26,11 @@ const schema = z.object({
   DATABASE_URL: z.string().url().default('postgresql://abba@localhost:5432/tradeforger'),
   REDIS_URL: z.string().optional(),
 
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-3.5-flash-lite'),
+  GEMINI_BASE_URL: z.string().url().default('https://generativelanguage.googleapis.com/v1beta/openai'),
+  GEMINI_PROJECT_ID: z.string().optional(),
+
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('qwen/qwen3.8-27b'),
   GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),

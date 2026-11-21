@@ -127,6 +127,9 @@ const stockScanner = new StockScanner();
 
 const aiReviewer = new AiReviewer({
   clock,
+  geminiConfig: cfg.GEMINI_API_KEY
+    ? { apiKey: cfg.GEMINI_API_KEY, model: cfg.GEMINI_MODEL, baseUrl: cfg.GEMINI_BASE_URL, timeoutMs: 3000 }
+    : null,
   grokConfig: cfg.XAI_API_KEY
     ? { apiKey: cfg.XAI_API_KEY, model: cfg.GROK_MODEL, baseUrl: cfg.GROK_BASE_URL, timeoutMs: 3000 }
     : null,
@@ -134,6 +137,14 @@ const aiReviewer = new AiReviewer({
     ? { apiKey: cfg.GROQ_API_KEY, model: cfg.GROQ_MODEL, baseUrl: cfg.GROQ_BASE_URL, timeoutMs: 1500 }
     : null,
 });
+
+const activeAiEngines = [
+  '3 Quantitative Models (Geometry, Pattern, ML Expectancy)',
+  cfg.GEMINI_API_KEY ? `Google Gemini (${cfg.GEMINI_MODEL})` : null,
+  cfg.XAI_API_KEY ? `xAI Grok (${cfg.GROK_MODEL})` : null,
+  cfg.GROQ_API_KEY ? `Groq Cloud (${cfg.GROQ_MODEL})` : null,
+].filter(Boolean);
+console.log(`✓ AI Consensus Engine active: ${activeAiEngines.join(' + ')}`);
 
 // ─────────────────────────────── runtime state ───────────────────────────────
 

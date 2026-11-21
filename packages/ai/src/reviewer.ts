@@ -8,6 +8,7 @@ import { AiConsensusEngine, type ConsensusDecision } from './consensus.ts';
 
 export interface AiReviewerOptions {
   readonly clock?: Clock;
+  readonly geminiConfig?: ConfirmerConfig | null;
   readonly grokConfig?: ConfirmerConfig | null;
   readonly groqConfig?: ConfirmerConfig | null;
 }
@@ -15,18 +16,21 @@ export interface AiReviewerOptions {
 /**
  * Enterprise Autonomous AI Review Engine.
  *
- * Coordinates 3 built-in free quantitative models:
+ * Coordinates 3 built-in quantitative models:
  *  1. FreeRealtimeAnalyzer (Risk/geometry & session timing)
  *  2. BreakoutPatternAnalyzer (Candlestick & breakout structure)
  *  3. MlExpectancyAnalyzer (Statistical win-rate and EV expectancy)
- * Plus optional xAI Grok and Groq Cloud models with automatic consensus voting.
+ * Plus external AI LLM models (Google Gemini, xAI Grok, Groq Cloud)
+ * executing in parallel with consensus voting.
  */
 export class AiReviewer {
   readonly quantModel: FreeRealtimeAnalyzer;
   readonly patternModel: BreakoutPatternAnalyzer;
   readonly mlModel: MlExpectancyAnalyzer;
   readonly consensusEngine: AiConsensusEngine;
-  private readonly confirmer: Confirmer | null;
+  private readonly geminiConfirmer: Confirmer | null;
+  private readonly grokConfirmer: Confirmer | null;
+  private readonly groqConfirmer: Confirmer | null;
 
   constructor(opts: AiReviewerOptions = {}) {
     const clock = opts.clock ?? SystemClock;
@@ -35,32 +39,26 @@ export class AiReviewer {
     this.mlModel = new MlExpectancyAnalyzer({ clock });
     this.consensusEngine = new AiConsensusEngine({ clock });
 
-    if (opts.grokConfig && opts.groqConfig) {
-      // Primary: xAI Grok, Failover: Groq Qwen
-      this.confirmer = new Confirmer(opts.grokConfig, opts.groqConfig);
-    } else if (opts.grokConfig) {
-      this.confirmer = new Confirmer(opts.grokConfig);
-    } else if (opts.groqConfig) {
-      this.confirmer = new Confirmer(opts.groqConfig);
-    } else {
-      this.confirmer = null;
-    }
+    this.geminiConfirmer = opts.geminiConfig ? new Confirmer(opts.geminiConfig) : null;
+    this.grokConfirmer = opts.grokConfig ? new Confirmer(opts.grokConfig) : null;
+    this.groqConfirmer = opts.groqConfig ? new Confirmer(opts.groqConfig) : null;
   }
 
   async review(signal: Signal): Promise<ConsensusDecision> {
-    let remoteDecision: AiDecision | null = null;
+    const remotePromises: Promise<AiDecision>[] = [];
+    if (this.geminiConfirmer) remotePromises.push(this.geminiConfirmer.review(signal));
+    if (this.grokConfirmer) remotePromises.push(this.grokConfirmer.review(signal));
+    if (this.groqConfirmer) remotePromises.push(this.groqConfirmer.review(signal));
 
-    if (this.confirmer) {
-      try {
-        const d = await this.confirmer.review(signal);
-        if (!d.fellBack) {
-          remoteDecision = d;
-        }
-      } catch {
-        // Fall back gracefully
+    const settled = await Promise.allSettled(remotePromises);
+    const remoteDecisions: AiDecision[] = [];
+
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && !r.value.fellBack) {
+        remoteDecisions.push(r.value);
       }
     }
 
-    return this.consensusEngine.evaluate(signal, remoteDecision);
+    return this.consensusEngine.evaluate(signal, remoteDecisions);
   }
 }

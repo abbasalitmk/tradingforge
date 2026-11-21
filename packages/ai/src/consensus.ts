@@ -46,7 +46,7 @@ export class AiConsensusEngine {
     this.mlModel = new MlExpectancyAnalyzer({ clock: this.clock });
   }
 
-  evaluate(signal: Signal, externalDecision?: AiDecision | null): ConsensusDecision {
+  evaluate(signal: Signal, externalDecision?: AiDecision | readonly AiDecision[] | null): ConsensusDecision {
     const started = this.clock.ms();
 
     const d1 = this.quantModel.analyze(signal);
@@ -59,14 +59,22 @@ export class AiConsensusEngine {
       { model: d3.model, verdict: d3.verdict, confidence: d3.confidence, rationale: d3.rationale, flags: d3.riskFlags },
     ];
 
-    if (externalDecision && !externalDecision.fellBack) {
-      votes.push({
-        model: externalDecision.model,
-        verdict: externalDecision.verdict,
-        confidence: externalDecision.confidence,
-        rationale: externalDecision.rationale,
-        flags: externalDecision.riskFlags,
-      });
+    const externalList = !externalDecision
+      ? []
+      : Array.isArray(externalDecision)
+        ? externalDecision
+        : [externalDecision];
+
+    for (const ext of externalList) {
+      if (ext && !ext.fellBack) {
+        votes.push({
+          model: ext.model,
+          verdict: ext.verdict,
+          confidence: ext.confidence,
+          rationale: ext.rationale,
+          flags: ext.riskFlags,
+        });
+      }
     }
 
     const rejects = votes.filter((v) => v.verdict === 'REJECT');
@@ -105,8 +113,10 @@ export class AiConsensusEngine {
     const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
     const rationale = `Consensus ${verdict} [Grade ${grade}] with ${confirms.length}/${votes.length} models confirming. ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`;
 
-    // Beginner-friendly aggregation
-    const beginnerSummary = externalDecision?.beginnerSummary ?? (
+    // Beginner-friendly aggregation prioritizing external LLM insights if available
+    const primaryExt = externalList.find((e) => !e.fellBack && (e.beginnerSummary || e.trafficLights)) ?? externalList[0];
+
+    const beginnerSummary = primaryExt?.beginnerSummary ?? (
       verdict === 'REJECT'
         ? `Consensus REJECT: ${rejects.length} AI model(s) flagged this trade as unsafe. Key risk: ${allFlags.join(', ') || 'Inadequate risk profile'}. Preserve your capital and do not enter.`
         : verdict === 'CAUTION'
@@ -114,22 +124,22 @@ export class AiConsensusEngine {
           : `Consensus CONFIRM (Grade ${grade}): High-conviction setup verified across ${confirms.length}/${votes.length} quantitative and AI models. Trend, volume, and risk geometry are in full alignment.`
     );
 
-    const beginnerTip = externalDecision?.beginnerTip ?? (
+    const beginnerTip = primaryExt?.beginnerTip ?? (
       verdict === 'REJECT'
         ? 'Rule #1 of trading: The best trades are effortless; never force a trade that fails risk checks.'
         : 'Never risk more than 1% to 2% of total trading capital on any single setup, and keep stop-loss placed in the market.'
     );
 
-    const riskRating: 'LOW' | 'MEDIUM' | 'HIGH' = verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW';
+    const riskRating: 'LOW' | 'MEDIUM' | 'HIGH' = primaryExt?.riskRating ?? (verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW');
 
-    const trafficLights = externalDecision?.trafficLights ?? {
+    const trafficLights = primaryExt?.trafficLights ?? {
       momentum: d2.trafficLights?.momentum ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
       volume: d1.trafficLights?.volume ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
       riskBuffer: d1.trafficLights?.riskBuffer ?? (verdict === 'REJECT' ? 'RED' : 'GREEN'),
       rewardRatio: d3.trafficLights?.rewardRatio ?? (verdict === 'CONFIRM' ? 'GREEN' : 'AMBER'),
     };
 
-    const actionChecklist = externalDecision?.actionChecklist ?? [
+    const actionChecklist = primaryExt?.actionChecklist ?? [
       { item: 'Multi-Model Consensus Alignment', passed: confirms.length >= 2, detail: `${confirms.length} of ${votes.length} models confirming` },
       { item: 'Risk/Reward & Stop Protection', passed: !allFlags.includes('INVERTED_STOP') && !allFlags.includes('POOR_RISK_REWARD'), detail: 'Stop placed below support' },
       { item: 'Volume & Institutional Flow', passed: !allFlags.includes('THIN_VOLUME'), detail: 'Volume verified' },

@@ -117,5 +117,41 @@ describe('AiConsensusEngine & Multi-Model Reviewer', () => {
     expect(decision.votes.map((v) => v.model)).toContain('free-breakout-pattern-v1');
     expect(decision.votes.map((v) => v.model)).toContain('free-ml-expectancy-v1');
   });
+
+  it('aggregates multiple remote AI models (Gemini + Grok) into consensus votes', () => {
+    const engine = new AiConsensusEngine({ clock });
+    const geminiDecision = {
+      verdict: 'CONFIRM' as const,
+      confidence: 90,
+      riskFlags: [],
+      rationale: 'Gemini confirmed clean breakout',
+      sizeMultiplier: 1,
+      blocked: false,
+      latencyMs: 850,
+      model: 'gemini-3.5-flash-lite',
+      fellBack: false,
+      beginnerSummary: 'High probability momentum entry',
+    };
+    const grokDecision = {
+      verdict: 'CONFIRM' as const,
+      confidence: 88,
+      riskFlags: [],
+      rationale: 'Grok confirmed order book alignment',
+      sizeMultiplier: 1,
+      blocked: false,
+      latencyMs: 720,
+      model: 'grok-2-latest',
+      fellBack: false,
+      beginnerSummary: 'Volume surge verified',
+    };
+
+    const consensus = engine.evaluate(makeSignal(), [geminiDecision, grokDecision]);
+    expect(consensus.votes.length).toBe(5); // 3 quant + Gemini + Grok
+    expect(consensus.votes.map((v) => v.model)).toContain('gemini-3.5-flash-lite');
+    expect(consensus.votes.map((v) => v.model)).toContain('grok-2-latest');
+    expect(consensus.agreeCount).toBe(5);
+    expect(consensus.consensusGrade).toBe('A+');
+    expect(consensus.beginnerSummary).toBe('High probability momentum entry');
+  });
 });
 

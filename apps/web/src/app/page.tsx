@@ -1652,7 +1652,7 @@ export default function Dashboard() {
             <span>🤖 Multi-Model Ensemble</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-            xAI Grok + Groq + Quant + Pattern + ML
+            Google Gemini + xAI Grok + Groq + Quant Ensemble
           </div>
         </div>
       </div>
@@ -1840,7 +1840,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
               <span style={{ color: 'var(--muted)' }}>AI Validation:</span>
               <strong style={{ color: 'var(--ok)' }}>
-                🤖 Grok + Groq + Quant Consensus
+                🤖 Gemini + Grok + Groq + Quant Consensus
               </strong>
             </div>
           </div>

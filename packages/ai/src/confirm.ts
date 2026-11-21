@@ -240,7 +240,7 @@ export class Confirmer {
         body: JSON.stringify({
           model: cfg.model,
           temperature: 0,
-          max_tokens: 500,
+          max_tokens: 800,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
