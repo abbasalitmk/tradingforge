@@ -128,7 +128,7 @@ const stockScanner = new StockScanner();
 const aiReviewer = new AiReviewer({
   clock,
   geminiConfig: cfg.GEMINI_API_KEY
-    ? { apiKey: cfg.GEMINI_API_KEY, model: cfg.GEMINI_MODEL, baseUrl: cfg.GEMINI_BASE_URL, timeoutMs: 3000 }
+    ? { apiKey: cfg.GEMINI_API_KEY, model: cfg.GEMINI_MODEL, baseUrl: cfg.GEMINI_BASE_URL, timeoutMs: 4000 }
     : null,
   grokConfig: cfg.XAI_API_KEY
     ? { apiKey: cfg.XAI_API_KEY, model: cfg.GROK_MODEL, baseUrl: cfg.GROK_BASE_URL, timeoutMs: 3000 }

@@ -2,18 +2,21 @@ import { z } from 'zod';
 import type { Signal } from '@tradeforger/core';
 
 export const trafficLightsSchema = z.object({
-  momentum: z.enum(['GREEN', 'AMBER', 'RED']),
-  volume: z.enum(['GREEN', 'AMBER', 'RED']),
-  riskBuffer: z.enum(['GREEN', 'AMBER', 'RED']),
-  rewardRatio: z.enum(['GREEN', 'AMBER', 'RED']),
-});
+  momentum: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  volume: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  riskBuffer: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  rewardRatio: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+}).passthrough();
 export type TrafficLights = z.infer<typeof trafficLightsSchema>;
 
-export const checklistItemSchema = z.object({
-  item: z.string(),
-  passed: z.boolean(),
-  detail: z.string(),
-});
+export const checklistItemSchema = z.union([
+  z.object({
+    item: z.string(),
+    passed: z.boolean(),
+    detail: z.string(),
+  }),
+  z.string().transform((str) => ({ item: str, passed: true, detail: str })),
+]);
 export type ChecklistItem = z.infer<typeof checklistItemSchema>;
 
 /**
@@ -24,11 +27,11 @@ export type ChecklistItem = z.infer<typeof checklistItemSchema>;
  */
 export const verdictSchema = z.object({
   verdict: z.enum(['CONFIRM', 'REJECT', 'CAUTION']),
-  confidence: z.number().int().min(0).max(100),
-  risk_flags: z.array(z.string()).max(10),
-  rationale: z.string().max(800),
-  beginner_summary: z.string().max(500).optional(),
-  beginner_tip: z.string().max(300).optional(),
+  confidence: z.number().min(0).max(100).transform((c) => Math.round(c <= 1 && c > 0 ? c * 100 : c)),
+  risk_flags: z.array(z.string()).max(10).optional().default([]),
+  rationale: z.string().max(1000),
+  beginner_summary: z.string().max(600).optional(),
+  beginner_tip: z.string().max(400).optional(),
   risk_rating: z.enum(['LOW', 'MEDIUM', 'HIGH']).optional(),
   traffic_lights: trafficLightsSchema.optional(),
   action_checklist: z.array(checklistItemSchema).optional(),
@@ -262,6 +265,16 @@ export class Confirmer {
         raw = JSON.parse(content);
       } catch {
         return fallbackDecision('non-JSON response', latency, cfg.model);
+      }
+
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const obj = raw as Record<string, unknown>;
+        if (!('risk_flags' in obj) && 'riskFlags' in obj) obj['risk_flags'] = obj['riskFlags'];
+        if (!('beginner_summary' in obj) && 'beginnerSummary' in obj) obj['beginner_summary'] = obj['beginnerSummary'];
+        if (!('beginner_tip' in obj) && 'beginnerTip' in obj) obj['beginner_tip'] = obj['beginnerTip'];
+        if (!('risk_rating' in obj) && 'riskRating' in obj) obj['risk_rating'] = obj['riskRating'];
+        if (!('traffic_lights' in obj) && 'trafficLights' in obj) obj['traffic_lights'] = obj['trafficLights'];
+        if (!('action_checklist' in obj) && 'actionChecklist' in obj) obj['action_checklist'] = obj['actionChecklist'];
       }
 
       const parsed = verdictSchema.safeParse(raw);

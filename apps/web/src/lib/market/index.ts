@@ -11,6 +11,9 @@ export { MarketService, MarketError } from './service.ts';
 // engine settings are missing or wrong. Defaults match apps/engine/src/config.ts.
 const schema = z.object({
   UPSTOX_ANALYTICS_TOKEN: z.string().min(20).optional(),
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_MODEL: z.string().min(1).default('gemini-3.5-flash-lite'),
+  GEMINI_BASE_URL: z.string().url().default('https://generativelanguage.googleapis.com/v1beta/openai'),
   XAI_API_KEY: z.string().min(1).optional(),
   GROK_MODEL: z.string().min(1).default('grok-2-latest'),
   GROK_BASE_URL: z.string().url().default('https://api.x.ai/v1'),
@@ -31,6 +34,9 @@ export function market(): MarketService | null {
       process.env['UPSTOCK_ANALYTICS_TOKEN'] ||
       process.env['UPSTOX_ACCESS_TOKEN'] ||
       undefined,
+    GEMINI_API_KEY: process.env['GEMINI_API_KEY'] || undefined,
+    GEMINI_MODEL: process.env['GEMINI_MODEL'] || undefined,
+    GEMINI_BASE_URL: process.env['GEMINI_BASE_URL'] || undefined,
     XAI_API_KEY: process.env['XAI_API_KEY'] || undefined,
     GROK_MODEL: process.env['GROK_MODEL'] || undefined,
     GROK_BASE_URL: process.env['GROK_BASE_URL'] || undefined,
@@ -47,6 +53,9 @@ export function market(): MarketService | null {
     clock: SystemClock,
     ai: new AiReviewer({
       clock: SystemClock,
+      geminiConfig: cfg.GEMINI_API_KEY
+        ? { apiKey: cfg.GEMINI_API_KEY, model: cfg.GEMINI_MODEL, baseUrl: cfg.GEMINI_BASE_URL, timeoutMs: 4_000 }
+        : null,
       grokConfig: cfg.XAI_API_KEY
         ? { apiKey: cfg.XAI_API_KEY, model: cfg.GROK_MODEL, baseUrl: cfg.GROK_BASE_URL, timeoutMs: 4_000 }
         : null,
