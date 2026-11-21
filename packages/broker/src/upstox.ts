@@ -139,6 +139,12 @@ export class UpstoxBroker implements BrokerPort {
 
   /** Entry + target + stop as one GTT MULTIPLE. The ENTRY leg is mandatory. */
   async placeBracketOrder(o: BracketOrder): Promise<Result<BracketAck, BrokerError>> {
+    // Upstox strictly rejects GTT legs not rounded to the 0.05 NSE tick size.
+    const toTick = (paiseVal: number): number => {
+      const roundedPaise = Math.round(paiseVal / 5) * 5;
+      return paiseToRupees(roundedPaise as Paise);
+    };
+
     const payload = {
       type: 'MULTIPLE',
       quantity: o.quantity,
@@ -146,13 +152,13 @@ export class UpstoxBroker implements BrokerPort {
       instrument_token: o.instrumentKey,
       transaction_type: o.side,
       rules: [
-        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: paiseToRupees(o.entryPrice) },
-        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: paiseToRupees(o.targetPrice) },
+        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: toTick(o.entryPrice) },
+        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: toTick(o.targetPrice) },
         {
           strategy: 'STOPLOSS',
           trigger_type: 'IMMEDIATE',
-          trigger_price: paiseToRupees(o.stopLossPrice),
-          ...(o.trailingGap && o.trailingGap > 0 ? { trailing_gap: paiseToRupees(o.trailingGap) } : {}),
+          trigger_price: toTick(o.stopLossPrice),
+          ...(o.trailingGap && o.trailingGap > 0 ? { trailing_gap: toTick(o.trailingGap) } : {}),
           market_protection: o.marketProtection ?? -1,
         },
       ],

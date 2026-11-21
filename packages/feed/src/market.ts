@@ -63,6 +63,7 @@ export class MarketFeed extends EventEmitter {
   private responseType: protobuf.Type | null = null;
   private readonly subscriptions = new Map<string, FeedMode>();
   private reconnects = 0;
+  private reconnecting = false;
   private closing = false;
   private readonly clock: Clock;
   private readonly getUrl: () => Promise<string>;
@@ -212,11 +213,14 @@ export class MarketFeed extends EventEmitter {
   }
 
   private async scheduleReconnect(): Promise<void> {
+    if (this.reconnecting || this.closing) return;
+    this.reconnecting = true;
     this.reconnects += 1;
     // Cap at 30s. An unbounded backoff during market hours is worse than
     // hammering: a feed that reconnects at minute 40 has missed the session.
     const delay = Math.min(1000 * 2 ** this.reconnects, 30_000);
     await new Promise((r) => setTimeout(r, delay));
+    this.reconnecting = false;
     if (this.closing) return;
     try {
       await this.connect();

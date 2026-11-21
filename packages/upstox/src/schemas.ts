@@ -97,11 +97,11 @@ export const marginResponse = envelope(z.object({
 /** One leg of a GTT as reported by GET /v3/order/gtt and the portfolio stream. */
 export const gttRule = z.object({
   strategy: z.string(),
-  status: z.string().optional(),
-  message: z.string().optional(),
-  trigger_type: z.string().optional(),
-  trigger_price: z.number().optional(),
-  transaction_type: z.string().optional(),
+  status: z.string().nullable().optional(),
+  message: z.string().nullable().optional(),
+  trigger_type: z.string().nullable().optional(),
+  trigger_price: z.number().nullable().optional(),
+  transaction_type: z.string().nullable().optional(),
   order_id: z.string().nullable().optional(),
   trailing_gap: z.number().nullable().optional(),
 }).passthrough();

@@ -450,7 +450,13 @@ feed.on('open', () => {
   const { accepted, rejected } = feed.subscribe(keys, 'full');
   console.log(`[feed] connected — subscribed ${accepted.length} instruments, rejected ${rejected.length}`);
 });
-feed.on('close', (c, r) => console.warn(`[feed] closed ${c} ${r}`));
+let lastFeedCloseLog = 0;
+feed.on('close', (c, r) => {
+  const now = clock.ms();
+  if (feedIssue && now - lastFeedCloseLog < 30_000) return;
+  lastFeedCloseLog = now;
+  console.warn(`[feed] closed ${c} ${r}`);
+});
 
 // The second (and last) WebSocket the standard tier allows. Live only.
 const portfolioFeed = new PortfolioFeed(async () => {
