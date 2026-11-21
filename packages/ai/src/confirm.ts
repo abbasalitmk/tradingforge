@@ -77,6 +77,7 @@ export function applyVerdict(v: Verdict): { sizeMultiplier: number; blocked: boo
 
 /** Indicator-only fallback: proceed at full size, unblocked. */
 export function fallbackDecision(reason: string, latencyMs: number, model: string): AiDecision {
+  console.warn(`[ai-confirmer] ${model} fell back: ${reason} (${latencyMs}ms)`);
   return {
     verdict: 'CONFIRM',
     confidence: 0,
@@ -279,6 +280,7 @@ export class Confirmer {
 
       const parsed = verdictSchema.safeParse(raw);
       if (!parsed.success) {
+        console.warn(`[ai-confirmer] ${cfg.model} schema mismatch:`, JSON.stringify(parsed.error.issues), 'raw:', JSON.stringify(raw));
         // A malformed verdict is discarded, not partially trusted.
         return fallbackDecision('schema mismatch', latency, cfg.model);
       }
