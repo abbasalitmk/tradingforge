@@ -159,13 +159,17 @@ export function analyzeHybrid(
     let quality = setupQuality(ls, agreeing.map((v) => v.signal!), opposing.map((v) => v.signal!));
     if (tooTight) quality = Math.min(quality, UNTRADEABLE_CAP);
     const origEntry = paiseToRupees(ls.entry);
+    const triggerPrice = ls.indicators?.['triggerPrice']
+      ?? (ls.side === 'BUY' ? ls.indicators?.['channelHigh'] : ls.indicators?.['channelLow'])
+      ?? (ls.side === 'BUY' ? ls.indicators?.['orbHigh'] : ls.indicators?.['orbLow'])
+      ?? origEntry;
     return {
       instrumentKey: input.instrumentKey,
       symbol: input.symbol,
       style,
       side: ls.side,
       entry: origEntry,
-      signalEntry: origEntry,
+      signalEntry: triggerPrice,
       stopLoss: paiseToRupees(ls.stopLoss),
       target: paiseToRupees(ls.target),
       rewardRisk: Math.round(rr(ls) * 100) / 100,

@@ -190,6 +190,7 @@ export class SwingProfile implements StrategyProfile {
       reasons: passedNames(checks),
       indicators: {
         atr: atrNow,
+        triggerPrice: Number((long ? last.high + 0.05 : last.low - 0.05).toFixed(2)),
         emaFast,
         emaSlow,
         rsi: rsiNow ?? 0,
