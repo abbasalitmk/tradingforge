@@ -42,6 +42,7 @@ export interface SetupView {
   style: 'INTRADAY' | 'SWING';
   side: Side;
   entry: number;
+  signalEntry?: number;
   stopLoss: number;
   target: number;
   rewardRisk: number;

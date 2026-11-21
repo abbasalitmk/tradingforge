@@ -17,8 +17,10 @@ export interface HybridSetup {
   readonly symbol: string;
   readonly style: 'INTRADAY' | 'SWING';
   readonly side: Side;
-  /** Rupees, from the lead strategy's signal. */
+  /** Current executable entry price (LTP when re-priced to live market). */
   readonly entry: number;
+  /** Original algorithmic signal trigger price from the strategy. */
+  readonly signalEntry?: number;
   readonly stopLoss: number;
   readonly target: number;
   readonly rewardRisk: number;
@@ -156,12 +158,14 @@ export function analyzeHybrid(
     const tooTight = riskPct < MIN_RISK_PCT[style];
     let quality = setupQuality(ls, agreeing.map((v) => v.signal!), opposing.map((v) => v.signal!));
     if (tooTight) quality = Math.min(quality, UNTRADEABLE_CAP);
+    const origEntry = paiseToRupees(ls.entry);
     return {
       instrumentKey: input.instrumentKey,
       symbol: input.symbol,
       style,
       side: ls.side,
-      entry: paiseToRupees(ls.entry),
+      entry: origEntry,
+      signalEntry: origEntry,
       stopLoss: paiseToRupees(ls.stopLoss),
       target: paiseToRupees(ls.target),
       rewardRisk: Math.round(rr(ls) * 100) / 100,
@@ -198,14 +202,15 @@ export function analyzeHybrid(
  * entered at all.
  */
 export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
-  if (!(ltp > 0) || ltp === s.entry) return { setup: s, invalid: null };
+  const signalEntry = s.signalEntry ?? s.entry;
+  if (!(ltp > 0) || ltp === s.entry) return { setup: { ...s, signalEntry }, invalid: null };
   const long = s.side === 'BUY';
   const fmt = (n: number) => `₹${n.toFixed(2)}`;
   if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
-    return { setup: s, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
+    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
   }
   if (long ? ltp >= s.target : ltp <= s.target) {
-    return { setup: s, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
+    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
   }
   const rewardRisk = Math.round((Math.abs(s.target - ltp) / Math.abs(ltp - s.stopLoss)) * 100) / 100;
   const entryPaise = rupeesToPaise(ltp);
@@ -213,11 +218,15 @@ export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSet
     ? { ...v, signal: { ...v.signal, entry: entryPaise } }
     : v));
   // Material moves only: a few paise of drift on a forming bar is not news.
-  const moved = Math.abs(ltp - s.entry) / s.entry >= 0.001;
+  const moved = Math.abs(ltp - signalEntry) / signalEntry >= 0.001;
   return {
     setup: {
-      ...s, entry: ltp, rewardRisk, votes,
-      reasons: moved ? [...s.reasons, `entry re-priced from ${fmt(s.entry)} (signal bar close) to live ${fmt(ltp)}`] : s.reasons,
+      ...s,
+      entry: ltp,
+      signalEntry,
+      rewardRisk,
+      votes,
+      reasons: moved ? [...s.reasons, `entry re-priced from trigger ${fmt(signalEntry)} (signal close) to live market ${fmt(ltp)}`] : s.reasons,
     },
     invalid: null,
   };

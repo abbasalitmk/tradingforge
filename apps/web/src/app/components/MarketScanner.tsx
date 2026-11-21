@@ -215,7 +215,7 @@ export default function MarketScanner({ catalog, onAnalyze, onWatch }: {
                   <th style={{ padding: '8px 10px' }}>Setup</th>
                   <th style={{ padding: '8px 10px', textAlign: 'right' }}>Quality</th>
                   <th style={{ padding: '8px 10px', textAlign: 'right' }}>R:R</th>
-                  <th style={{ padding: '8px 10px' }}>Entry / Stop / Target</th>
+                  <th style={{ padding: '8px 10px' }} title="Current live market execution price and strategy trigger level">Entry (Mkt / Trigger) / Stop / Target</th>
                   <th style={{ padding: '8px 10px' }}>Lead strategy</th>
                   <th style={{ padding: '8px 10px', textAlign: 'right' }}>RVOL</th>
                   <th style={{ padding: '8px 10px' }} />
@@ -246,7 +246,18 @@ export default function MarketScanner({ catalog, onAnalyze, onWatch }: {
                     <td style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 700, color: qualityColor(r.setup.quality) }}>{r.setup.quality}</td>
                     <td style={{ padding: '9px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{num(r.setup.rewardRisk)}</td>
                     <td style={{ padding: '9px 10px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                      {num(r.setup.entry)} / <span style={{ color: 'var(--danger)' }}>{num(r.setup.stopLoss)}</span> / <span style={{ color: 'var(--ok)' }}>{num(r.setup.target)}</span>
+                      <div>
+                        <span style={{ fontWeight: 600 }}>{num(r.setup.entry)}</span> / <span style={{ color: 'var(--danger)' }}>{num(r.setup.stopLoss)}</span> / <span style={{ color: 'var(--ok)' }}>{num(r.setup.target)}</span>
+                      </div>
+                      {r.setup.signalEntry && Math.abs(r.setup.signalEntry - r.setup.entry) >= 0.05 ? (
+                        <div style={{ fontSize: 10, color: 'var(--accent)', marginTop: 2 }}>
+                          Trigger: ₹{num(r.setup.signalEntry)}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
+                          At trigger level
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: '9px 10px', fontSize: 11.5 }}>
                       <div style={{ fontWeight: 600 }}>{names.get(r.setup.primaryStrategyId) ?? r.setup.primaryStrategyId}</div>
