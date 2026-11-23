@@ -1,6 +1,7 @@
 import { type Candle, type Side, istMinutes } from '@tradeforger/core';
 import { adx, ema, latest, vwap } from '@tradeforger/indicators';
 import { resample15 } from './strategies/gmma.ts';
+import { sessionStartIndex, priorSession } from './strategies/common.ts';
 
 /** The 15-minute trend a 5-minute entry must agree with. */
 export interface TrendBias {
@@ -60,4 +61,29 @@ export function trendBias15(closed5m: readonly Candle[], minAdx = BIAS_MIN_ADX):
   if (above && e20 > e50) return { ...base, side: 'BUY', reason: `15-min up: ${vwapNote}, EMA20 > EMA50, ADX ${a.toFixed(1)}` };
   if (below && e20 < e50) return { ...base, side: 'SELL', reason: `15-min down: ${vwapNote}, EMA20 < EMA50, ADX ${a.toFixed(1)}` };
   return { ...base, side: null, reason: `15-min mixed: ${vwapNote}, EMA20 ${e20 > e50 ? 'above' : 'below'} EMA50` };
+}
+
+/**
+ * The market's direction today, from the index's closed 5-minute bars: up
+ * when its 15-minute EMA20 is over EMA50 and it trades above today's open,
+ * down on the mirror, otherwise none. Professionals buy strength in a rising
+ * market and short weakness in a falling one; on two months of NSE 5-minute
+ * data, trend entries taken only with the NIFTY were better in both months.
+ */
+export function marketDirection(closed5m: readonly Candle[]): Side | null {
+  const last = closed5m[closed5m.length - 1];
+  if (!last) return null;
+  const open = closed5m[sessionStartIndex(closed5m)]!.open;
+  const { emaSide } = trendBias15(closed5m);
+  if (emaSide === 'BUY' && last.close > open) return 'BUY';
+  if (emaSide === 'SELL' && last.close < open) return 'SELL';
+  return null;
+}
+
+/** Today's change from the previous session's close, %, or null without a previous session. */
+export function dayChangePct(closed5m: readonly Candle[]): number | null {
+  const last = closed5m[closed5m.length - 1];
+  const prev = priorSession(closed5m, sessionStartIndex(closed5m));
+  const prevClose = prev[prev.length - 1]?.close;
+  return last && prevClose ? ((last.close - prevClose) / prevClose) * 100 : null;
 }

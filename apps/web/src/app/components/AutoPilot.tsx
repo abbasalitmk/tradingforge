@@ -37,6 +37,11 @@ interface AutoConfig {
   maxLeverage: number;
   maxVwapStretchAtr: number;
   maxSetupAgeMin: number;
+  minStopPct: number;
+  stopClusterGuard: boolean;
+  marketFilter: boolean;
+  relativeStrength: boolean;
+  targetR: number;
 }
 
 interface AutoUniverseView {
@@ -121,7 +126,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -134,6 +139,8 @@ const draftOf = (a: AutoConfig): Draft => ({
   maxPerSector: a.maxPerSector, reentryCooldownMin: a.reentryCooldownMin,
   closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
   maxLeverage: a.maxLeverage, maxVwapStretchAtr: a.maxVwapStretchAtr, maxSetupAgeMin: a.maxSetupAgeMin,
+  minStopPct: a.minStopPct, stopClusterGuard: a.stopClusterGuard,
+  marketFilter: a.marketFilter, relativeStrength: a.relativeStrength, targetR: a.targetR,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -231,6 +238,11 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       maxLeverage: draft.maxLeverage,
       maxVwapStretchAtr: draft.maxVwapStretchAtr,
       maxSetupAgeMin: draft.maxSetupAgeMin,
+      minStopPct: draft.minStopPct,
+      stopClusterGuard: draft.stopClusterGuard,
+      marketFilter: draft.marketFilter,
+      relativeStrength: draft.relativeStrength,
+      targetR: draft.targetR,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -372,6 +384,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['minQuality', 'Min setup quality', 40, 100, 1, '0–100 ensemble score'],
             ['minRewardRisk', 'Min reward : risk', 1, 10, 0.1, 'strategy levels, at the live price'],
             ['minNetRewardRisk', 'Min R:R after charges', 0.5, 10, 0.05, 'brokerage, STT, fees, GST, stamp'],
+            ['minStopPct', 'Min intraday stop (%)', 0, 5, 0.05, 'tighter stops lose the edge to charges; 0 = off'],
+            ['targetR', 'Trend target (× risk)', 0, 6, 0.5, "winners must carry the charges; 0 = each strategy's own"],
             ['confirmSeconds', 'Hold before entry (s)', 2, 300, 1, 'setup must stay unchanged'],
             ['maxSetupAgeMin', 'Max setup age (min)', 0, 120, 1, 'older signals are stale — not taken when a slot frees; 0 = off'],
             ['maxEntriesPerDay', 'Max entries per day', 0, 50, 1, '0 pauses new entries'],
@@ -404,6 +418,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Risk management:</span>
+          <Chip on={draft.stopClusterGuard} onClick={() => setDraft({ ...draft, stopClusterGuard: !draft.stopClusterGuard })}
+            title="Move a stop that sits on a stop cluster (previous-day high/low, opening range, equal highs/lows, round number) just beyond the sweep zone, when that is a small move">
+            Stop-hunt guard {draft.stopClusterGuard ? 'on' : 'off'}
+          </Chip>
           <Chip on={draft.trailStop} onClick={() => setDraft({ ...draft, trailStop: !draft.trailStop })}
             title="Stop follows the price at the initial risk distance, held at the exchange in the bracket order. Changes the exit profile the strategies were validated with.">
             Trailing stop {draft.trailStop ? 'on' : 'off'}
@@ -435,6 +453,14 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
               {draft.htfBiasStrict ? 'Strict: full alignment' : 'VWAP side, no trend against'}
             </Chip>
           )}
+          <Chip on={draft.marketFilter} onClick={() => setDraft({ ...draft, marketFilter: !draft.marketFilter })}
+            title="Trend entries only with the NIFTY: buy when its 15-min EMAs point up and it trades above today's open; short on the mirror">
+            With the NIFTY {draft.marketFilter ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.relativeStrength} onClick={() => setDraft({ ...draft, relativeStrength: !draft.relativeStrength })}
+            title="Buy only stocks up more than the NIFTY today; short only those doing worse">
+            Relative strength {draft.relativeStrength ? 'on' : 'off'}
+          </Chip>
           <Note>Entries only 09:45–11:30 and 13:30–14:45 IST. Pending entries cancel at 15:00; intraday positions square off at 15:05.</Note>
         </div>
 

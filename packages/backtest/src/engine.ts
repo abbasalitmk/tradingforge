@@ -2,6 +2,7 @@ import {
   type Candle, type Signal, FixedClock, SESSION, paiseToRupees,
 } from '@tradeforger/core';
 import type { Params, StrategyDefinition, StrategyProfile } from '@tradeforger/strategy';
+import { atr } from '@tradeforger/indicators';
 import {
   type CostModel, EQUITY_INTRADAY, EQUITY_DELIVERY, roundTripCost,
 } from './costs.ts';
@@ -30,6 +31,20 @@ export interface BacktestConfig {
   /** Bars handed to the strategy per evaluation. Default 300 (5m) / 260 (1d),
    *  never fewer than the profile's warmupBars. */
   lookbackBars?: number;
+  /** Move the stop as the trade works. Off when absent. */
+  trail?: TrailConfig;
+}
+
+/**
+ * Staged stop management, on CLOSING prices so a bar's own wick never moves
+ * the stop it is then tested against: once the best close since entry is
+ * `breakevenR` in profit the stop goes to entry; from `trailFromR` it trails
+ * that best close by `trailAtr` × ATR(14). The stop only ever tightens.
+ */
+export interface TrailConfig {
+  readonly breakevenR: number;
+  readonly trailFromR: number;
+  readonly trailAtr: number;
 }
 
 export const DEFAULT_BACKTEST: BacktestConfig = {
@@ -150,8 +165,10 @@ interface OpenPosition {
   readonly side: 'BUY' | 'SELL';
   readonly entryIdx: number;
   readonly entryPrice: number;
-  readonly stop: number;
+  stop: number;
   readonly target: number;
+  /** Best close since entry — the trail's anchor. */
+  best: number;
   /** Initial risk per share: |fill − stop|. */
   readonly risk: number;
   readonly qty: number;
@@ -284,6 +301,7 @@ function simulate(
   const slip = cfg.slippageBps / 10_000;
   const maxHold = Math.max(1, cfg.maxHoldBars ?? 20);
   const trades: TradeRecord[] = [];
+  const atrSeries = cfg.trail ? atr(candles, 14) : null;
 
   /** Market-type fill: always worse for the trader. */
   const against = (price: number, action: 'BUY' | 'SELL'): number =>
@@ -342,7 +360,7 @@ function simulate(
     const byValue = (cfg.capital * cfg.maxPositionPct) / 100 / fill;
     const qty = Math.floor(Math.min(byRisk, byValue) + 1e-9);
     if (!(qty >= 1)) return null;
-    return { side: sig.side, entryIdx: e, entryPrice: fill, stop, target, risk, qty, mae: 0, mfe: 0 };
+    return { side: sig.side, entryIdx: e, entryPrice: fill, stop, target, best: fill, risk, qty, mae: 0, mfe: 0 };
   };
 
   /** Advance an open position through bar j. Returns the trade if it closed. */
@@ -377,6 +395,16 @@ function simulate(
       return close(p, p.target, 'TARGET', bar.ts, held);
     }
     p.mfe = Math.max(p.mfe, toR(favourable));
+
+    // The bar has closed without an exit: tighten for the bars after it.
+    if (cfg.trail) {
+      p.best = long ? Math.max(p.best, bar.close) : Math.min(p.best, bar.close);
+      const bestR = toR(p.best);
+      const tighter = (s: number): void => { if (long ? s > p.stop : s < p.stop) p.stop = s; };
+      if (bestR >= cfg.trail.breakevenR) tighter(p.entryPrice);
+      const a = atrSeries?.[j];
+      if (bestR >= cfg.trail.trailFromR && a != null) tighter(long ? p.best - cfg.trail.trailAtr * a : p.best + cfg.trail.trailAtr * a);
+    }
 
     if (intraday) {
       if (isLastBarOfSession(j)) return close(p, bar.close, 'EOD', meta.closeTs[j]!, held);

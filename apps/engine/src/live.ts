@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { FixedClock, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
+import { FixedClock, paiseToRupees, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
 import { atr, latest, vwap } from '@tradeforger/indicators';
 import {
-  analyzeHybrid, getStrategy, trendBias15, type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
+  analyzeHybrid, dayChangePct, getStrategy, guardSignalStop, marketDirection, trendBias15, type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
 } from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
@@ -75,6 +75,34 @@ export const AutoConfigSchema = z.object({
    * signal rather than taken the second the slot frees. 0 turns it off.
    */
   maxSetupAgeMin: z.number().int().min(0).max(120).default(10),
+  /**
+   * Smallest intraday stop distance, % of entry. Charges and slippage are a
+   * near-fixed share of the money traded, so on a tight stop they are a large
+   * share of the risk: on two months of 5-minute data (19 NSE stocks) stops
+   * under 0.5% lost about 0.3R a trade to costs, and requiring 0.5% halved the
+   * loss per trade in both months. 0 turns it off.
+   */
+  minStopPct: z.number().min(0).max(5).default(0.5),
+  /**
+   * Move a stop that sits on a stop cluster (previous-day high/low, opening
+   * range, equal highs/lows, a round number) just beyond the sweep zone, if
+   * that is a small move. Backtested: a small, consistent improvement.
+   */
+  stopClusterGuard: z.boolean().default(true),
+  /**
+   * Trend entries only with the market: buy when the NIFTY's 15-min EMAs
+   * point up and it trades above today's open, short on the mirror. Better in
+   * both months of the two-month backtest. Counter-trend strategies exempt.
+   */
+  marketFilter: z.boolean().default(true),
+  /** Trend entries only in stocks beating the NIFTY today (buys) or lagging it (shorts). */
+  relativeStrength: z.boolean().default(true),
+  /**
+   * Intraday trend targets at this multiple of the risk; 0 keeps each
+   * strategy's own. 3R beat 2R in both months: the charges on a trade are a
+   * near-fixed cost, so the winners have to be large enough to carry them.
+   */
+  targetR: z.number().min(0).max(6).default(3),
   /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
   maxOpenPositions: z.number().int().min(1).max(50).default(5),
   maxPerStrategy: z.number().int().min(1).max(50).default(2),
@@ -145,6 +173,11 @@ export const DEFAULT_AUTO: AutoConfig = {
   htfBiasStrict: false,
   maxVwapStretchAtr: 5,
   maxSetupAgeMin: 10,
+  minStopPct: 0.5,
+  stopClusterGuard: true,
+  marketFilter: true,
+  relativeStrength: true,
+  targetR: 3,
   maxOpenPositions: 5,
   maxPerStrategy: 2,
   maxSameSide: 3,
@@ -199,6 +232,10 @@ export interface LiveSetup extends HybridSetup {
   readonly bias: TrendBias | null;
   /** (price − session VWAP) ÷ 5-min ATR, signed; null when either is unknown. */
   readonly vwapStretchAtr?: number | null;
+  /** The NIFTY's direction now; undefined when the analyser has no market data at all. */
+  readonly marketSide?: Side | null;
+  /** The stock's day change minus the NIFTY's, percentage points. */
+  readonly relStrengthPct?: number | null;
   /** Set when the live price has already made the setup untradeable. */
   readonly invalidReason: string | null;
   /** What autonomous mode would do with it right now, and what stops it. */
@@ -313,6 +350,29 @@ export function stretchBlocker(
     : null;
 }
 
+/** Why a trend entry is against the market or in a stock the market is beating, or null. */
+export function marketBlockers(
+  setup: Pick<LiveSetup, 'style' | 'side' | 'primaryStrategyId' | 'marketSide' | 'relStrengthPct'>, target: Target, cfg: AutoConfig,
+): string[] {
+  if (setup.style !== 'INTRADAY' || getStrategy(setup.primaryStrategyId)?.counterTrend) return [];
+  const out: string[] = [];
+  if (cfg.marketFilter) {
+    if (setup.marketSide === undefined) out.push('NIFTY data unavailable — market direction unknown');
+    else if (setup.marketSide !== setup.side) {
+      out.push(`NIFTY ${setup.marketSide === null ? 'has no clear direction' : setup.marketSide === 'BUY' ? 'is rising' : 'is falling'} — no ${setup.side === 'BUY' ? 'longs' : 'shorts'}`);
+    }
+  }
+  // An index or future has no "versus the index".
+  if (cfg.relativeStrength && target.cashTradeable) {
+    const rs = setup.relStrengthPct;
+    if (rs == null) out.push('relative strength unknown');
+    else if ((setup.side === 'BUY' ? rs : -rs) <= 0) {
+      out.push(`${rs >= 0 ? '+' : ''}${rs.toFixed(2)}% vs NIFTY — ${setup.side === 'BUY' ? 'weaker' : 'stronger'} than the market`);
+    }
+  }
+  return out;
+}
+
 /** Blockers that belong to the strategy itself, whatever the instrument. */
 function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionContext): string[] {
   const blockers: string[] = [];
@@ -372,11 +432,16 @@ export function decide(
   if (bias) blockers.push(bias);
   const stretch = stretchBlocker(setup.style, setup.side, setup.vwapStretchAtr, cfg, setup.primaryStrategyId);
   if (stretch) blockers.push(stretch);
+  blockers.push(...marketBlockers(setup, target, cfg));
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');
   if (setup.quality < cfg.minQuality) blockers.push(`quality ${setup.quality} < ${cfg.minQuality}`);
   if (setup.rewardRisk < cfg.minRewardRisk) blockers.push(`R:R ${setup.rewardRisk.toFixed(2)} < ${cfg.minRewardRisk}`);
+  const stopPct = setup.entry > 0 ? (Math.abs(setup.entry - setup.stopLoss) / setup.entry) * 100 : 0;
+  if (setup.style === 'INTRADAY' && cfg.minStopPct > 0 && stopPct < cfg.minStopPct) {
+    blockers.push(`stop ${stopPct.toFixed(2)}% from entry — charges eat the edge (min ${cfg.minStopPct}%)`);
+  }
   if (setup.stableSeconds < cfg.confirmSeconds) blockers.push(`stable ${setup.stableSeconds}s < ${cfg.confirmSeconds}s`);
   if (setup.style === 'INTRADAY' && cfg.maxSetupAgeMin > 0 && setup.stableSeconds > cfg.maxSetupAgeMin * 60) {
     blockers.push(`stale: signalling for ${Math.floor(setup.stableSeconds / 60)} min (max ${cfg.maxSetupAgeMin}) — waiting for a fresh setup`);
@@ -424,6 +489,48 @@ export function mergeCandles(...sources: ReadonlyArray<readonly Candle[]>): Cand
 const BAR_MS = 5 * 60_000;
 
 /**
+ * The setup with its lead's target restated at `r` times the risk, for a
+ * trend strategy. Counter-trend targets (VWAP, the far OI wall) are levels,
+ * not multiples, and stay as the strategy set them.
+ */
+export function restateTarget(s: HybridSetup, r: number): HybridSetup {
+  if (!(r > 0) || getStrategy(s.primaryStrategyId)?.counterTrend) return s;
+  const lead = s.votes.find((v) => v.strategyId === s.primaryStrategyId);
+  if (!lead?.signal) return s;
+  const risk = Math.abs(lead.signal.entry - lead.signal.stopLoss);
+  const dir = lead.signal.side === 'BUY' ? 1 : -1;
+  const target = Math.round(lead.signal.entry + dir * risk * r);
+  if (target <= 0 || target === lead.signal.target) return s;
+  const signal = { ...lead.signal, target: target as typeof lead.signal.target };
+  return {
+    ...s,
+    target: paiseToRupees(signal.target),
+    rewardRisk: Math.round(r * 100) / 100,
+    votes: s.votes.map((v) => (v === lead ? { ...v, signal } : v)),
+  };
+}
+
+/**
+ * The setup with its lead's stop moved out of any stop cluster, and its
+ * reward:risk restated for the new stop. The lead vote's signal carries the
+ * same stop, since that is what the entry is placed from.
+ */
+export function guardSetupStop(s: HybridSetup, closed: readonly Candle[]): HybridSetup {
+  const lead = s.votes.find((v) => v.strategyId === s.primaryStrategyId);
+  if (!lead?.signal) return s;
+  const signal = guardSignalStop(lead.signal, closed);
+  if (signal === lead.signal) return s;
+  const [entry, stop, target] = [signal.entry, signal.stopLoss, signal.target].map(paiseToRupees) as [number, number, number];
+  return {
+    ...s,
+    stopLoss: stop,
+    rewardRisk: Math.round((Math.abs(target - entry) / Math.abs(entry - stop)) * 100) / 100,
+    votes: s.votes.map((v) => (v === lead ? { ...v, signal } : v)),
+    reasons: [...s.reasons, signal.reasons[signal.reasons.length - 1]!],
+  };
+}
+
+/**
  * How long `strategyId` has already been signalling `side`, from the closed
  * bars before the last: walk back one bar at a time while it still fires the
  * same way, up to `maxBars`. Run when a setup is first seen — after a restart
@@ -467,6 +574,8 @@ export interface CandleSource {
   ltp(key: string): number | null;
   /** Option-chain walls for an F&O underlying whose chain is loaded. */
   options?(key: string): OptionWalls | null;
+  /** The NIFTY 50's 5-min bars (prior sessions + today), for market direction and relative strength. */
+  market?(): readonly Candle[];
 }
 
 /**
@@ -496,6 +605,9 @@ export class LiveAnalyzer {
     const now = this.clock.ms();
     const out: LiveAnalysis[] = [];
     const seen = new Set<string>();
+    const market = this.src.market ? this.src.market().filter((c) => c.ts + BAR_MS <= now) : null;
+    const marketSide = market && market.length > 0 ? marketDirection(market) : undefined;
+    const marketChange = market && market.length > 0 ? dayChangePct(market) : null;
 
     for (const t of targets) {
       // A REST fetch can hand back the bar still forming; only bars whose five
@@ -519,8 +631,10 @@ export class LiveAnalyzer {
       );
 
       const setups: LiveSetup[] = [];
-      for (const s of [r.best.INTRADAY, r.best.SWING]) {
-        if (!s) continue;
+      for (const found of [r.best.INTRADAY, r.best.SWING]) {
+        if (!found) continue;
+        const restated = found.style === 'INTRADAY' ? restateTarget(found, cfg.targetR) : found;
+        const s = cfg.stopClusterGuard && restated.style === 'INTRADAY' ? guardSetupStop(restated, closed) : restated;
         const key = `${t.instrumentKey}|${s.style}`;
         seen.add(key);
         const sig = `${s.side}|${s.primaryStrategyId}`;
@@ -542,6 +656,11 @@ export class LiveAnalyzer {
           partialBar: partial !== null && s.style === 'INTRADAY',
           bias: s.style === 'INTRADAY' ? bias : null,
           vwapStretchAtr: s.style === 'INTRADAY' ? stretch : null,
+          ...(marketSide !== undefined ? { marketSide } : {}),
+          relStrengthPct: (() => {
+            const own = dayChangePct(closed);
+            return own !== null && marketChange !== null ? Math.round((own - marketChange) * 100) / 100 : null;
+          })(),
           invalidReason: s.invalidReason ?? null,
         };
         const d = decide(base, t, cfg, ctx);

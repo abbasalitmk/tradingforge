@@ -540,7 +540,7 @@ const priceSource = (): 'WEBSOCKET' | 'REST_POLL' | 'NONE' =>
 feed.on('open', () => {
   feedIssue = null;
   const keys = [...new Set([
-    ...watchlist.keys(), ...fnoDesk.feedKeys(), ...trader.live().map((p) => p.instrumentKey),
+    MARKET_KEY, ...watchlist.keys(), ...fnoDesk.feedKeys(), ...trader.live().map((p) => p.instrumentKey),
     ...(state.focus ? [state.focus.instrumentKey] : []),
     ...(state.singleTarget ? [state.singleTarget.instrumentKey] : []),
   ])];
@@ -870,6 +870,9 @@ const memory = new TradeMemory(sql);
 let equities: EquityInstrument[] = [];
 let masterContracts: DerivativeContract[] | null = null;
 
+/** The index autonomous trend entries are judged against: direction and relative strength. */
+const MARKET_KEY = 'NSE_INDEX|Nifty 50';
+
 /** Call/put OI walls from the loaded chain of the F&O underlying `key` signals for. */
 function optionWallsFor(key: string): OptionWalls | null {
   if (!state.fnoEnabled) return null;
@@ -897,6 +900,7 @@ const candleSource = {
   daily: (key: string): Candle[] => dailyCandlesCache.get(key) ?? [],
   ltp: ltpOf,
   options: optionWallsFor,
+  market: (): Candle[] => candleSource.intraday(MARKET_KEY),
 };
 const analyzer = new LiveAnalyzer(clock, candleSource);
 
@@ -1371,6 +1375,7 @@ const QUOTE_BATCH = 500;
 async function pollQuotesOnce(): Promise<void> {
   if (pollingInProgress) return;
   const keys = [...new Set([
+    MARKET_KEY,
     ...watchlist.keys(),
     ...(state.fnoEnabled ? fnoDesk.feedKeys() : []),
     ...(state.focus?.instrumentKey ? [state.focus.instrumentKey] : []),
@@ -1525,7 +1530,7 @@ async function seedWarmupCandles(): Promise<void> {
   console.log('[warmup] fetching prior sessions, today and daily bars from Upstox REST...');
   warmupDay = istDateKey(clock.now());
   const keys = [...new Set([
-    ...watchlist.keys(), ...fnoDesk.feedKeys(),
+    MARKET_KEY, ...watchlist.keys(), ...fnoDesk.feedKeys(),
     ...(state.focus ? [state.focus.instrumentKey] : []),
     ...(state.singleTarget ? [state.singleTarget.instrumentKey] : []),
   ])];

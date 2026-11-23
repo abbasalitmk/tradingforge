@@ -148,6 +148,19 @@ describe('backtest engine', () => {
     }
   });
 
+  it('trails the stop on closes when asked, and only then', () => {
+    // Flat, then a buy at 100 (stop 90, far target) that runs to a 125 close and collapses.
+    const flat = Array.from({ length: 20 }, (_, i) => day(i, 100, 101, 99, 100));
+    const run = [[100, 106, 99, 105], [105, 111, 104, 110], [110, 126, 109, 125], [125, 126, 79, 80]] as const;
+    const bars = [...flat, ...run.map(([o, h, l, c], k) => day(20 + k, o, h, l, c))];
+    const plain = runBacktest(fixed(90, 200, 20), undefined, data(bars), noFriction);
+    expect(plain[0]).toMatchObject({ exitReason: 'STOPLOSS', exitPrice: 90 });
+    const trailed = runBacktest(fixed(90, 200, 20), undefined, data(bars), { ...noFriction, trail: { breakevenR: 1, trailFromR: 2, trailAtr: 1.5 } });
+    expect(trailed[0]!.exitReason).toBe('STOPLOSS');
+    expect(trailed[0]!.exitPrice).toBeGreaterThan(100);
+    expect(trailed[0]!.exitPrice).toBeLessThan(125);
+  });
+
   it('exits a swing trade on time after maxHoldBars', () => {
     const flat = Array.from({ length: 30 }, (_, i) => day(i, 100, 101, 99, 100));
     const t = runBacktest(fixed(80, 200, 1), undefined, data(flat), { ...noFriction, maxHoldBars: 5 });

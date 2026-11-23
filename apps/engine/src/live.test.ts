@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { FixedClock } from '@tradeforger/core';
+import { FixedClock, type Paise, type SignalId } from '@tradeforger/core';
 import { getStrategy } from '@tradeforger/strategy';
 import { intraday, closeOf } from '../../../packages/strategy/src/fixtures.ts';
 import {
-  decide, canLead, signalAgeMs, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  decide, canLead, signalAgeMs, guardSetupStop, restateTarget, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
@@ -13,6 +13,8 @@ const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typ
   entry: 100, stopLoss: 98, target: 104, rewardRisk: 2, quality: 80,
   primaryStrategyId: 'ORB_SUPERTREND', agreeing: [], conflicting: [], votes: [], reasons: [],
   generatedAt: 0, stableSince: 0, stableSeconds: 10, partialBar: true, invalidReason: null, bias: upBias,
+  // The market with the trade and the stock leading it, unless a test says otherwise.
+  marketSide: over.side ?? 'BUY', relStrengthPct: (over.side ?? 'BUY') === 'BUY' ? 1 : -1,
   ...over,
 });
 const equity: Target = { instrumentKey: 'NSE_EQ|X', symbol: 'X', fnoUnderlying: false, cashTradeable: true };
@@ -271,6 +273,52 @@ describe('session discipline', () => {
     const age = signalAgeMs('ORB_SUPERTREND', 'BUY', bars.slice(0, i + 1), [], undefined, 5, { instrumentKey: 'K', symbol: 'S' });
     expect(age).toBeGreaterThanOrEqual(2 * 5 * 60_000);
     expect(signalAgeMs('ORB_SUPERTREND', 'SELL', bars.slice(0, i + 1), [], undefined, 5, { instrumentKey: 'K', symbol: 'S' })).toBe(0);
+  });
+
+  it('needs an intraday stop wide enough that charges do not eat the edge', () => {
+    expect(decide(setup({ entry: 264.25, stopLoss: 265.1, side: 'SELL', target: 262.55, bias: downBias }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers.join())
+      .toContain('stop 0.32% from entry');
+    expect(decide(setup(), equity, on, paper).blockers).toEqual([]); // 2%
+    expect(decide(setup({ stopLoss: 99.8 }), equity, { ...on, minStopPct: 0 }, paper).blockers).toEqual([]);
+  });
+
+  it('moves the lead stop off a stop cluster and restates reward:risk from it', () => {
+    const at = (i: number) => Date.parse('2026-01-06T09:15:00+05:30') + i * 300_000;
+    const bars = [100.9, 100.6, 100.52, 100.9, 100.7, 100.5, 100.95, 101.2, 101.5, 101.9, 102, 102.1, 102.2, 102.1, 102.3, 102.4]
+      .map((low, i) => ({ ts: at(i), open: low + 0.3, high: low + 0.6, low, close: low + 0.4, volume: 1000 }));
+    const signal = { id: 'sig' as SignalId, instrumentKey: 'K', symbol: 'S', style: 'INTRADAY' as const, side: 'BUY' as const,
+      entry: 10_280 as Paise, stopLoss: 10_052 as Paise, target: 10_736 as Paise, atr: 0.6, confidence: 80, reasons: ['r'], indicators: {}, generatedAt: 0 };
+    const s = setup({ entry: 102.8, stopLoss: 100.52, target: 107.36, rewardRisk: 2,
+      votes: [{ strategyId: 'ORB_SUPERTREND', name: 'ORB', style: 'INTRADAY', side: 'BUY', confidence: 80, signal, reasons: [] }] });
+    const g = guardSetupStop(s, bars);
+    expect(g.stopLoss).toBeLessThan(100.5);
+    expect(g.rewardRisk).toBeLessThan(2);
+    expect(g.votes[0]!.signal!.stopLoss).toBe(Math.round(g.stopLoss * 100));
+  });
+
+  it('takes trend entries only with the NIFTY and in stocks leading it', () => {
+    expect(decide(setup({ marketSide: 'SELL' }), equity, on, paper).blockers.join()).toContain('NIFTY is falling — no longs');
+    expect(decide(setup({ marketSide: null }), equity, on, paper).blockers.join()).toContain('no clear direction');
+    expect(decide(setup({ relStrengthPct: -0.4 }), equity, on, paper).blockers.join()).toContain('-0.40% vs NIFTY — weaker than the market');
+    // Without market data at all, nothing trades blind.
+    const { marketSide: _m, ...blind } = setup();
+    expect(decide(blind, equity, on, paper).blockers.join()).toContain('NIFTY data unavailable');
+    // Fades are exempt; an index has no relative strength; both can be switched off.
+    expect(decide(setup({ marketSide: 'SELL', relStrengthPct: -1, primaryStrategyId: 'BB_RSI_REVERSION' }), equity, on, paper).blockers).toEqual([]);
+    expect(decide(setup({ relStrengthPct: null }), index, { ...on, segments: { ...on.segments, fno: true } }, paper).blockers).toEqual([]);
+    expect(decide(setup({ marketSide: 'SELL', relStrengthPct: -1 }), equity, { ...on, marketFilter: false, relativeStrength: false }, paper).blockers).toEqual([]);
+  });
+
+  it('restates a trend target at the configured multiple of risk, never a fade\'s', () => {
+    const signal = { id: 'sig' as SignalId, instrumentKey: 'K', symbol: 'S', style: 'INTRADAY' as const, side: 'BUY' as const,
+      entry: 10_000 as Paise, stopLoss: 9_900 as Paise, target: 10_200 as Paise, atr: 1, confidence: 80, reasons: [], indicators: {}, generatedAt: 0 };
+    const vote = (strategyId: string) => ({ strategyId, name: strategyId, style: 'INTRADAY' as const, side: 'BUY' as const, confidence: 80, signal, reasons: [] });
+    const t = restateTarget(setup({ votes: [vote('ORB_SUPERTREND')] }), 3);
+    expect(t.target).toBe(103);
+    expect(t.rewardRisk).toBe(3);
+    expect(t.votes[0]!.signal!.target).toBe(10_300);
+    const fade = setup({ primaryStrategyId: 'BB_RSI_REVERSION', votes: [vote('BB_RSI_REVERSION')] });
+    expect(restateTarget(fade, 3)).toBe(fade);
   });
 
   it('caps entries per session inside the daily cap', () => {

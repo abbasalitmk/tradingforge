@@ -10,3 +10,4 @@ export { resample15 } from './strategies/gmma.ts';
 export * from './universe.ts';
 export * from './bias.ts';
 export * from './sectors.ts';
+export * from './liquidity.ts';
