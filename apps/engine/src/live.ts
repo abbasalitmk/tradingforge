@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Candle, Clock, Mode } from '@tradeforger/core';
+import type { Candle, Clock, Mode, Side } from '@tradeforger/core';
 import { analyzeHybrid, type HybridSetup, type StrategyVote, type Params } from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
@@ -58,6 +58,22 @@ export const AutoConfigSchema = z.object({
    * trading ones history has already shown lose.
    */
   skipFailedStrategies: z.boolean().default(true),
+  /**
+   * Intraday short selling in the cash segment (and short futures). Off: the
+   * engine is long-only, and a bearish view is traded only by buying a put.
+   * A swing SELL is never automated whatever this says — on a delivery
+   * product it sells shares out of the demat account.
+   */
+  allowShort: z.boolean().default(false),
+  /**
+   * Re-pick the day's strongest liquid stocks from the whole NSE market every
+   * few minutes and analyse them alongside the default universe and the
+   * stocks added by hand.
+   */
+  autoUniverse: z.boolean().default(true),
+  autoUniverseSize: z.number().int().min(1).max(30).default(15),
+  /** Day turnover floor for an auto-picked stock, ₹ crore. */
+  autoUniverseMinTurnoverCr: z.number().min(1).max(5000).default(25),
 });
 export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
@@ -80,6 +96,10 @@ export const DEFAULT_AUTO: AutoConfig = {
   trailStop: false,
   pauseLosingStrategies: true,
   skipFailedStrategies: true,
+  allowShort: false,
+  autoUniverse: true,
+  autoUniverseSize: 15,
+  autoUniverseMinTurnoverCr: 25,
 };
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
@@ -160,6 +180,69 @@ export interface DecisionContext {
   readonly record?: (strategyId: string) => StrategyRecord | null;
   /** Validation verdict on the parameters in use; null = never validated. */
   readonly verdict?: (strategyId: string) => { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null;
+  /** What an F&O entry buys or sells. Unknown is treated as futures: a SELL there is a short. */
+  readonly fnoInstrument?: 'OPTIONS' | 'FUTURES';
+}
+
+/** Where a setup of this style on this target would be entered, or why it cannot be. */
+export function routeFor(
+  style: 'INTRADAY' | 'SWING',
+  target: Target,
+  cfg: AutoConfig,
+): { route: Route | null; blocker: string | null } {
+  if (style === 'SWING') {
+    return target.cashTradeable && cfg.segments.swing
+      ? { route: 'EQ_SWING', blocker: null }
+      : { route: null, blocker: target.cashTradeable ? 'swing segment off' : 'not cash-tradeable' };
+  }
+  if (target.fnoUnderlying && cfg.segments.fno) return { route: 'FNO', blocker: null };
+  if (target.cashTradeable && cfg.segments.intraday) return { route: 'EQ_INTRADAY', blocker: null };
+  return { route: null, blocker: target.fnoUnderlying ? 'F&O segment off' : target.cashTradeable ? 'intraday segment off' : 'not cash-tradeable' };
+}
+
+/**
+ * Why this side cannot be entered on this route, or null. A BUY always can.
+ * On F&O with options a bearish setup buys a put, so it is not a short.
+ */
+export function shortBlocker(side: Side, route: Route | null, cfg: AutoConfig, ctx: DecisionContext): string | null {
+  if (side !== 'SELL' || route === null) return null;
+  if (route === 'EQ_SWING') return 'swing SELL would sell delivery holdings — never automated';
+  if (route === 'FNO') return ctx.fnoInstrument !== 'OPTIONS' && !cfg.allowShort ? 'short futures off (long-only)' : null;
+  return cfg.allowShort ? null : 'short selling off (long-only)';
+}
+
+/** Blockers that belong to the strategy itself, whatever the instrument. */
+function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionContext): string[] {
+  const blockers: string[] = [];
+  if (cfg.strategies.length > 0 && !cfg.strategies.includes(strategyId)) {
+    blockers.push(`${strategyId} not enabled`);
+  }
+  // Paper is where unproven strategies earn their record; real money only
+  // follows a strategy a human approved after it passed validation.
+  if (ctx.mode === 'LIVE' && !ctx.approved(strategyId)) {
+    blockers.push(`${strategyId} has no APPROVED version (required in LIVE)`);
+  }
+  const verdict = ctx.verdict?.(strategyId) ?? null;
+  if (cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {
+    const oos = verdict.oosExpectancyR;
+    blockers.push(`${strategyId} failed validation${oos !== null ? ` (${oos.toFixed(2)}R out-of-sample)` : ''} — improve it in Strategy Lab`);
+  }
+  const rec = ctx.record?.(strategyId) ?? null;
+  if (cfg.pauseLosingStrategies && rec && rec.trades >= MIN_TRADES_TO_JUDGE && rec.expectancyR < 0) {
+    blockers.push(`${strategyId} paused: ${rec.expectancyR.toFixed(2)}R expectancy over its last ${rec.trades} ${ctx.mode === 'LIVE' ? 'live' : 'paper'} trades`);
+  }
+  return blockers;
+}
+
+/**
+ * May this vote lead a setup on this target? Only one that `decide()` would
+ * not block for who it is or which way it points — so a tradeable signal is
+ * never hidden behind a stronger one that could not be traded.
+ */
+export function canLead(vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext): boolean {
+  if (!vote.side) return false;
+  if (shortBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg, ctx)) return false;
+  return strategyBlockers(vote.strategyId, cfg, ctx).length === 0;
 }
 
 /**
@@ -175,18 +258,10 @@ export function decide(
   ctx: DecisionContext,
 ): { route: Route | null; blockers: string[] } {
   const blockers: string[] = [];
-  let route: Route | null = null;
-
-  if (setup.style === 'SWING') {
-    if (target.cashTradeable && cfg.segments.swing) route = 'EQ_SWING';
-    else blockers.push(target.cashTradeable ? 'swing segment off' : 'not cash-tradeable');
-  } else if (target.fnoUnderlying && cfg.segments.fno) {
-    route = 'FNO';
-  } else if (target.cashTradeable && cfg.segments.intraday) {
-    route = 'EQ_INTRADAY';
-  } else {
-    blockers.push(target.fnoUnderlying ? 'F&O segment off' : target.cashTradeable ? 'intraday segment off' : 'not cash-tradeable');
-  }
+  const { route, blocker } = routeFor(setup.style, target, cfg);
+  if (blocker) blockers.push(blocker);
+  const short = shortBlocker(setup.side, route, cfg, ctx);
+  if (short) blockers.push(short);
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');
@@ -199,14 +274,7 @@ export function decide(
   if (cfg.maxPrice > 0 && cfg.maxPrice < 500000 && setup.entry > cfg.maxPrice) {
     blockers.push(`price ₹${setup.entry.toFixed(2)} > max ₹${cfg.maxPrice}`);
   }
-  if (cfg.strategies.length > 0 && !cfg.strategies.includes(setup.primaryStrategyId)) {
-    blockers.push(`${setup.primaryStrategyId} not enabled`);
-  }
-  // Paper is where unproven strategies earn their record; real money only
-  // follows a strategy a human approved after it passed validation.
-  if (ctx.mode === 'LIVE' && !ctx.approved(setup.primaryStrategyId)) {
-    blockers.push(`${setup.primaryStrategyId} has no APPROVED version (required in LIVE)`);
-  }
+  blockers.push(...strategyBlockers(setup.primaryStrategyId, cfg, ctx));
   if (ctx.entriesToday >= cfg.maxEntriesPerDay) blockers.push(`daily entry cap ${cfg.maxEntriesPerDay} reached`);
 
   // Portfolio: several entries from one strategy, or all on one side, are one
@@ -217,17 +285,6 @@ export function decide(
     if (byLead >= cfg.maxPerStrategy) blockers.push(`${byLead} open from ${setup.primaryStrategyId} (max ${cfg.maxPerStrategy})`);
     const sameSide = ctx.open.bySide[setup.side] ?? 0;
     if (sameSide >= cfg.maxSameSide) blockers.push(`${sameSide} ${setup.side === 'BUY' ? 'long' : 'short'} positions open (max ${cfg.maxSameSide})`);
-  }
-
-  const verdict = ctx.verdict?.(setup.primaryStrategyId) ?? null;
-  if (cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {
-    const oos = verdict.oosExpectancyR;
-    blockers.push(`${setup.primaryStrategyId} failed validation${oos !== null ? ` (${oos.toFixed(2)}R out-of-sample)` : ''} — improve it in Strategy Lab`);
-  }
-
-  const rec = ctx.record?.(setup.primaryStrategyId) ?? null;
-  if (cfg.pauseLosingStrategies && rec && rec.trades >= MIN_TRADES_TO_JUDGE && rec.expectancyR < 0) {
-    blockers.push(`${setup.primaryStrategyId} paused: ${rec.expectancyR.toFixed(2)}R expectancy over its last ${rec.trades} ${ctx.mode === 'LIVE' ? 'live' : 'paper'} trades`);
   }
 
   return { route, blockers };
@@ -287,7 +344,10 @@ export class LiveAnalyzer {
       // Every setup is priced at the live LTP: swing strategies read yesterday's close.
       const r = analyzeHybrid(
         { instrumentKey: t.instrumentKey, symbol: t.symbol, intraday, daily: this.src.daily(t.instrumentKey), clock: this.clock, ltp },
-        { params, ...(strategies && strategies.length ? { strategies } : {}) },
+        {
+          params, ...(strategies && strategies.length ? { strategies } : {}),
+          canLead: (v) => canLead(v, t, cfg, ctx),
+        },
       );
 
       const setups: LiveSetup[] = [];

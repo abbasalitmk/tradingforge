@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  decide, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  decide, canLead, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typeof decide>[0] => ({
@@ -77,6 +77,37 @@ describe('autonomous entry decision', () => {
     expect(modeForSegments({ intraday: false, swing: false, fno: true })).toBeNull();
   });
 
+  it('is long-only by default: an intraday SELL is a short and is blocked', () => {
+    expect(decide(setup({ side: 'SELL' }), equity, on, paper).blockers).toContain('short selling off (long-only)');
+    expect(decide(setup({ side: 'SELL' }), equity, { ...on, allowShort: true }, paper).blockers).toEqual([]);
+  });
+
+  it('never automates a swing SELL, even with shorting allowed', () => {
+    const swing = { ...on, allowShort: true, segments: { ...on.segments, swing: true } };
+    expect(decide(setup({ style: 'SWING', side: 'SELL' }), equity, swing, paper).blockers.join()).toContain('delivery holdings');
+  });
+
+  it('trades a bearish F&O setup only by buying a put', () => {
+    const fno = { ...on, segments: { ...on.segments, fno: true } };
+    const sell = setup({ side: 'SELL' });
+    expect(decide(sell, index, fno, { ...paper, fnoInstrument: 'OPTIONS' }).blockers).toEqual([]);
+    expect(decide(sell, index, fno, { ...paper, fnoInstrument: 'FUTURES' }).blockers).toContain('short futures off (long-only)');
+    // Not knowing the instrument is treated as futures.
+    expect(decide(sell, index, fno, paper).blockers).toContain('short futures off (long-only)');
+    expect(decide(sell, index, { ...fno, allowShort: true }, { ...paper, fnoInstrument: 'FUTURES' }).blockers).toEqual([]);
+  });
+
+  it('lets only a tradeable vote lead', () => {
+    const vote = (strategyId: string, side: 'BUY' | 'SELL') =>
+      ({ strategyId, name: strategyId, style: 'INTRADAY' as const, side, confidence: 80, signal: null, reasons: [] });
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper)).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, on, paper)).toBe(false);
+    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), index, { ...on, segments: { ...on.segments, fno: true } }, { ...paper, fnoInstrument: 'OPTIONS' })).toBe(true);
+    const live = { ...paper, mode: 'LIVE' as const, approved: (id: string) => id === 'ORB_SUPERTREND' };
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, live)).toBe(false);
+    expect(canLead(vote('ORB_SUPERTREND', 'BUY'), equity, on, live)).toBe(true);
+  });
+
   it('rejects out-of-range user settings', () => {
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, minRewardRisk: 0.5 }).success).toBe(false);
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, confirmSeconds: 0 }).success).toBe(false);
@@ -132,7 +163,7 @@ describe('portfolio limits and strategy gating', () => {
       '5 positions open (max 5)', '2 open from ORB_SUPERTREND (max 2)', '3 long positions open (max 3)',
     ]));
     // A short is a different bet from the open longs.
-    expect(decide(setup({ side: 'SELL' }), equity, on, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL' }), equity, { ...on, allowShort: true }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
   });
 
   it('pauses a strategy only once its own record is meaningful and losing', () => {
@@ -150,6 +181,9 @@ describe('portfolio limits and strategy gating', () => {
     const parsed = AutoConfigSchema.parse(old);
     expect([parsed.maxOpenPositions, parsed.maxPerStrategy, parsed.maxSameSide, parsed.trailStop, parsed.pauseLosingStrategies, parsed.minNetRewardRisk, parsed.skipFailedStrategies])
       .toEqual([5, 2, 3, false, true, 1.25, true]);
+    // A config saved before long-only existed must not keep shorting after the upgrade.
+    const { allowShort: _h, autoUniverse: _i, autoUniverseSize: _j, autoUniverseMinTurnoverCr: _k, ...older } = DEFAULT_AUTO;
+    expect(AutoConfigSchema.parse(older)).toMatchObject({ allowShort: false, autoUniverse: true, autoUniverseSize: 15 });
   });
 
   it('keeps a strategy that failed validation from leading entries, in paper too', () => {

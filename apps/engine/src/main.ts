@@ -25,7 +25,7 @@ import {
   DEFAULT_OPTION_PLAN, DEFAULT_STRIKE_PARAMS, fetchMasterRows, parseMaster, parseEquities, FnoDesk,
   type FnoPlan, type FnoPlanView, type DerivativeContract, type EquityInstrument,
 } from '@tradeforger/fno';
-import { STRATEGY_CATALOG, type ScanFilters } from '@tradeforger/strategy';
+import { STRATEGY_CATALOG, pickUniverse, type ScanFilters, type QuoteLite } from '@tradeforger/strategy';
 import { loadConfig, LIVE_CONFIRMATION, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
 import { Trader, isOperatorExit, type ManagedPosition } from './trader.ts';
@@ -219,6 +219,15 @@ for (const s of DEFAULT_UNIVERSE) addWatch(s);
 const watchlistExtra = new Map<string, { instrumentKey: string; symbol: string; name: string }>();
 /** Feed and REST budget: each stock costs a stream slot and three candle calls. */
 const MAX_WATCHLIST_EXTRA = 40;
+
+/**
+ * Stocks the engine picked itself from the whole market (`refreshAutoUniverse`),
+ * on top of the default universe and the stocks added by hand. Replaced on
+ * every refresh; analysed and traded exactly like the rest of the watchlist.
+ */
+const autoPicks = new Map<string, { instrumentKey: string; symbol: string; name: string }>();
+const autoUniverse = { refreshedAt: null as number | null, attemptedAt: 0, scanned: 0, error: null as string | null, busy: false };
+const AUTO_UNIVERSE_REFRESH_MS = 5 * 60_000;
 
 /** Last traded price for every instrument we hear about — equities, futures, options, indices. */
 const lastLtp = new Map<string, number>();
@@ -562,6 +571,11 @@ type EntryResult = { ok: true; detail?: string } | { ok: false; reason: string }
  */
 async function enterEquity(signal: Signal, product: Product, ai: AiDecision, meta: EntryMeta): Promise<EntryResult> {
   const key = signal.instrumentKey;
+  // Last line behind decide(): a delivery SELL would sell demat holdings, and
+  // an intraday SELL is a short the user has not allowed.
+  if (signal.side === 'SELL' && (product === 'D' || !state.auto.allowShort)) {
+    return { ok: false, reason: product === 'D' ? 'swing SELL refused — it would sell delivery holdings' : 'short selling is off (long-only)' };
+  }
   if (trader.holds(key)) return { ok: false, reason: 'already holding' };
   if (!verdictNow().allowEntries) return { ok: false, reason: 'circuit breaker tripped' };
 
@@ -685,6 +699,12 @@ async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: En
     return { ok: false, reason };
   }
   const { plan } = planned;
+  // Options are always bought; only a futures plan can be a SELL.
+  if (plan.side === 'SELL' && !state.auto.allowShort) {
+    const reason = 'short futures refused (long-only)';
+    fnoDesk.record(fnoDesk.view(symbol, signal, plan, 'REJECTED', reason));
+    return { ok: false, reason };
+  }
   const sized = await sizeFno(plan, planned.volume, ai.sizeMultiplier);
   if (!sized.ok) {
     fnoDesk.record(fnoDesk.view(symbol, signal, plan, 'REJECTED', sized.reason));
@@ -908,10 +928,12 @@ async function setFnoDesk(on: boolean): Promise<string | null> {
 async function addToWatchlist(symbol: string): Promise<string | null> {
   const eq = resolveEquity(symbol);
   if (!eq) return `${symbol} not found among NSE equities${equities.length === 0 ? ' (instrument master not loaded)' : ''}`;
-  if (watchlist.has(eq.instrumentKey)) return null;
+  if (watchlistExtra.has(eq.instrumentKey) || DEFAULT_UNIVERSE.some((u) => u.instrumentKey === eq.instrumentKey)) return null;
   if (watchlistExtra.size >= MAX_WATCHLIST_EXTRA) return `live watchlist is full (${MAX_WATCHLIST_EXTRA} added stocks) — remove one first`;
   const item = { ...eq, name: equities.find((e) => e.instrumentKey === eq.instrumentKey)?.name ?? eq.symbol };
   watchlistExtra.set(eq.instrumentKey, item);
+  // An auto pick is already streamed and loaded; adding it by hand only keeps it.
+  if (watchlist.has(eq.instrumentKey)) return null;
   addWatch(item);
   feed.subscribe([eq.instrumentKey], 'full');
   await loadCandles(eq.instrumentKey);
@@ -929,6 +951,104 @@ function removeFromWatchlist(symbol: string): string | null {
     || state.focus?.instrumentKey === item.instrumentKey || state.singleTarget?.instrumentKey === item.instrumentKey;
   if (!needed) feed.unsubscribe([item.instrumentKey]);
   return null;
+}
+
+const autoUniverseView = () => ({
+  enabled: state.auto.autoUniverse,
+  picks: [...autoPicks.values()].map((p) => p.symbol),
+  refreshedAt: autoUniverse.refreshedAt,
+  scanned: autoUniverse.scanned,
+  error: autoUniverse.error,
+});
+
+/** Stop analysing an auto pick, unless the default universe or the user also lists it. */
+function dropAutoPick(key: string): void {
+  autoPicks.delete(key);
+  if (watchlistExtra.has(key) || DEFAULT_UNIVERSE.some((u) => u.instrumentKey === key)) return;
+  watchlist.delete(key);
+  analyzer.results.delete(key);
+  const needed = trader.holds(key) || state.focus?.instrumentKey === key || state.singleTarget?.instrumentKey === key;
+  if (!needed) feed.unsubscribe([key]);
+}
+
+/**
+ * Re-pick the day's movers from every NSE EQ-series stock: one batch-quote
+ * pass (~5 calls), `pickUniverse`, then candles only for stocks new to the
+ * watchlist. A current pick still in the top 2N keeps its place, so the list
+ * does not churn — each churn resets a setup's stability clock and costs
+ * three candle calls.
+ */
+async function refreshAutoUniverse(): Promise<void> {
+  if (!state.auto.autoUniverse) {
+    for (const key of [...autoPicks.keys()]) dropAutoPick(key);
+    return;
+  }
+  if (autoUniverse.busy) return;
+  if (equities.length === 0) {
+    autoUniverse.error = 'instrument master not loaded';
+    return;
+  }
+  autoUniverse.busy = true;
+  autoUniverse.attemptedAt = clock.ms();
+  try {
+    const quotes: QuoteLite[] = [];
+    for (let i = 0; i < equities.length; i += QUOTE_BATCH) {
+      const batch = equities.slice(i, i + QUOTE_BATCH);
+      const byKey = new Map(batch.map((e) => [e.instrumentKey, e]));
+      const r = await client.quotes(batch.map((e) => e.instrumentKey));
+      if (!r.ok) throw new Error(`quotes: ${r.error.message}`);
+      for (const q of r.value) {
+        const eq = byKey.get(q.instrument_token);
+        if (!eq || !(q.last_price > 0)) continue;
+        quotes.push({
+          instrumentKey: q.instrument_token, symbol: eq.symbol, name: eq.name, ltp: q.last_price,
+          open: q.ohlc?.open ?? q.last_price, high: q.ohlc?.high ?? q.last_price, low: q.ohlc?.low ?? q.last_price,
+          // The quote's ohlc.close is the LTP intraday; net_change is vs the previous close.
+          prevClose: q.last_price - (q.net_change ?? 0),
+          volume: q.volume ?? 0,
+        });
+      }
+    }
+
+    // A stock whose one share the per-trade ceiling (or the budget) cannot buy is not a candidate.
+    const affordable = Math.min(cfg.TF_MAX_SPEND_PER_TRADE, state.sizingMode === 'FIXED_BUDGET' ? state.budget : Infinity);
+    const size = state.auto.autoUniverseSize;
+    const ranked = pickUniverse(quotes, {
+      size: size * 2,
+      minTurnoverCr: state.auto.autoUniverseMinTurnoverCr,
+      minPrice: state.auto.minPrice,
+      maxPrice: state.auto.maxPrice > 0 && state.auto.maxPrice < 500000 ? Math.min(state.auto.maxPrice, affordable) : affordable,
+      longOnly: !state.auto.allowShort,
+    });
+    const stay = ranked.filter((q) => autoPicks.has(q.instrumentKey)).slice(0, size);
+    const picks = [...stay, ...ranked.filter((q) => !autoPicks.has(q.instrumentKey)).slice(0, size - stay.length)];
+
+    const next = new Set(picks.map((q) => q.instrumentKey));
+    for (const key of [...autoPicks.keys()]) if (!next.has(key)) dropAutoPick(key);
+    const fresh: string[] = [];
+    for (const q of picks) {
+      const item = { instrumentKey: q.instrumentKey, symbol: q.symbol, name: q.name };
+      autoPicks.set(q.instrumentKey, item);
+      if (watchlist.has(q.instrumentKey)) continue;
+      addWatch(item);
+      Object.assign(watchlist.get(q.instrumentKey)!, {
+        ltp: q.ltp, open: q.open, high: q.high, low: q.low, close: q.prevClose, volume: q.volume,
+        changePct: q.prevClose > 0 ? ((q.ltp - q.prevClose) / q.prevClose) * 100 : 0,
+      });
+      lastLtp.set(q.instrumentKey, q.ltp);
+      fresh.push(q.instrumentKey);
+    }
+    if (fresh.length > 0) feed.subscribe(fresh, 'full');
+    for (const key of fresh) await loadCandles(key);
+
+    Object.assign(autoUniverse, { refreshedAt: clock.ms(), scanned: quotes.length, error: null });
+    console.log(`[universe] ${picks.length} picks from ${quotes.length} quotes (+${fresh.length} new): ${picks.map((q) => q.symbol).join(', ')}`);
+  } catch (e) {
+    autoUniverse.error = e instanceof Error ? e.message : String(e);
+    console.error('[universe]', autoUniverse.error);
+  } finally {
+    autoUniverse.busy = false;
+  }
 }
 
 /** Each strategy's own recent record in the current mode (LIVE vs simulated), refreshed every minute. */
@@ -965,6 +1085,7 @@ function decisionContext(): DecisionContext {
     },
     record: (id) => strategyRecords.get(id) ?? null,
     verdict: (id) => registry.activeVerdict(id),
+    fnoInstrument: cfg.TF_FNO_INSTRUMENT,
   };
 }
 
@@ -1184,6 +1305,15 @@ function startLoops(): void {
   setInterval(() => {
     void liveCycle().catch((e) => console.error('[live]', e));
   }, cfg.TF_ANALYSIS_INTERVAL_MS);
+
+  // The day's movers, from 09:20 (the open's quotes settled) to the last entry.
+  setInterval(() => {
+    const mins = istMinutes(clock.now());
+    const due = clock.ms() - autoUniverse.attemptedAt >= AUTO_UNIVERSE_REFRESH_MS;
+    if (!state.auto.autoUniverse || (due && mins >= SESSION.ENTRY_START && mins < SESSION.ENTRY_END)) {
+      void refreshAutoUniverse();
+    }
+  }, 30_000);
 
   // Exits: EOD square-off, time stops, per-trade loss. Unless a breaker that
   // also blocks exits (divergence, maintenance) is tripped — then a human acts.
@@ -1587,7 +1717,9 @@ const server = createServer(async (req, res) => {
         ordersCount: trader.ordersToday,
         signalsCount: state.signalsCount,
       },
-      watchlist: [...watchlist.values()].map((w) => ({ ...w, bars: intradayCandlesCache.get(w.instrumentKey)?.length ?? 0 })),
+      watchlist: [...watchlist.values()].map((w) => ({
+        ...w, bars: intradayCandlesCache.get(w.instrumentKey)?.length ?? 0, autoPicked: autoPicks.has(w.instrumentKey),
+      })),
       positions: [...trader.positions.values()].sort((a, b) => b.openedAt - a.openedAt).slice(0, 50).map(positionView),
       recentSignals,
       rankedStocks: ranked,
@@ -1639,6 +1771,7 @@ const server = createServer(async (req, res) => {
         .flatMap((a) => (analysisView(a) as { setups: Array<{ quality: number }> }).setups)
         .sort((x, y) => y.quality - x.quality),
       analyzed: results.length,
+      autoUniverse: autoUniverseView(),
       autoLog,
       priceSource: priceSource(),
       feedIssue,
@@ -1667,6 +1800,7 @@ const server = createServer(async (req, res) => {
       max: MAX_WATCHLIST_EXTRA,
       default: DEFAULT_UNIVERSE.map((u) => u.symbol),
       added: [...watchlistExtra.values()].map((w) => ({ ...w, bars: intradayCandlesCache.get(w.instrumentKey)?.length ?? 0 })),
+      autoUniverse: autoUniverseView(),
     });
   }
 
@@ -2107,6 +2241,8 @@ const server = createServer(async (req, res) => {
         if (bad) return json(404, { error: bad });
       }
       state.auto = parsed.data;
+      // Universe settings (or allowShort, which flips the pick filter) apply now, not in 5 minutes.
+      autoUniverse.attemptedAt = 0;
       // Keep the dashboard's strategy mode truthful about what the loop enters.
       const m = modeForSegments(state.auto.segments);
       if (m) {

@@ -82,6 +82,48 @@ export function prefilter(quotes: readonly QuoteLite[], f: ScanFilters, maxCandi
   return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, maxCandidates));
 }
 
+/** Where the LTP sits in the day's range: 0 at the low, 1 at the high. */
+export const rangePosition = (q: QuoteLite): number =>
+  q.high > q.low ? (q.ltp - q.low) / (q.high - q.low) : 0.5;
+
+/** A day move smaller than this is not a mover; one larger is close to an exchange price band. */
+export const PICK_CHANGE_PCT = { min: 0.3, max: 8 } as const;
+
+export interface UniversePickOptions {
+  readonly size: number;
+  readonly minTurnoverCr: number;
+  readonly minPrice?: number;
+  readonly maxPrice?: number;
+  /** Only stocks a long entry can work on: up on the day, above the open, upper half of the range. */
+  readonly longOnly: boolean;
+}
+
+/**
+ * The intraday universe for autonomous mode: the day's liquid movers, from
+ * one batch-quote pass over the market — no candles.
+ *
+ * Long-only, a stock falling on the day can produce only setups the engine
+ * will skip, so the list keeps stocks up on the day, trading above their open
+ * and in the upper half of the day's range: where long breakout, VWAP and
+ * trend setups form. Ranked by log turnover × day change, weighted toward the
+ * top of the range, so a liquid mid-cap that is moving beats a sleepy mega-cap.
+ */
+export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOptions): QuoteLite[] {
+  const passed = quotes.filter((q) => {
+    if (!(q.ltp > 0)) return false;
+    if (o.minPrice !== undefined && o.minPrice > 0 && q.ltp < o.minPrice) return false;
+    if (o.maxPrice !== undefined && o.maxPrice > 0 && q.ltp > o.maxPrice) return false;
+    if (turnoverCr(q) < o.minTurnoverCr) return false;
+    const ch = changePct(q);
+    const move = o.longOnly ? ch : Math.abs(ch);
+    if (move < PICK_CHANGE_PCT.min || move > PICK_CHANGE_PCT.max) return false;
+    return !o.longOnly || (q.ltp >= q.open && rangePosition(q) >= 0.5);
+  });
+  const score = (q: QuoteLite): number =>
+    Math.log10(1 + turnoverCr(q) * CRORE) * Math.abs(changePct(q)) * (o.longOnly ? 0.5 + rangePosition(q) : 1);
+  return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, o.size));
+}
+
 /**
  * Fine stage: every candidate through the hybrid ensemble, setup-level filters,
  * then rank by quality (ties broken by reward:risk).

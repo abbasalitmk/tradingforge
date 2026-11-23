@@ -23,6 +23,18 @@ interface AutoConfig {
   trailStop: boolean;
   pauseLosingStrategies: boolean;
   skipFailedStrategies: boolean;
+  allowShort: boolean;
+  autoUniverse: boolean;
+  autoUniverseSize: number;
+  autoUniverseMinTurnoverCr: number;
+}
+
+interface AutoUniverseView {
+  enabled: boolean;
+  picks: string[];
+  refreshedAt: number | null;
+  scanned: number;
+  error: string | null;
 }
 
 interface LiveSetupView {
@@ -65,6 +77,7 @@ interface LiveAnalysisResponse {
   entriesToday: number;
   setups: LiveSetupView[];
   analyzed: number;
+  autoUniverse?: AutoUniverseView;
   autoLog: AutoLogEntry[];
   priceSource?: 'WEBSOCKET' | 'REST_POLL' | 'NONE';
   feedIssue?: string | null;
@@ -86,17 +99,21 @@ interface WatchlistResponse {
   max: number;
   default: string[];
   added: Array<{ symbol: string; name: string; instrumentKey: string; bars: number }>;
+  autoUniverse?: AutoUniverseView;
 }
 
 type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
-  | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'>;
+  | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
+  | 'allowShort' | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
   maxEntriesPerDay: a.maxEntriesPerDay, strategies: [...a.strategies],
   maxOpenPositions: a.maxOpenPositions, maxPerStrategy: a.maxPerStrategy, maxSameSide: a.maxSameSide,
   trailStop: a.trailStop, pauseLosingStrategies: a.pauseLosingStrategies, skipFailedStrategies: a.skipFailedStrategies,
+  allowShort: a.allowShort, autoUniverse: a.autoUniverse,
+  autoUniverseSize: a.autoUniverseSize, autoUniverseMinTurnoverCr: a.autoUniverseMinTurnoverCr,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -181,6 +198,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       trailStop: draft.trailStop,
       pauseLosingStrategies: draft.pauseLosingStrategies,
       skipFailedStrategies: draft.skipFailedStrategies,
+      allowShort: draft.allowShort,
+      autoUniverse: draft.autoUniverse,
+      autoUniverseSize: draft.autoUniverseSize,
+      autoUniverseMinTurnoverCr: draft.autoUniverseMinTurnoverCr,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -216,6 +237,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
 
   const a = live.auto;
   const eligible = live.setups.filter((s) => s.eligible);
+  const liveApproved = live.strategies.filter((st) => st.approved).map((st) => st.name);
   const shown = showAll ? live.setups : live.setups.slice(0, 12);
   const toggleStrategy = (id: string) => setDraft((d) => d && ({
     ...d, strategies: d.strategies.includes(id) ? d.strategies.filter((x) => x !== id) : [...d.strategies, id],
@@ -245,6 +267,12 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
         )}
         {live.feedIssue && <Note kind="warn">Market feed: {live.feedIssue}. Prices come from REST polling every 2 s, so entries and exits react slower than tick data.</Note>}
         {!a.enabled && <Note>Autonomous entries are off — the table below shows what it <em>would</em> do. Turn it on from the command hub.</Note>}
+        {live.mode === 'LIVE' && (
+          <Note kind={liveApproved.length < 3 ? 'warn' : 'muted'}>
+            In LIVE only strategies with an APPROVED version can lead an entry: {liveApproved.length ? liveApproved.join(', ') : 'none'}.
+            {liveApproved.length < 3 ? ' Validate and approve more in the Strategy Lab below to trade more setups.' : ''}
+          </Note>
+        )}
       </Panel>
 
       <Panel
@@ -302,6 +330,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxOpenPositions', 'Max open positions', 1, 50, 1, 'across all strategies'],
             ['maxPerStrategy', 'Max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
             ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
+            ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
+            ['autoUniverseMinTurnoverCr', 'Pick min turnover (₹ Cr)', 1, 5000, 1, 'day turnover of an auto-picked stock'],
           ] as const).map(([key, label, min, max, step, hint]) => (
             <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>
               {label}
@@ -333,6 +363,18 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             Skip failed strategies {draft.skipFailedStrategies ? 'on' : 'off'}
           </Chip>
           <Note>Each entry is re-checked at its real size: R:R after round-trip charges must clear the floor above.</Note>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Direction &amp; stocks:</span>
+          <Chip on={!draft.allowShort} onClick={() => setDraft({ ...draft, allowShort: !draft.allowShort })}
+            title="Long-only: cash entries are BUY only; a bearish F&O setup buys a put. Off allows intraday short selling and short futures. A swing SELL is never automated.">
+            {draft.allowShort ? 'Short selling ALLOWED' : 'Long-only (no short selling)'}
+          </Chip>
+          <Chip on={draft.autoUniverse} onClick={() => setDraft({ ...draft, autoUniverse: !draft.autoUniverse })}
+            title="Every 5 minutes from 09:20, pick the day's most liquid stocks that are up and holding their gains, and analyse them with the watchlist">
+            Auto-pick today&apos;s movers {draft.autoUniverse ? 'on' : 'off'}
+          </Chip>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -473,6 +515,20 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
                 </span>
               ))}
             </div>
+          )}
+          {watch?.autoUniverse && (
+            watch.autoUniverse.enabled ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <Note kind={watch.autoUniverse.error ? 'warn' : 'muted'}>
+                  Auto-picked from {watch.autoUniverse.scanned || 'the whole'} NSE stocks
+                  {watch.autoUniverse.refreshedAt ? ` at ${new Date(watch.autoUniverse.refreshedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}` : ' — first pick at 09:20, then every 5 min'}
+                  {watch.autoUniverse.error ? ` · last refresh failed: ${watch.autoUniverse.error}` : ''}
+                </Note>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {watch.autoUniverse.picks.map((s) => <Pill key={s} color="var(--ok)">{s}</Pill>)}
+                </div>
+              </div>
+            ) : <Note>Auto-pick is off — only the stocks above are analysed.</Note>
           )}
         </Panel>
       </div>

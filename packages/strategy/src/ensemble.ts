@@ -57,6 +57,13 @@ export interface HybridOptions {
   readonly strategies?: readonly string[];
   /** Per-strategy params (e.g. the registry's approved versions). Default: each definition's defaults. */
   readonly params?: Readonly<Record<string, Params>>;
+  /**
+   * Which firing votes may LEAD a setup — e.g. only approved strategies in
+   * LIVE, only BUY signals when shorting is off. Votes that may not lead still
+   * count as agreement or conflict. When no firing vote qualifies, the
+   * strongest leads anyway so the setup (and why it is blocked) stays visible.
+   */
+  readonly canLead?: (vote: StrategyVote) => boolean;
 }
 
 /** Each additional strategy on the same side adds this, up to AGREE_CAP. */
@@ -150,7 +157,10 @@ export function analyzeHybrid(
   const bestFor = (style: 'INTRADAY' | 'SWING'): HybridSetup | null => {
     const firing = votes.filter((v) => v.style === style && v.signal !== null);
     if (firing.length === 0) return null;
-    const lead = firing.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+    // Otherwise a stronger vote that could never be traded (an unapproved
+    // strategy in LIVE, a short when shorting is off) hides one that could.
+    const leaders = opts.canLead ? firing.filter(opts.canLead) : firing;
+    const lead = (leaders.length > 0 ? leaders : firing).reduce((a, b) => (b.confidence > a.confidence ? b : a));
     const ls = lead.signal!;
     const agreeing = firing.filter((v) => v !== lead && v.side === lead.side);
     const opposing = firing.filter((v) => v.side !== lead.side);

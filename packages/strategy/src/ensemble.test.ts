@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { FixedClock, newSignalId, rupeesToPaise, type Candle, type Signal } from '@tradeforger/core';
 import { analyzeHybrid, setupQuality, COIN_FLIP_CAP } from './ensemble.ts';
-import { prefilter, screen, type QuoteLite, type ScanCandidate } from './screener.ts';
+import { prefilter, pickUniverse, screen, type QuoteLite, type ScanCandidate } from './screener.ts';
 import { STRATEGY_CATALOG, getStrategy } from './catalog.ts';
 import { intraday, daily, closeOf } from './fixtures.ts';
 
@@ -63,6 +63,26 @@ describe('hybrid analysis', () => {
     expect(setup.conflicting.every((id) => firing.find((v) => v.strategyId === id)?.side !== setup.side)).toBe(true);
   });
 
+  it('leads with the strongest vote allowed to trade, and falls back to the strongest when none is', () => {
+    const firingAt = (i: number) => {
+      const input = { instrumentKey: 'K', symbol: 'S', intraday: series.slice(0, i + 1), daily: dailies, clock: new FixedClock(new Date(closeOf(series[i]!, '5m'))) };
+      return { input, r: analyzeHybrid(input) };
+    };
+    const busy = [...series.keys()].slice(100).map(firingAt)
+      .find(({ r: x }) => x.votes.filter((v) => v.style === 'INTRADAY' && v.signal).length >= 2);
+    expect(busy).toBeDefined();
+    const { input, r: base } = busy!;
+    const top = base.best.INTRADAY!.primaryStrategyId;
+    expect(analyzeHybrid(input, { canLead: () => false }).best.INTRADAY!.primaryStrategyId).toBe(top);
+
+    const others = base.votes.filter((v) => v.style === 'INTRADAY' && v.signal && v.strategyId !== top);
+    const next = others.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+    const setup = analyzeHybrid(input, { canLead: (v) => v.strategyId !== top }).best.INTRADAY!;
+    expect(setup.primaryStrategyId).toBe(next.strategyId);
+    // The stronger vote still counts, as agreement or as conflict.
+    expect([...setup.agreeing, ...setup.conflicting]).toContain(top);
+  });
+
   it('reports levels in rupees with a consistent reward:risk', () => {
     const x = r.best.INTRADAY!;
     expect(x.rewardRisk).toBeCloseTo(Math.abs(x.target - x.entry) / Math.abs(x.entry - x.stopLoss), 1);
@@ -100,6 +120,35 @@ describe('screener', () => {
   it('ranks liquid movers first and caps the shortlist', () => {
     const out = prefilter([q('A', 500, 500, 1e5), q('B', 500, 450, 1e6), q('C', 500, 495, 1e6)], {}, 2);
     expect(out.map((x) => x.symbol)).toEqual(['B', 'C']);
+  });
+
+  describe('autonomous universe pick', () => {
+    const day = (symbol: string, ltp: number, open: number, high: number, low: number, volume = 1e6): QuoteLite =>
+      ({ ...q(symbol, ltp, 490, volume), open, high, low });
+    const quotes = [
+      day('LEADER', 510, 495, 512, 494),   // +4%, above the open, near the high
+      day('FADING', 500, 505, 515, 495),   // up on the day but below its open
+      day('DOWN', 480, 490, 491, 478),     // falling
+      day('QUIET', 490.5, 490, 491, 489),  // +0.1%: not moving
+      day('BAND', 540, 495, 540, 494),     // +10%: at an exchange price band
+      day('THIN', 510, 495, 512, 494, 100),
+    ];
+
+    it('long-only keeps liquid stocks that are up and holding their gains', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: true }).map((x) => x.symbol)).toEqual(['LEADER']);
+    });
+
+    it('with shorting allowed, a falling stock is a candidate too', () => {
+      const both = pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: false }).map((x) => x.symbol);
+      expect(both[0]).toBe('LEADER');
+      expect(both).toEqual(expect.arrayContaining(['FADING', 'DOWN']));
+      expect(both).not.toEqual(expect.arrayContaining(['QUIET']));
+    });
+
+    it('respects the price band and the size', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: true, maxPrice: 505 })).toEqual([]);
+      expect(pickUniverse(quotes, { size: 1, minTurnoverCr: 1, longOnly: false })).toHaveLength(1);
+    });
   });
 
   // A real quote's LTP is the last traded price — the candles' last close here.
