@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.github
+.secrets.local
+*.secret
+*.pem
+tokens
+data/*.json.gz
+docs
+tests
+*.md

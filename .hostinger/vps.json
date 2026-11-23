@@ -1,0 +1,7 @@
+{
+  "deploy": "ssh",
+  "project_name": "tradeforger",
+  "domain": "",
+  "ipv4": "",
+  "virtual_machine_id": ""
+}

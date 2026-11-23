@@ -1,5 +1,5 @@
-import { type Candle, type Clock, type Signal, istMinutes, istDateKey, SESSION, paiseToRupees } from '@tradeforger/core';
-import type { UpstoxClient } from '@tradeforger/upstox';
+import { type Candle, type Clock, type Signal, istMinutes, istDateKey, SESSION, paiseToRupees, computeIndianCharges } from '@tradeforger/core';
+import type { UpstoxClient, schemas } from '@tradeforger/upstox';
 import {
   StockScanner, DEFAULT_UNIVERSE, STRATEGY_CATALOG, analyzeHybrid, prefilter, screen,
   type ScoredStock, type UniverseItem, type ScanFilters, type QuoteLite, type ScanCandidate, type HybridSetup,
@@ -165,7 +165,9 @@ export class MarketService {
 
   async overview() {
     const keys = DEFAULT_UNIVERSE.map((u) => u.instrumentKey);
-    const [quotes, bars] = await Promise.all([this.data.quotes(keys), this.rankingBarsFor(keys)]);
+    // Quotes first: their LTP prices the forming bar the ranking ends on.
+    const quotes = await this.data.quotes(keys);
+    const bars = await this.rankingBarsFor(keys, quotes);
     const candleMap = new Map([...bars].map(([k, b]) => [k, b.candles]));
     const rankedStocks = this.scanner.rankUniverse(DEFAULT_UNIVERSE, candleMap);
 
@@ -184,12 +186,13 @@ export class MarketService {
         close: prevClose > 0 ? prevClose : 0,
         volume: q?.volume ?? 0,
         lastUpdated: this.clock.ms(),
-        bars: bars.get(u.instrumentKey)?.candles.length ?? 0,
+        // Bars of the ranked session only — warmup history is not "today's bars".
+        bars: sessionBars(bars.get(u.instrumentKey)),
       };
     });
 
     return {
-      source: 'vercel' as const,
+      source: 'hostinger' as const,
       asOf: this.clock.ms(),
       session: sessionOf(bars.values()),
       watchlist,
@@ -327,7 +330,8 @@ export class MarketService {
     const forming = open ? await this.data.formingBar(key, ltp).catch(() => null) : null;
     const intraday = mergeCandles(hist, intra, forming ? [forming] : []);
     const r = analyzeHybrid(
-      { instrumentKey: key, symbol: eq.symbol, intraday, daily, clock: this.clock },
+      // Priced at the live quote: swing strategies decide on yesterday's close.
+      { instrumentKey: key, symbol: eq.symbol, intraday, daily, clock: this.clock, ltp },
       strategies?.length ? { strategies } : {},
     );
     return { eq, q, ltp, open, forming, intra, intraday, daily, r, warnings: fetches.warnings() };
@@ -452,14 +456,26 @@ export class MarketService {
   /** The AI consensus on the stock's best current setup. Cached while the setup holds. */
   async stockAi(symbol: string, strategies?: readonly string[]) {
     const { eq, r } = await this.analyzeLive(symbol, strategies);
-    const setups = [r.best.INTRADAY, r.best.SWING].filter((s): s is HybridSetup => s !== null);
+    const setups = [r.best.INTRADAY, r.best.SWING].filter((s): s is HybridSetup => s !== null && !s.invalidReason);
     const best = setups.sort((a, b) => b.quality - a.quality)[0];
-    if (!best) return { symbol: eq.symbol, setup: null, consensus: null, reason: 'No strategy has a setup on this stock right now.' };
+    if (!best) return { symbol: eq.symbol, setup: null, consensus: null, charges: null, sampleQty: null, reason: 'No strategy has a setup on this stock right now.' };
     const lead: Signal | null = best.votes.find((v) => v.strategyId === best.primaryStrategyId)?.signal ?? null;
-    if (!lead) return { symbol: eq.symbol, setup: slimSetup(best), consensus: null, reason: 'Lead signal unavailable.' };
+    if (!lead) return { symbol: eq.symbol, setup: slimSetup(best), consensus: null, charges: null, sampleQty: null, reason: 'Lead signal unavailable.' };
     const sig = `${eq.instrumentKey}|${best.style}|${best.side}|${best.primaryStrategyId}`;
     const consensus = await this.cache.get(`ai:${sig}`, 30_000, () => this.ai.review(lead));
-    return { symbol: eq.symbol, setup: slimSetup(best), consensus, reason: null };
+
+    const entryRs = paiseToRupees(lead.entry);
+    const targetRs = paiseToRupees(lead.target);
+    const nominalCapital = 50_000;
+    const sampleQty = Math.max(1, Math.floor(nominalCapital / Math.max(1, entryRs)));
+    const charges = computeIndianCharges({
+      style: best.style,
+      buyPrice: best.side === 'BUY' ? entryRs : targetRs,
+      sellPrice: best.side === 'BUY' ? targetRs : entryRs,
+      qty: sampleQty,
+    });
+
+    return { symbol: eq.symbol, setup: slimSetup(best), consensus, charges, sampleQty, reason: null };
   }
 
   // ─────────────────────────────── F&O ───────────────────────────────
@@ -468,7 +484,7 @@ export class MarketService {
     await this.fnoReady();
     await this.cache.get('fno:refresh', 15_000, () => this.desk.refreshAll());
     const snap = this.desk.snapshot(false) as { instrument: string; underlyings: unknown[] };
-    return { source: 'vercel' as const, asOf: this.clock.ms(), instrument: snap.instrument, underlyings: snap.underlyings };
+    return { source: 'hostinger' as const, asOf: this.clock.ms(), instrument: snap.instrument, underlyings: snap.underlyings };
   }
 
   /**
@@ -508,7 +524,8 @@ export class MarketService {
   }
 
   private async score(item: UniverseItem): Promise<{ stock: ScoredStock & { tradeSetup: NonNullable<ScoredStock['tradeSetup']> }; session: Session }> {
-    const b = (await this.rankingBarsFor([item.instrumentKey])).get(item.instrumentKey);
+    const quotes = await this.data.quotes([item.instrumentKey]).catch(() => new Map<string, schemas.FullQuote>());
+    const b = (await this.rankingBarsFor([item.instrumentKey], quotes)).get(item.instrumentKey);
     const stock = b ? this.scanner.rankUniverse([item], new Map([[item.instrumentKey, b.candles]]))[0] : undefined;
     if (!b || !stock?.tradeSetup) {
       throw new MarketError(404, 'not_enough_bars', `not enough candles to analyse ${item.symbol} (${b?.candles.length ?? 0})`);
@@ -517,9 +534,11 @@ export class MarketService {
   }
 
   /** Ranking bars per instrument. A failed fetch drops that instrument rather than the whole page. */
-  private async rankingBarsFor(keys: readonly string[]) {
+  private async rankingBarsFor(keys: readonly string[], quotes: ReadonlyMap<string, schemas.FullQuote>) {
     const out = new Map<string, Awaited<ReturnType<MarketData['rankingBars']>>>();
-    const settled = await Promise.allSettled(keys.map(async (k) => [k, await this.data.rankingBars(k)] as const));
+    const open = marketOpenAt(this.clock.now());
+    const settled = await Promise.allSettled(keys.map(async (k) =>
+      [k, await this.data.rankingBars(k, quotes.get(k)?.last_price ?? null, open)] as const));
     for (const s of settled) if (s.status === 'fulfilled') out.set(s.value[0], s.value[1]);
     if (out.size === 0 && keys.length > 0) {
       const first = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -528,6 +547,9 @@ export class MarketService {
     return out;
   }
 }
+
+const sessionBars = (b: { candles: readonly Candle[]; session: Session } | undefined): number =>
+  b ? b.candles.filter((c) => istDateKey(new Date(c.ts)) === b.session.date).length : 0;
 
 /** The session most instruments were ranked on, for the dashboard label. */
 function sessionOf(bars: Iterable<{ session: Session }>): Session | null {

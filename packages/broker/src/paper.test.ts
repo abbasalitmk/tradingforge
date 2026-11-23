@@ -289,3 +289,37 @@ describe('lifecycle', () => {
     expect(b.isLive).toBe(false);
   });
 });
+
+describe('adopting a journaled position after a restart', () => {
+  const bracket: BracketOrder = {
+    positionId: 'pos_r' as PositionId, instrumentKey: KEY, side: 'BUY', quantity: 10, product: 'I',
+    entryTrigger: 'IMMEDIATE', entryPrice: P(1000), targetPrice: P(1050), stopLossPrice: P(980),
+  };
+
+  it('resumes the bracket from the next tick', () => {
+    const b = broker({ slippageBps: 0 });
+    const events: BrokerEvent[] = [];
+    b.onEvent((e) => events.push(e));
+    b.adopt({ gttOrderId: 'gtt-old-000001', order: bracket, fillPrice: P(1000), exitPending: false });
+    b.onTick(tick(1010));
+    expect(events).toHaveLength(0);
+    b.onTick(tick(1051));
+    expect(events).toEqual([expect.objectContaining({ kind: 'EXIT_FILLED', leg: 'TARGET', avgPrice: P(1050) })]);
+  });
+
+  it('completes an exit that was in flight at the first tick', () => {
+    const b = broker({ slippageBps: 0 });
+    const events: BrokerEvent[] = [];
+    b.onEvent((e) => events.push(e));
+    b.adopt({ gttOrderId: 'gtt-old-000002', order: bracket, fillPrice: P(1000), exitPending: true });
+    b.onTick(tick(1012));
+    expect(events).toEqual([expect.objectContaining({ kind: 'EXIT_FILLED', leg: 'MANUAL', avgPrice: P(1012) })]);
+  });
+
+  it('never reissues an id that a previous run handed out', async () => {
+    const b = broker();
+    b.onTick(tick(1000));
+    const r = await b.placeBracketOrder(bracket);
+    expect(r.ok && r.value.gttOrderId).not.toBe('gtt-000001');
+  });
+});

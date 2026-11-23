@@ -183,6 +183,7 @@ export class CandlestickProfile implements StrategyProfile {
       ctx, style: this.style, side, geometry, atr: atrNow, confidence, checks,
       indicators: {
         atr: atrNow,
+        triggerPrice: Number((long ? last.high + 0.05 : last.low - 0.05).toFixed(2)),
         patterns: patterns.length,
         trendEma: tNow ?? 0,
         pullbackEma: pNow ?? 0,

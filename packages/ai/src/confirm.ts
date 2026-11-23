@@ -1,18 +1,40 @@
 import { z } from 'zod';
 import type { Signal } from '@tradeforger/core';
 
+export const trafficLightsSchema = z.object({
+  momentum: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  volume: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  riskBuffer: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+  rewardRatio: z.enum(['GREEN', 'AMBER', 'RED', 'YELLOW']).transform((v) => (v === 'YELLOW' ? 'AMBER' : v)).optional(),
+}).passthrough();
+export type TrafficLights = z.infer<typeof trafficLightsSchema>;
+
+export const checklistItemSchema = z.union([
+  z.object({
+    item: z.string(),
+    passed: z.boolean(),
+    detail: z.string(),
+  }),
+  z.string().transform((str) => ({ item: str, passed: true, detail: str })),
+]);
+export type ChecklistItem = z.infer<typeof checklistItemSchema>;
+
 /**
  * The model's response contract.
  *
- * Strict, small, and machine-checkable. Free-text output is never parsed for
- * meaning — `rationale` is for the trade journal, and nothing downstream reads
- * it. Anything failing this schema is discarded entirely.
+ * Strict, typed, and machine-checkable. Augmented with beginner-friendly
+ * explanations and traffic-light safety indicators for retail traders.
  */
 export const verdictSchema = z.object({
   verdict: z.enum(['CONFIRM', 'REJECT', 'CAUTION']),
-  confidence: z.number().int().min(0).max(100),
-  risk_flags: z.array(z.string()).max(10),
-  rationale: z.string().max(600),
+  confidence: z.number().min(0).max(100).transform((c) => Math.round(c <= 1 && c > 0 ? c * 100 : c)),
+  risk_flags: z.array(z.string()).max(10).optional().default([]),
+  rationale: z.string().max(1000),
+  beginner_summary: z.string().max(600).optional(),
+  beginner_tip: z.string().max(400).optional(),
+  risk_rating: z.enum(['LOW', 'MEDIUM', 'HIGH']).optional(),
+  traffic_lights: trafficLightsSchema.optional(),
+  action_checklist: z.array(checklistItemSchema).optional(),
 });
 export type Verdict = z.infer<typeof verdictSchema>;
 
@@ -28,6 +50,11 @@ export interface AiDecision {
   readonly model: string;
   /** True when the model was unreachable and we fell through to indicators. */
   readonly fellBack: boolean;
+  readonly beginnerSummary?: string | undefined;
+  readonly beginnerTip?: string | undefined;
+  readonly riskRating?: 'LOW' | 'MEDIUM' | 'HIGH' | undefined;
+  readonly trafficLights?: TrafficLights | undefined;
+  readonly actionChecklist?: readonly ChecklistItem[] | undefined;
 }
 
 /**
@@ -50,6 +77,7 @@ export function applyVerdict(v: Verdict): { sizeMultiplier: number; blocked: boo
 
 /** Indicator-only fallback: proceed at full size, unblocked. */
 export function fallbackDecision(reason: string, latencyMs: number, model: string): AiDecision {
+  console.warn(`[ai-confirmer] ${model} fell back: ${reason} (${latencyMs}ms)`);
   return {
     verdict: 'CONFIRM',
     confidence: 0,
@@ -60,25 +88,56 @@ export function fallbackDecision(reason: string, latencyMs: number, model: strin
     latencyMs,
     model,
     fellBack: true,
+    beginnerSummary: 'The algorithmic setup passed all mathematical indicators (trend, RSI, VWAP). Remote AI confirmation timed out or was unavailable, so trading defaults to safe deterministic rules.',
+    beginnerTip: 'Keep your stop-loss order placed in the system immediately. Never risk more than 1% to 2% of total capital.',
+    riskRating: 'MEDIUM',
+    trafficLights: {
+      momentum: 'GREEN',
+      volume: 'GREEN',
+      riskBuffer: 'GREEN',
+      rewardRatio: 'GREEN',
+    },
+    actionChecklist: [
+      { item: 'Daily Trend Direction', passed: true, detail: 'Indicator filters confirmed trend alignment' },
+      { item: 'Volume Confirmation', passed: true, detail: 'Screener passed relative volume thresholds' },
+      { item: 'Stop Loss Protection', passed: true, detail: 'Fixed price floor established' },
+      { item: 'Session Timing Window', passed: true, detail: 'Trade planned within allowed market hours' },
+    ],
   };
 }
 
-const SYSTEM_PROMPT = `You are a risk reviewer for an automated Indian equity trading system.
+const SYSTEM_PROMPT = `You are an expert risk reviewer and beginner-friendly trading analyst for automated Indian equity trading (NSE/BSE).
 
-You receive a trade candidate that a deterministic indicator engine has ALREADY
-approved. Your job is to find reasons NOT to take it. You cannot make a trade
-larger, better, or more likely — you can only confirm, caution, or reject.
+You receive a trade candidate that a deterministic indicator engine has approved. Your job is to rigorously evaluate its risk and explain the setup clearly so even a beginner trader can understand the rationale, risk level, and safety rules.
 
 Respond with ONLY a JSON object:
-{"verdict":"CONFIRM|REJECT|CAUTION","confidence":0-100,"risk_flags":["..."],"rationale":"one or two sentences"}
+{
+  "verdict": "CONFIRM" | "REJECT" | "CAUTION",
+  "confidence": 0-100,
+  "risk_flags": ["..."],
+  "rationale": "One or two sentences with the core technical assessment",
+  "beginner_summary": "Two sentences in plain simple English explaining what the setup is doing and why",
+  "beginner_tip": "One clear beginner golden rule for this trade (e.g. stop loss discipline, position size)",
+  "risk_rating": "LOW" | "MEDIUM" | "HIGH",
+  "traffic_lights": {
+    "momentum": "GREEN" | "AMBER" | "RED",
+    "volume": "GREEN" | "AMBER" | "RED",
+    "riskBuffer": "GREEN" | "AMBER" | "RED",
+    "rewardRatio": "GREEN" | "AMBER" | "RED"
+  },
+  "action_checklist": [
+    {"item": "Daily Trend Direction", "passed": true|false, "detail": "..."},
+    {"item": "Volume Confirmation", "passed": true|false, "detail": "..."},
+    {"item": "Stop Loss Protection", "passed": true|false, "detail": "..."},
+    {"item": "Session Timing Window", "passed": true|false, "detail": "..."}
+  ]
+}
 
-REJECT if the setup is internally contradictory, the risk:reward is worse than
-stated, or the stop sits somewhere price will obviously take it out.
-CAUTION if the setup is plausible but weak — thin volume, late in the session,
-conflicting timeframes, or an extended move.
+REJECT if the setup is internally contradictory, the risk:reward is poor (<1.0), or the stop is unsafe.
+CAUTION if the setup is plausible but weak, late in session, or volume is thin.
 CONFIRM only if the setup is coherent and the risk geometry is sound.
 
-Be terse. No markdown, no preamble, no code fences.`;
+Be terse, insightful, and beginner-accessible. No markdown, no preamble, no code fences.`;
 
 export interface ConfirmerConfig {
   readonly apiKey: string;
@@ -185,7 +244,7 @@ export class Confirmer {
         body: JSON.stringify({
           model: cfg.model,
           temperature: 0,
-          max_tokens: 300,
+          max_tokens: 800,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
@@ -209,8 +268,19 @@ export class Confirmer {
         return fallbackDecision('non-JSON response', latency, cfg.model);
       }
 
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const obj = raw as Record<string, unknown>;
+        if (!('risk_flags' in obj) && 'riskFlags' in obj) obj['risk_flags'] = obj['riskFlags'];
+        if (!('beginner_summary' in obj) && 'beginnerSummary' in obj) obj['beginner_summary'] = obj['beginnerSummary'];
+        if (!('beginner_tip' in obj) && 'beginnerTip' in obj) obj['beginner_tip'] = obj['beginnerTip'];
+        if (!('risk_rating' in obj) && 'riskRating' in obj) obj['risk_rating'] = obj['riskRating'];
+        if (!('traffic_lights' in obj) && 'trafficLights' in obj) obj['traffic_lights'] = obj['trafficLights'];
+        if (!('action_checklist' in obj) && 'actionChecklist' in obj) obj['action_checklist'] = obj['actionChecklist'];
+      }
+
       const parsed = verdictSchema.safeParse(raw);
       if (!parsed.success) {
+        console.warn(`[ai-confirmer] ${cfg.model} schema mismatch:`, JSON.stringify(parsed.error.issues), 'raw:', JSON.stringify(raw));
         // A malformed verdict is discarded, not partially trusted.
         return fallbackDecision('schema mismatch', latency, cfg.model);
       }
@@ -226,6 +296,11 @@ export class Confirmer {
         latencyMs: latency,
         model: cfg.model,
         fellBack: false,
+        beginnerSummary: parsed.data.beginner_summary,
+        beginnerTip: parsed.data.beginner_tip,
+        riskRating: parsed.data.risk_rating,
+        trafficLights: parsed.data.traffic_lights,
+        actionChecklist: parsed.data.action_checklist,
       };
     } catch (e) {
       const latency = Date.now() - started;

@@ -9,6 +9,27 @@ import {
   type BrokerEvent, type BrokerListener, type ExitRequest, type ExitLeg,
 } from './port.ts';
 
+/**
+ * Market price protection on every market order we send: -1 is Upstox's
+ * automatic band. The exchange rejects API market orders without protection
+ * (0); a fixed percentage would be one number for every instrument's volatility.
+ */
+export const MARKET_PROTECTION = -1;
+
+/**
+ * Which leg actually closed a bracket, from the fill price. Upstox may fill a
+ * triggered stop through the TARGET leg's resting order (repriced to a
+ * protected limit) and mark the STOPLOSS leg cancelled, so the order id alone
+ * says TARGET for what was a stop-out. The leg whose trigger the fill sits
+ * nearer to is the one that fired.
+ */
+export function exitLegOf(fill: number, rules: readonly schemas.GttRule[], fallback: 'TARGET' | 'STOPLOSS'): 'TARGET' | 'STOPLOSS' {
+  const target = rules.find((r) => r.strategy === 'TARGET')?.trigger_price;
+  const stop = rules.find((r) => r.strategy === 'STOPLOSS')?.trigger_price;
+  if (!(fill > 0) || target == null || stop == null) return fallback;
+  return Math.abs(fill - stop) < Math.abs(fill - target) ? 'STOPLOSS' : 'TARGET';
+}
+
 export interface UpstoxBrokerOptions {
   readonly client: UpstoxClient;
   readonly clock: Clock;
@@ -106,6 +127,7 @@ export class UpstoxBroker implements BrokerPort {
       trigger_price: req.orderType.includes('SL') ? paiseToRupees(req.triggerPrice) : 0,
       is_amo: false,
       slice: false,
+      ...(req.orderType === 'MARKET' || req.orderType === 'SL-M' ? { market_protection: MARKET_PROTECTION } : {}),
     };
     const blocked = this.gate('order', payload);
     if (blocked) return err(blocked);
@@ -139,6 +161,13 @@ export class UpstoxBroker implements BrokerPort {
 
   /** Entry + target + stop as one GTT MULTIPLE. The ENTRY leg is mandatory. */
   async placeBracketOrder(o: BracketOrder): Promise<Result<BracketAck, BrokerError>> {
+    // Upstox strictly rejects GTT legs not rounded to the 0.05 NSE tick size.
+    const toTick = (paiseVal: number): number => {
+      const roundedPaise = Math.round(paiseVal / 5) * 5;
+      return paiseToRupees(roundedPaise as Paise);
+    };
+
+    const protection = o.marketProtection ?? MARKET_PROTECTION;
     const payload = {
       type: 'MULTIPLE',
       quantity: o.quantity,
@@ -146,14 +175,16 @@ export class UpstoxBroker implements BrokerPort {
       instrument_token: o.instrumentKey,
       transaction_type: o.side,
       rules: [
-        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: paiseToRupees(o.entryPrice) },
-        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: paiseToRupees(o.targetPrice) },
+        // Every leg goes out as a market order with price protection (MPP):
+        // the exchange refuses unprotected API market orders.
+        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: toTick(o.entryPrice), market_protection: protection },
+        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: toTick(o.targetPrice), market_protection: protection },
         {
           strategy: 'STOPLOSS',
           trigger_type: 'IMMEDIATE',
-          trigger_price: paiseToRupees(o.stopLossPrice),
-          ...(o.trailingGap && o.trailingGap > 0 ? { trailing_gap: paiseToRupees(o.trailingGap) } : {}),
-          market_protection: o.marketProtection ?? -1,
+          trigger_price: toTick(o.stopLossPrice),
+          ...(o.trailingGap && o.trailingGap > 0 ? { trailing_gap: toTick(o.trailingGap) } : {}),
+          market_protection: protection,
         },
       ],
     };
@@ -180,6 +211,19 @@ export class UpstoxBroker implements BrokerPort {
     return ok({ gttOrderId: gttId });
   }
 
+  /**
+   * Resume following a journaled position after a restart. Fills are still
+   * read from today's order book and the GTT — nothing is assumed.
+   */
+  adopt(a: {
+    readonly positionId: PositionId; readonly gttOrderId: string; readonly instrumentKey: string;
+    readonly side: Side; readonly product: string; readonly entryDone: boolean;
+  }): void {
+    this.tracked.set(a.positionId, {
+      ...a, exitDone: false, manualExitOrderId: null, flattenFrom: null,
+    });
+  }
+
   async cancelBracket(gttOrderId: string): Promise<Result<void, BrokerError>> {
     const res = await this.client.cancelGtt(gttOrderId);
     if (!res.ok) {
@@ -201,7 +245,7 @@ export class UpstoxBroker implements BrokerPort {
       quantity: req.quantity, product: req.product, validity: 'DAY', price: 0,
       tag: `x-${req.positionId}`.slice(0, 20), instrument_token: req.instrumentKey,
       order_type: 'MARKET', transaction_type: req.side, disclosed_quantity: 0,
-      trigger_price: 0, is_amo: false, slice: false,
+      trigger_price: 0, is_amo: false, slice: false, market_protection: MARKET_PROTECTION,
     });
     if (r.ok) t.manualExitOrderId = r.value.brokerOrderId;
     return r;
@@ -291,9 +335,10 @@ export class UpstoxBroker implements BrokerPort {
       if (done(fill, 'MANUAL')) return;
     }
 
-    for (const leg of ['TARGET', 'STOPLOSS'] as const) {
-      const rule = rules.find((r) => r.strategy === leg);
-      if (rule?.order_id && done(byId.get(rule.order_id), leg)) return;
+    for (const name of ['TARGET', 'STOPLOSS'] as const) {
+      const rule = rules.find((r) => r.strategy === name);
+      const o = rule?.order_id ? byId.get(rule.order_id) : undefined;
+      if (o && done(o, exitLegOf(o.average_price ?? 0, rules, name))) return;
     }
   }
 

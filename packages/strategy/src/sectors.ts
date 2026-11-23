@@ -1,0 +1,126 @@
+/**
+ * NSE industry of every Nifty 500 stock, from niftyindices.com's
+ * ind_nifty500list.csv (snapshot 2026-11-23). Used to cap correlated exposure:
+ * several open positions in one industry are one bet sized as several.
+ * A stock outside the Nifty 500 has no entry and is not sector-capped.
+ */
+const BY_INDUSTRY: Readonly<Record<string, readonly string[]>> = {
+  "Automobile and Auto Components": [
+    "APOLLOTYRE", "ARE&M", "ASAHIINDIA", "ATHERENERG", "BAJAJ-AUTO", "BALKRISIND", "BELRISE",
+    "BHARATFORG", "BOSCHLTD", "CEATLTD", "CIEINDIA", "CRAFTSMAN", "EICHERMOT", "ENDURANCE",
+    "EXIDEIND", "FORCEMOT", "GABRIEL", "HEROMOTOCO", "HYUNDAI", "JBMA", "JKTYRE", "M&M", "MARUTI",
+    "MINDACORP", "MOTHERSON", "MRF", "MSUMI", "OLAELEC", "OLECTRA", "RKFORGE", "SANSERA",
+    "SCHAEFFLER", "SHRIPISTON", "SONACOMS", "TENNIND", "TIINDIA", "TMPV", "TVSMOTOR", "UNOMINDA",
+    "ZFCVINDIA",
+  ],
+  "Capital Goods": [
+    "ABB", "ACE", "AIAENG", "APARINDS", "APLAPOLLO", "ASHOKLEY", "ASTRAL", "AZAD", "BDL", "BEL",
+    "BEML", "BHEL", "CARBORUNIV", "CGPOWER", "COCHINSHIP", "CPPLUS", "CUMMINSIND", "DATAPATTNS",
+    "DUMMYHEG", "ELECON", "ELGIEQUIP", "EMMVEE", "ENRIN", "ESCORTS", "FINCABLES", "GALLANTT",
+    "GPIL", "GRAPHITE", "GRSE", "GVT&D", "HAL", "HBLENGINE", "HEGAM", "HONAUT", "INOXINDIA",
+    "INOXWIND", "JINDALSAW", "JWL", "JYOTICNC", "KAYNES", "KEI", "KIRLOSBROS", "KIRLOSENG", "KSB",
+    "MAZDOCK", "MTARTECH", "POLYCAB", "POWERINDIA", "PREMIERENE", "PTCIL", "RHIM", "RRKABEL",
+    "SCHNEIDER", "SHYAMMETL", "SIEMENS", "SUPREMEIND", "SUZLON", "SYRMA", "TARIL", "TDPOWERSYS",
+    "TEGA", "THERMAX", "TIMKEN", "TITAGARH", "TMCV", "TRITURBINE", "USHAMART", "WAAREEENER",
+    "WELCORP", "ZENTEC",
+  ],
+  "Chemicals": [
+    "AARTIIND", "AETHER", "ANURAS", "ATUL", "CHAMBLFERT", "CLEAN", "COROMANDEL", "DEEPAKFERT",
+    "DEEPAKNTR", "FACT", "FLUOROCHEM", "HSCL", "JUBLINGREA", "LINDEINDIA", "NAVINFLUOR", "PARADEEP",
+    "PCBL", "PIDILITIND", "PIIND", "PRIVISCL", "SOLARINDS", "SRF", "SUMICHEM", "SWANCORP",
+    "TATACHEM", "UPL",
+  ],
+  "Construction": [
+    "AFCONS", "CEMPRO", "ENGINERSIN", "IRB", "IRCON", "KEC", "KPIL", "LT", "NBCC", "NCC", "RITES",
+    "RVNL", "TECHNOE",
+  ],
+  "Construction Materials": [
+    "ACC", "AMBUJACEM", "DALBHARAT", "GRASIM", "INDIACEM", "JKCEMENT", "JSWCEMENT", "NUVOCO",
+    "RAMCOCEM", "SHREECEM", "ULTRACEMCO",
+  ],
+  "Consumer Durables": [
+    "AMBER", "ASIANPAINT", "BATAINDIA", "BERGEPAINT", "BLUESTARCO", "CROMPTON", "DIXON", "HAVELLS",
+    "KAJARIACER", "KALYANKJIL", "LGEINDIA", "PGEL", "THANGAMAYL", "TITAN", "VOLTAS", "WHIRLPOOL",
+  ],
+  "Consumer Services": [
+    "BLS", "CARTRADE", "DEVYANI", "DMART", "EIHOTEL", "ETERNAL", "FIRSTCRY", "INDHOTEL",
+    "INDIAMART", "IRCTC", "ITCHOTELS", "JUBLFOOD", "LEMONTREE", "LENSKART", "MEESHO", "NAUKRI",
+    "NYKAA", "PWL", "SWIGGY", "TBOTEK", "TRENT", "URBANCO", "VMM",
+  ],
+  "Diversified": [
+    "GODREJIND",
+  ],
+  "Fast Moving Consumer Goods": [
+    "ABDL", "AVANTIFEED", "AWL", "BALRAMCHIN", "BRITANNIA", "CCL", "COLPAL", "CUPID", "DABUR",
+    "DOMS", "EIDPARRY", "EMAMILTD", "GILLETTE", "GODFRYPHLP", "GODREJCP", "HINDUNILVR", "HONASA",
+    "ITC", "LTFOODS", "MARICO", "NESTLEIND", "PATANJALI", "RADICO", "TATACONSUM", "UBL", "UNITDSPR",
+    "VBL", "ZYDUSWELL",
+  ],
+  "Financial Services": [
+    "360ONE", "AADHARHFC", "AAVAS", "ABCAPITAL", "ABSLAMC", "AIIL", "ANANDRATHI", "ANGELONE",
+    "APTUS", "AUBANK", "AXISBANK", "BAJAJFINSV", "BAJAJHFL", "BAJAJHLDNG", "BAJFINANCE",
+    "BANDHANBNK", "BANKBARODA", "BANKINDIA", "BSE", "CAMS", "CANBK", "CANFINHOME", "CANHLIFE",
+    "CDSL", "CENTRALBK", "CGCL", "CHOICEIN", "CHOLAFIN", "CHOLAHLDNG", "CREDITACC", "CRISIL", "CUB",
+    "FEDERALBNK", "FIVESTAR", "GICRE", "GROWW", "HDBFS", "HDFCAMC", "HDFCBANK", "HDFCLIFE",
+    "HOMEFIRST", "HUDCO", "ICICIAMC", "ICICIBANK", "ICICIGI", "ICICILIFE", "IDBI", "IDFCFIRSTB",
+    "IEX", "IFCI", "IIFL", "INDIANB", "INDUSINDBK", "IOB", "IREDA", "IRFC", "J&KBANK", "JIOFIN",
+    "JMFINANCIL", "KARURVYSYA", "KFINTECH", "KOTAKBANK", "LICHSGFIN", "LICI", "LTF", "M&MFIN",
+    "MAHABANK", "MANAPPURAM", "MCX", "MFSL", "MOTILALOFS", "MUTHOOTFIN", "NAM-INDIA", "NIACL",
+    "NUVAMA", "PAYTM", "PFC", "PINELABS", "PIRAMALFIN", "PNB", "PNBHOUSING", "POLICYBZR",
+    "POONAWALLA", "RBLBANK", "RECLTD", "SAMMAANCAP", "SBICARD", "SBILIFE", "SBIN", "SHRIRAMFIN",
+    "STARHEALTH", "SUNDARMFIN", "TATACAP", "TATAINVEST", "UCOBANK", "UNIONBANK", "UTIAMC",
+    "YESBANK",
+  ],
+  "Healthcare": [
+    "ABBOTINDIA", "ACUTAAS", "AJANTPHARM", "ALKEM", "ANTHEM", "APOLLOHOSP", "ASTERDM", "AUROPHARMA",
+    "BIOCON", "CAPLIPOINT", "CIPLA", "COHANCE", "CONCORDBIO", "DIVISLAB", "DRREDDY", "EMCURE",
+    "FORTIS", "GLAND", "GLAXO", "GLENMARK", "GRANULES", "IPCALAB", "KIMS", "LALPATHLAB",
+    "LAURUSLABS", "LUPIN", "MANKIND", "MAXHEALTH", "MEDANTA", "NATCOPHARM", "NEULANDLAB", "NH",
+    "ONESOURCE", "POLYMED", "PPLPHARMA", "RAINBOW", "RUBICON", "SAILIFE", "SUNPHARMA", "SYNGENE",
+    "TORNTPHARM", "VIJAYA", "WOCKPHARMA", "ZYDUSLIFE",
+  ],
+  "Information Technology": [
+    "AFFLE", "BBOX", "BSOFT", "COFORGE", "CYIENT", "FRACTAL", "HCLTECH", "HEXT", "IKS", "INFY",
+    "INTELLECT", "KPITTECH", "LTM", "LTTS", "MPHASIS", "NETWEB", "OFSS", "PERSISTENT", "SAGILITY",
+    "TATAELXSI", "TATATECH", "TCS", "TECHM", "WIPRO", "ZENSARTECH",
+  ],
+  "Media Entertainment & Publication": [
+    "PFOCUS", "PVRINOX", "SUNTV", "ZEEL",
+  ],
+  "Metals & Mining": [
+    "ADANIENT", "GMDCLTD", "GRAVITA", "HINDALCO", "HINDCOPPER", "HINDZINC", "JAINREC", "JINDALSTEL",
+    "JSL", "JSWSTEEL", "LLOYDSME", "NATIONALUM", "NMDC", "NSLNISP", "SAIL", "SARDAEN", "TATASTEEL",
+    "VAML", "VEDL", "VISL",
+  ],
+  "Oil Gas & Consumable Fuels": [
+    "AEGISLOG", "AEGISVOPAK", "ATGL", "BHARATCOAL", "BPCL", "CASTROLIND", "CHENNPETRO", "COALINDIA",
+    "GAIL", "HINDPETRO", "IGL", "IOC", "MGL", "MRPL", "OIL", "ONGC", "PETRONET", "RELIANCE", "VOGL",
+  ],
+  "Power": [
+    "ACMESOLAR", "ADANIENSOL", "ADANIGREEN", "ADANIPOWER", "CESC", "CLEANMAX", "JPPOWER",
+    "JSWENERGY", "NAVA", "NHPC", "NLCINDIA", "NTPC", "NTPCGREEN", "POWERGRID", "RPOWER", "SJVN",
+    "TATAPOWER", "TORNTPOWER", "VEDPOWER",
+  ],
+  "Realty": [
+    "ABREL", "ANANTRAJ", "BAGMANE", "BIRET", "BRIGADE", "DLF", "EMBASSY", "GODREJPROP", "LODHA",
+    "OBEROIRLTY", "PHOENIXLTD", "PRESTIGE", "SIGNATURE", "SOBHA",
+  ],
+  "Services": [
+    "ADANIPORTS", "CMPDI", "CONCOR", "DELHIVERY", "ECLERX", "FSL", "GESHIP", "GMRAIRPORT", "IGIL",
+    "INDIGO", "JSWINFRA", "MMTC", "REDINGTON", "SCI",
+  ],
+  "Telecommunication": [
+    "BHARTIARTL", "BHARTIHEXA", "HFCL", "IDEA", "INDUSTOWER", "ITI", "RAILTEL", "STLTECH",
+    "TATACOMM", "TEJASNET", "TTML",
+  ],
+  "Textiles": [
+    "KPRMILL", "PAGEIND", "TRIDENT", "VTL", "WELSPUNLIV",
+  ],
+};
+
+const SECTOR = new Map<string, string>(
+  Object.entries(BY_INDUSTRY).flatMap(([industry, symbols]) => symbols.map((s) => [s, industry] as const)),
+);
+
+/** NSE industry of a stock, or null when it is not in the Nifty 500 (or is an index). */
+export const sectorOf = (symbol: string): string | null => SECTOR.get(symbol.toUpperCase()) ?? null;

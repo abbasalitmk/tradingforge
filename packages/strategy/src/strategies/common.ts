@@ -74,6 +74,57 @@ export function percentileRank(values: readonly number[], x: number): number {
   return (below / values.length) * 100;
 }
 
+/**
+ * The session before the last bar's, from the same 5-minute series (callers
+ * pass prior days for warmup). Empty when the series starts today.
+ */
+export function priorSession(candles: readonly Candle[], sessionStart: number): readonly Candle[] {
+  if (sessionStart <= 0) return [];
+  const key = istDateKey(new Date(candles[sessionStart - 1]!.ts));
+  let i = sessionStart - 1;
+  while (i > 0 && istDateKey(new Date(candles[i - 1]!.ts)) === key) i--;
+  return candles.slice(i, sessionStart);
+}
+
+/** High, low and close of a session's bars, or null when there are none. */
+export function dayLevels(bars: readonly Candle[]): { high: number; low: number; close: number } | null {
+  if (bars.length === 0) return null;
+  return {
+    high: Math.max(...bars.map((b) => b.high)),
+    low: Math.min(...bars.map((b) => b.low)),
+    close: bars[bars.length - 1]!.close,
+  };
+}
+
+/**
+ * Volume of the first `n` bars of each earlier complete session in the
+ * series — the baseline for a time-of-day RVOL. The opening is always the
+ * busiest stretch of the day, so it is compared only with other openings.
+ */
+export function openingVolumes(candles: readonly Candle[], sessionStart: number, n: number): number[] {
+  const out: number[] = [];
+  let i = 0;
+  while (i < sessionStart) {
+    const key = istDateKey(new Date(candles[i]!.ts));
+    let j = i;
+    while (j < sessionStart && istDateKey(new Date(candles[j]!.ts)) === key) j++;
+    if (j - i >= n && istMinutes(new Date(candles[i]!.ts)) === SESSION.OPEN) {
+      out.push(candles.slice(i, i + n).reduce((a, b) => a + b.volume, 0));
+    }
+    i = j;
+  }
+  return out;
+}
+
+/** Mean volume of the `period` bars before index `end` (exclusive), or null. */
+export function avgVolume(candles: readonly Candle[], end: number, period: number): number | null {
+  const from = Math.max(0, end - period);
+  if (end - from < Math.min(period, 5)) return null;
+  const vols = candles.slice(from, end).map((b) => b.volume);
+  const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
+  return avg > 0 ? avg : null;
+}
+
 export interface IntradayFrame {
   /** Candles visible at evaluation time (prior sessions included). */
   readonly candles: readonly Candle[];

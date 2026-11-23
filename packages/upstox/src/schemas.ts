@@ -97,11 +97,11 @@ export const marginResponse = envelope(z.object({
 /** One leg of a GTT as reported by GET /v3/order/gtt and the portfolio stream. */
 export const gttRule = z.object({
   strategy: z.string(),
-  status: z.string().optional(),
-  message: z.string().optional(),
-  trigger_type: z.string().optional(),
-  trigger_price: z.number().optional(),
-  transaction_type: z.string().optional(),
+  status: z.string().nullable().optional(),
+  message: z.string().nullable().optional(),
+  trigger_type: z.string().nullable().optional(),
+  trigger_price: z.number().nullable().optional(),
+  transaction_type: z.string().nullable().optional(),
   order_id: z.string().nullable().optional(),
   trailing_gap: z.number().nullable().optional(),
 }).passthrough();
@@ -115,6 +115,21 @@ export const gttDetail = z.object({
   rules: z.array(gttRule).default([]),
 }).passthrough();
 export const gttDetailResponse = envelope(z.array(gttDetail));
+
+/** v3 get-funds-and-margin (the v2 shape above is per segment), the fields the engine sizes from. */
+export const fundsV3Response = envelope(z.object({
+  available_to_trade: z.object({
+    total: z.number(),
+    cash_available_to_trade: z.object({
+      cash: z.object({
+        opening_balance: z.number().nullable().optional(),
+        added_today: z.number().nullable().optional(),
+        withdrawn_today: z.number().nullable().optional(),
+      }).passthrough(),
+      margin_used: z.object({ total: z.number() }).passthrough().optional(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough());
 
 export const orderBookEntry = z.object({
   order_id: z.string(),
@@ -148,14 +163,20 @@ export type OrderBookEntry = z.infer<typeof orderBookEntry>;
 export type PositionEntry = z.infer<typeof positionEntry>;
 
 /** GET /v2/market-quote/quotes — one entry per instrument, keyed by "SEGMENT:SYMBOL". */
+// Indices carry no volume (Upstox sends null), and thinly traded or suspended
+// instruments can lack other fields; only the LTP is required.
 export const fullQuote = z.object({
   instrument_token: z.string(),
   symbol: z.string().optional(),
   last_price: z.number(),
-  volume: z.number().optional(),
+  volume: z.number().nullable().optional(),
   average_price: z.number().nullable().optional(),
-  net_change: z.number().optional(),
-  ohlc: z.object({ open: z.number(), high: z.number(), low: z.number(), close: z.number() }).partial().optional(),
+  net_change: z.number().nullable().optional(),
+  ohlc: z.object({
+    open: z.number().nullable(), high: z.number().nullable(), low: z.number().nullable(), close: z.number().nullable(),
+  }).partial().nullable().optional(),
 }).passthrough();
 export const fullQuoteResponse = envelope(z.record(z.string(), fullQuote));
+/** The envelope alone, so each instrument can be validated on its own. */
+export const quoteEnvelope = envelope(z.record(z.string(), z.unknown()));
 export type FullQuote = z.infer<typeof fullQuote>;

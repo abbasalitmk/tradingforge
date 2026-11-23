@@ -78,8 +78,9 @@ describe('MarketService.overview', () => {
     expect(first.ltp).toBe(100);
     expect(first.close).toBe(98);
     expect(first.changePct).toBeCloseTo((2 / 98) * 100);
-    expect(first.bars).toBe(40);
-    expect(client.historicalCandles).not.toHaveBeenCalled();
+    // Today's 40 closed bars plus the forming bar priced at the quote's LTP; prior sessions are fetched as warmup.
+    expect(first.bars).toBe(41);
+    expect(client.historicalCandles).toHaveBeenCalled();
   });
 
   it('serves repeat polls from cache', async () => {
@@ -88,18 +89,28 @@ describe('MarketService.overview', () => {
     await m.overview();
     await m.overview();
     expect(client.quotes).toHaveBeenCalledTimes(1);
-    expect(client.intradayCandles).toHaveBeenCalledTimes(DEFAULT_UNIVERSE.length);
+    // Once each for the 5-minute series and the 1-minute bars behind the forming bar.
+    expect(client.intradayCandles).toHaveBeenCalledTimes(DEFAULT_UNIVERSE.length * 2);
   });
 
-  it('falls back to the last full session when today has too few bars', async () => {
+  it('ranks today from the first bars of the morning, prior sessions as warmup', async () => {
     const yesterdayClose = NOW - 21 * 3_600_000; // 2026-11-18, 15:30 IST
     const earlier = bars(30, yesterdayClose - 86_400_000);
     const client = fakeClient({ intraday: 3, previous: [...earlier, ...bars(50, yesterdayClose)] });
     const o = await service(client).overview();
-    expect(o.session).toEqual({ kind: 'previous', date: '2026-11-18' });
+    // Three closed bars of today are enough: no more ranking on yesterday until ~10:30.
+    expect(o.session).toEqual({ kind: 'today', date: '2026-11-19' });
     expect(o.rankedStocks).toHaveLength(DEFAULT_UNIVERSE.length);
-    // Only the last session's bars, never two days glued together.
-    expect(o.watchlist[0]!.bars).toBe(50);
+    expect(o.watchlist[0]!.bars).toBe(3 + 1);
+  });
+
+  it('labels the last session when the market has not traded today (weekend, holiday, pre-open)', async () => {
+    const saturday = Date.parse('2026-11-21T07:00:00Z');
+    const fridayClose = Date.parse('2026-11-20T10:00:00Z'); // 15:30 IST
+    const client = fakeClient({ intraday: 0, previous: bars(60, fridayClose) });
+    const o = await service(client, { t: saturday }).overview();
+    expect(o.session).toEqual({ kind: 'previous', date: '2026-11-20' });
+    expect(o.rankedStocks).toHaveLength(DEFAULT_UNIVERSE.length);
   });
 
   it('drops a stock whose candles fail instead of failing the page', async () => {

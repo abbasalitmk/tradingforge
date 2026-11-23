@@ -1,9 +1,11 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import ThemeToggle from './components/ThemeToggle';
+import TradingModeToggle from './components/TradingModeToggle';
 
 export const metadata: Metadata = {
-  title: 'TradeForger',
-  description: 'Autonomous trading control plane (equity intraday, swing, F&O)',
+  title: 'TradeForger | Autonomous Trading Control Plane',
+  description: 'AI-driven autonomous trading system for NSE equities and F&O with real-time Upstox execution',
   robots: { index: false, follow: false },
 };
 
@@ -12,46 +14,120 @@ const LIVE = MODE === 'LIVE';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <meta name="color-scheme" content="light dark" />
+        {/* Modern Web Guidance: FOUC Prevention Script */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var stored = localStorage.getItem('tf-theme');
+                  var meta = document.querySelector('meta[name="color-scheme"]');
+                  if (stored === 'dark' || stored === 'light') {
+                    document.documentElement.dataset.theme = stored;
+                    if (meta) meta.content = stored;
+                  } else {
+                    document.documentElement.dataset.theme = 'system';
+                    if (meta) meta.content = 'light dark';
+                  }
+                } catch(e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body>
+        {/* Floating Glassmorphic Top Navigation Header */}
         <header
+          className="tf-header"
           style={{
-            display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px',
-            borderBottom: '1px solid var(--line)', background: 'var(--panel)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 20px',
+            background: 'var(--glass-bg)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            borderBottom: '1px solid var(--line)',
+            boxShadow: 'var(--card-shadow)',
           }}
         >
-          <strong style={{ letterSpacing: '-0.01em' }}>TradeForger</strong>
-          <span
-            className="mono"
-            style={{
-              padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-              background: LIVE ? 'var(--danger)' : 'var(--line)',
-              color: LIVE ? '#fff' : 'var(--muted)',
-            }}
-          >
-            {MODE}
-          </span>
-          <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>
-            read-only market data here · orders only from the engine
-          </span>
+          {/* Brand Identity & Engine Status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 34,
+                height: 34,
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, var(--accent) 0%, #1e40af 100%)',
+                color: '#ffffff',
+                boxShadow: '0 2px 6px rgba(37,99,235,0.3)',
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: '-0.02em', color: 'var(--fg)' }}>
+                  TradeForger
+                </span>
+                <TradingModeToggle compact />
+              </div>
+              <div className="tf-hide-sm" style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
+                <span>Autonomous Trading Desk</span>
+                <span>•</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span
+                    className="pulse-dot"
+                    style={{ background: 'var(--ok)', width: 6, height: 6 }}
+                  />
+                  <span>NSE Live Connect</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Controls, Telemetry & Theme Switcher */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <span
+              style={{
+                fontSize: 11.5,
+                color: 'var(--muted)',
+                display: 'none',
+              }}
+              className="mono"
+            >
+              Read-only web control plane · Orders routed via TradeForger Core
+            </span>
+
+            <div className="tf-hide-sm" style={{ height: 20, width: 1, background: 'var(--line)' }} />
+
+            {/* Theme Toggle (Light / Dark / System) */}
+            <ThemeToggle />
+          </div>
         </header>
 
-        <main style={{ maxWidth: 1320, margin: '0 auto', padding: '24px 20px 64px' }}>
-          {children}
-        </main>
-
-        {/* Non-dismissible, per the plan's §4.8 regulatory posture. */}
-        <footer
+        {/* Main Content Area */}
+        <main
+          className="tf-main"
           style={{
-            position: 'sticky', bottom: 0, padding: '10px 20px',
-            borderTop: '1px solid var(--line)', background: 'var(--panel)',
-            color: 'var(--muted)', fontSize: 11.5,
+            maxWidth: 1440,
+            margin: '0 auto',
+            minHeight: '100vh',
           }}
         >
-          Signals are research support, not investment advice. Backtested results do not predict
-          future performance. You are solely responsible for every order this system places.
-          Verify all account data directly on Upstox.
-        </footer>
+          {children}
+        </main>
       </body>
     </html>
   );

@@ -156,6 +156,7 @@ export class DonchianBreakoutProfile implements StrategyProfile {
       ctx, style: this.style, side, geometry, atr: atrNow, confidence, checks,
       indicators: {
         atr: atrNow,
+        triggerPrice: Number(level.toFixed(2)),
         channelHigh: ch.high,
         channelLow: ch.low,
         exitLevel,

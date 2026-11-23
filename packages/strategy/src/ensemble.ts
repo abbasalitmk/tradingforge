@@ -1,5 +1,6 @@
-import { type Candle, type Clock, type Side, type Signal, paiseToRupees } from '@tradeforger/core';
+import { type Candle, type Clock, type Side, type Signal, paiseToRupees, rupeesToPaise } from '@tradeforger/core';
 import { STRATEGY_CATALOG, type Params, type StrategyDefinition } from './catalog.ts';
+import type { OptionWalls } from './profile.ts';
 
 export interface StrategyVote {
   readonly strategyId: string;
@@ -17,8 +18,10 @@ export interface HybridSetup {
   readonly symbol: string;
   readonly style: 'INTRADAY' | 'SWING';
   readonly side: Side;
-  /** Rupees, from the lead strategy's signal. */
+  /** Current executable entry price (LTP when re-priced to live market). */
   readonly entry: number;
+  /** Original algorithmic signal trigger price from the strategy. */
+  readonly signalEntry?: number;
   readonly stopLoss: number;
   readonly target: number;
   readonly rewardRisk: number;
@@ -30,6 +33,8 @@ export interface HybridSetup {
   readonly votes: StrategyVote[];
   readonly reasons: string[];
   readonly generatedAt: number;
+  /** Set when the live price has already gone through the stop or target: the setup has played out. */
+  readonly invalidReason?: string | null;
 }
 
 export interface HybridInput {
@@ -40,6 +45,14 @@ export interface HybridInput {
   /** Daily bars, oldest first. */
   readonly daily: readonly Candle[];
   readonly clock: Clock;
+  /**
+   * Live price, when known. Setups are re-priced to it (`repriceToMarket`):
+   * daily strategies decide on the last completed close and scanners often
+   * hold only closed 5-minute bars, but an order fills at the live price.
+   */
+  readonly ltp?: number | null;
+  /** Option-chain walls, for an F&O underlying with a loaded chain. */
+  readonly options?: OptionWalls | null;
 }
 
 export interface HybridOptions {
@@ -47,6 +60,13 @@ export interface HybridOptions {
   readonly strategies?: readonly string[];
   /** Per-strategy params (e.g. the registry's approved versions). Default: each definition's defaults. */
   readonly params?: Readonly<Record<string, Params>>;
+  /**
+   * Which firing votes may LEAD a setup — e.g. only approved strategies in
+   * LIVE, only BUY signals when shorting is off. Votes that may not lead still
+   * count as agreement or conflict. When no firing vote qualifies, the
+   * strongest leads anyway so the setup (and why it is blocked) stays visible.
+   */
+  readonly canLead?: (vote: StrategyVote) => boolean;
 }
 
 /** Each additional strategy on the same side adds this, up to AGREE_CAP. */
@@ -124,6 +144,7 @@ export function analyzeHybrid(
         candles,
         higherTf: def.timeframe === '5m' ? input.daily : [],
         clock: input.clock,
+        ...(def.timeframe === '5m' && input.options ? { options: input.options } : {}),
       });
     }
     return {
@@ -140,7 +161,10 @@ export function analyzeHybrid(
   const bestFor = (style: 'INTRADAY' | 'SWING'): HybridSetup | null => {
     const firing = votes.filter((v) => v.style === style && v.signal !== null);
     if (firing.length === 0) return null;
-    const lead = firing.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+    // Otherwise a stronger vote that could never be traded (an unapproved
+    // strategy in LIVE, a short when shorting is off) hides one that could.
+    const leaders = opts.canLead ? firing.filter(opts.canLead) : firing;
+    const lead = (leaders.length > 0 ? leaders : firing).reduce((a, b) => (b.confidence > a.confidence ? b : a));
     const ls = lead.signal!;
     const agreeing = firing.filter((v) => v !== lead && v.side === lead.side);
     const opposing = firing.filter((v) => v.side !== lead.side);
@@ -148,12 +172,18 @@ export function analyzeHybrid(
     const tooTight = riskPct < MIN_RISK_PCT[style];
     let quality = setupQuality(ls, agreeing.map((v) => v.signal!), opposing.map((v) => v.signal!));
     if (tooTight) quality = Math.min(quality, UNTRADEABLE_CAP);
+    const origEntry = paiseToRupees(ls.entry);
+    const triggerPrice = ls.indicators?.['triggerPrice']
+      ?? (ls.side === 'BUY' ? ls.indicators?.['channelHigh'] : ls.indicators?.['channelLow'])
+      ?? (ls.side === 'BUY' ? ls.indicators?.['orbHigh'] : ls.indicators?.['orbLow'])
+      ?? origEntry;
     return {
       instrumentKey: input.instrumentKey,
       symbol: input.symbol,
       style,
       side: ls.side,
-      entry: paiseToRupees(ls.entry),
+      entry: origEntry,
+      signalEntry: triggerPrice,
       stopLoss: paiseToRupees(ls.stopLoss),
       target: paiseToRupees(ls.target),
       rewardRisk: Math.round(rr(ls) * 100) / 100,
@@ -172,5 +202,50 @@ export function analyzeHybrid(
     };
   };
 
-  return { votes, best: { INTRADAY: bestFor('INTRADAY'), SWING: bestFor('SWING') } };
+  const live = (s: HybridSetup | null): HybridSetup | null => {
+    if (!s || input.ltp === undefined || input.ltp === null) return s;
+    const { setup, invalid } = repriceToMarket(s, input.ltp);
+    return { ...setup, invalidReason: invalid };
+  };
+  return { votes, best: { INTRADAY: live(bestFor('INTRADAY')), SWING: live(bestFor('SWING')) } };
+}
+
+/**
+ * Re-price a setup to the live market.
+ *
+ * Entry moves to the LTP; the stop and target stay where the strategy put them
+ * (they are structural levels), so R:R shows what would actually be traded — a
+ * move toward the target shrinks it, and an R:R floor does the rest. A price
+ * already through either level means the setup has played out and must not be
+ * entered at all.
+ */
+export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
+  const signalEntry = s.signalEntry ?? s.entry;
+  if (!(ltp > 0) || ltp === s.entry) return { setup: { ...s, signalEntry }, invalid: null };
+  const long = s.side === 'BUY';
+  const fmt = (n: number) => `₹${n.toFixed(2)}`;
+  if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
+    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
+  }
+  if (long ? ltp >= s.target : ltp <= s.target) {
+    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
+  }
+  const rewardRisk = Math.round((Math.abs(s.target - ltp) / Math.abs(ltp - s.stopLoss)) * 100) / 100;
+  const entryPaise = rupeesToPaise(ltp);
+  const votes = s.votes.map((v) => (v.strategyId === s.primaryStrategyId && v.signal
+    ? { ...v, signal: { ...v.signal, entry: entryPaise } }
+    : v));
+  // Material moves only: a few paise of drift on a forming bar is not news.
+  const moved = Math.abs(ltp - signalEntry) / signalEntry >= 0.001;
+  return {
+    setup: {
+      ...s,
+      entry: ltp,
+      signalEntry,
+      rewardRisk,
+      votes,
+      reasons: moved ? [...s.reasons, `entry re-priced from trigger ${fmt(signalEntry)} (signal close) to live market ${fmt(ltp)}`] : s.reasons,
+    },
+    invalid: null,
+  };
 }

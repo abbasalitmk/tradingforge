@@ -53,6 +53,18 @@ interface PaperBracket {
   /** Live stop level — moves only in the favourable direction when trailing. */
   stop: Paise;
   fillPrice: Paise | null;
+  /** Restored with an exit already in flight: close at the next tick. */
+  exitOnNextTick?: boolean;
+}
+
+/** An open paper position re-attached after an engine restart. */
+export interface AdoptedBracket {
+  readonly gttOrderId: string;
+  readonly order: BracketOrder;
+  /** The entry already filled at this price. */
+  readonly fillPrice: Paise;
+  /** Finish an exit that was in flight when the process died. */
+  readonly exitPending: boolean;
 }
 
 /**
@@ -79,11 +91,25 @@ export class PaperBroker implements BrokerPort {
   private readonly rand: () => number;
   private readonly listeners: BrokerListener[] = [];
   private seq = 0;
+  /** Ids outlive the process (positions are journaled), so a restart must not reissue them. */
+  private readonly runId: string;
 
   constructor(clock: Clock, cfg: PaperConfig = DEFAULT_PAPER_CONFIG) {
     this.clock = clock;
     this.cfg = cfg;
     this.rand = rng(cfg.seed);
+    this.runId = clock.ms().toString(36);
+  }
+
+  /**
+   * Re-attach a journaled open position after a restart. Its bracket resumes
+   * from the next tick; a pending exit completes at that tick's price.
+   */
+  adopt(a: AdoptedBracket): void {
+    this.brackets.set(a.gttOrderId, {
+      id: a.gttOrderId, order: a.order, status: 'OPEN', stop: a.order.stopLossPrice,
+      fillPrice: a.fillPrice, exitOnNextTick: a.exitPending,
+    });
   }
 
   /** Feed the simulator prices. Without a tick it refuses to fill — the
@@ -95,7 +121,7 @@ export class PaperBroker implements BrokerPort {
 
   private nextId(prefix: string): string {
     this.seq += 1;
-    return `${prefix}-${String(this.seq).padStart(6, '0')}`;
+    return `${prefix}-${this.runId}-${String(this.seq).padStart(6, '0')}`;
   }
 
   /** Slippage always moves against the trader. */
@@ -301,6 +327,11 @@ export class PaperBroker implements BrokerPort {
         continue;
       }
       if (b.status !== 'OPEN') continue;
+
+      if (b.exitOnNextTick) {
+        this.closeBracket(b, 'MANUAL', this.applySlippage(ltp, long ? 'SELL' : 'BUY'));
+        continue;
+      }
 
       if (o.trailingGap !== undefined && o.trailingGap > 0) {
         const trailed = (long ? ltp - o.trailingGap : ltp + o.trailingGap) as Paise;

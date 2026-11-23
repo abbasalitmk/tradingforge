@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  newSignalId, rupeesToPaise, istMinutes, type Candle, type Signal,
+  newSignalId, rupeesToPaise, istMinutes, SESSION, type Candle, type Signal,
 } from '@tradeforger/core';
 import {
   clampParams, getStrategy, type StrategyDefinition, type StrategyContext,
@@ -138,13 +138,13 @@ describe('backtest engine', () => {
       .toEqual(done(runBacktest(BREAKOUT, undefined, data(all))));
   });
 
-  it('flattens intraday positions at the 15:10 square-off', () => {
+  it('flattens intraday positions at the 15:05 square-off', () => {
     const bars = intradaySeries('2026-01-05', 2, { seed: 3, startPrice: 500, drift: 0, vol: 0.001 });
     const t = runBacktest(LATE_BUY, undefined, data(bars), noFriction);
     expect(t.length).toBeGreaterThan(0);
     for (const tr of t) {
       expect(tr.exitReason).toBe('EOD');
-      expect(istMinutes(new Date(tr.exitTs))).toBe(15 * 60 + 10);
+      expect(istMinutes(new Date(tr.exitTs))).toBe(SESSION.SQUARE_OFF);
     }
   });
 

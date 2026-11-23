@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { FixedClock, newSignalId, rupeesToPaise, type Candle, type Signal } from '@tradeforger/core';
 import { analyzeHybrid, setupQuality, COIN_FLIP_CAP } from './ensemble.ts';
-import { prefilter, screen, type QuoteLite, type ScanCandidate } from './screener.ts';
+import { prefilter, pickUniverse, screen, type QuoteLite, type ScanCandidate } from './screener.ts';
 import { STRATEGY_CATALOG, getStrategy } from './catalog.ts';
 import { intraday, daily, closeOf } from './fixtures.ts';
 
@@ -63,6 +63,26 @@ describe('hybrid analysis', () => {
     expect(setup.conflicting.every((id) => firing.find((v) => v.strategyId === id)?.side !== setup.side)).toBe(true);
   });
 
+  it('leads with the strongest vote allowed to trade, and falls back to the strongest when none is', () => {
+    const firingAt = (i: number) => {
+      const input = { instrumentKey: 'K', symbol: 'S', intraday: series.slice(0, i + 1), daily: dailies, clock: new FixedClock(new Date(closeOf(series[i]!, '5m'))) };
+      return { input, r: analyzeHybrid(input) };
+    };
+    const busy = [...series.keys()].slice(100).map(firingAt)
+      .find(({ r: x }) => x.votes.filter((v) => v.style === 'INTRADAY' && v.signal).length >= 2);
+    expect(busy).toBeDefined();
+    const { input, r: base } = busy!;
+    const top = base.best.INTRADAY!.primaryStrategyId;
+    expect(analyzeHybrid(input, { canLead: () => false }).best.INTRADAY!.primaryStrategyId).toBe(top);
+
+    const others = base.votes.filter((v) => v.style === 'INTRADAY' && v.signal && v.strategyId !== top);
+    const next = others.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+    const setup = analyzeHybrid(input, { canLead: (v) => v.strategyId !== top }).best.INTRADAY!;
+    expect(setup.primaryStrategyId).toBe(next.strategyId);
+    // The stronger vote still counts, as agreement or as conflict.
+    expect([...setup.agreeing, ...setup.conflicting]).toContain(top);
+  });
+
   it('reports levels in rupees with a consistent reward:risk', () => {
     const x = r.best.INTRADAY!;
     expect(x.rewardRisk).toBeCloseTo(Math.abs(x.target - x.entry) / Math.abs(x.entry - x.stopLoss), 1);
@@ -102,9 +122,42 @@ describe('screener', () => {
     expect(out.map((x) => x.symbol)).toEqual(['B', 'C']);
   });
 
-  const trending: ScanCandidate = { ...q('TREND', 1050, 1000, 1e6), intraday: at.candles, daily: dailies };
+  describe('autonomous universe pick', () => {
+    const day = (symbol: string, ltp: number, open: number, high: number, low: number, volume = 1e6): QuoteLite =>
+      ({ ...q(symbol, ltp, 490, volume), open, high, low });
+    const quotes = [
+      day('LEADER', 510, 495, 512, 494),   // +4%, above the open, near the high
+      day('FADING', 500, 505, 515, 495),   // up on the day but below its open
+      day('DOWN', 480, 490, 491, 478),     // falling
+      day('QUIET', 490.5, 490, 491, 489),  // +0.1%: not moving
+      day('BAND', 540, 495, 540, 494),     // +10%: at an exchange price band
+      day('THIN', 510, 495, 512, 494, 100),
+    ];
+
+    it('buy only keeps liquid stocks that are up and holding their gains', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY' }).map((x) => x.symbol)).toEqual(['LEADER']);
+    });
+
+    it('short only keeps stocks that are down and holding their losses', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'SELL' }).map((x) => x.symbol)).toEqual(['DOWN']);
+    });
+
+    it('both takes either kind of mover, never a fading or quiet one', () => {
+      const both = pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BOTH' }).map((x) => x.symbol);
+      expect(both).toEqual(['LEADER', 'DOWN']);
+    });
+
+    it('respects the price band and the size', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY', maxPrice: 505 })).toEqual([]);
+      expect(pickUniverse(quotes, { size: 1, minTurnoverCr: 1, side: 'BOTH' })).toHaveLength(1);
+    });
+  });
+
+  // A real quote's LTP is the last traded price — the candles' last close here.
+  const trending: ScanCandidate = { ...q('TREND', at.candles.at(-1)!.close, 1000, 1e6), intraday: at.candles, daily: dailies };
   const flatSeries = intraday('2026-01-05', 6, { seed: 9, start: 1000, drift: 0, vol: 0.0002, volume: 20_000 });
-  const flat: ScanCandidate = { ...q('FLAT', 1000, 1000, 1e6), intraday: flatSeries.filter((c) => c.ts <= at.candles.at(-1)!.ts), daily: [] };
+  const flatBars = flatSeries.filter((c) => c.ts <= at.candles.at(-1)!.ts);
+  const flat: ScanCandidate = { ...q('FLAT', flatBars.at(-1)!.close, 1000, 1e6), intraday: flatBars, daily: [] };
 
   it('caps a setup whose stop is inside costs and noise, however many strategies agree', () => {
     const r = screen([flat], {}, at.clock);
@@ -122,6 +175,15 @@ describe('screener', () => {
     expect(screen([flat, trending], { limit: 1 }, at.clock)).toHaveLength(1);
   });
 
+  it('drops a setup the live price has already played out', () => {
+    const [top] = screen([trending], {}, at.clock);
+    expect(top).toBeDefined();
+    const s = top!.setup;
+    const through = s.side === 'BUY' ? s.stopLoss * 0.99 : s.stopLoss * 1.01;
+    const played = screen([{ ...trending, ltp: through }], { style: s.style }, at.clock);
+    expect(played.find((r) => r.setup.style === s.style && r.setup.primaryStrategyId === s.primaryStrategyId)).toBeUndefined();
+  });
+
   it('applies style, side, quality and reward:risk filters', () => {
     expect(screen([trending], { style: 'INTRADAY' }, at.clock).every((r) => r.setup.style === 'INTRADAY')).toBe(true);
     expect(screen([trending], { style: 'SWING' }, at.clock).every((r) => r.setup.style === 'SWING')).toBe(true);
@@ -134,7 +196,7 @@ describe('screener', () => {
   it('reports ATR%, RVOL, change and turnover for each result', () => {
     const r = screen([trending], {}, at.clock)[0]!;
     expect(r.atrPct).toBeGreaterThan(0);
-    expect(r.changePct).toBe(5);
-    expect(r.turnoverCr).toBeCloseTo((1050 * 1e6) / 1e7, 2);
+    expect(r.changePct).toBeCloseTo(((trending.ltp - 1000) / 1000) * 100, 2);
+    expect(r.turnoverCr).toBeCloseTo((trending.ltp * 1e6) / 1e7, 2);
   });
 });

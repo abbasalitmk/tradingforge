@@ -15,10 +15,21 @@ export const runtime = 'nodejs';
  *   - Only whitelisted subpaths are forwarded; everything else is 404.
  */
 
-const GET_PATHS = new Set(['/state', '/health', '/auth/status', '/fno/chain']);
+const GET_PATHS = new Set(['/state', '/health', '/auth/status', '/fno/chain', '/analysis/live', '/auto/config', '/watchlist', '/memory/trades', '/research/strategies']);
 
 const POST_PATHS = new Set([
+  '/auto/fno',
+  '/research/validate',
+  '/research/approve',
+  '/research/propose',
+  '/research/retire',
+  '/auto/config',
+  '/watchlist/add',
+  '/watchlist/remove',
+  '/positions/resolve',
   '/strategy/autotrade',
+  '/strategy/target',
+  '/strategy/filters',
   '/strategy/mode',
   '/sizing',
   '/scanner/analyze',
@@ -28,6 +39,8 @@ const POST_PATHS = new Set([
   '/fno/analyze',
   '/mode/arm',
   '/mode/disarm',
+  '/mode/switch',
+  '/mode/set',
   '/halt/reset',
 ]);
 

@@ -44,6 +44,9 @@ export interface ExitRequest {
 
 export type ExitLeg = 'TARGET' | 'STOPLOSS' | 'MANUAL';
 
+/** Which order path a position lives on. A position's exits always go back to it. */
+export type BrokerId = 'PAPER' | 'UPSTOX';
+
 /**
  * What the broker tells the engine happened. The engine's position state is
  * driven ONLY by these — never by the optimistic assumption that an

@@ -8,6 +8,25 @@ export interface StrategyContext {
   /** Higher-timeframe candles for trend confirmation. */
   readonly higherTf: readonly Candle[];
   readonly clock: Clock;
+  /** Option-chain positioning, for an F&O underlying whose chain is loaded. */
+  readonly options?: OptionWalls | null;
+}
+
+/**
+ * Where option writers are positioned, from the underlying's chain. Strikes
+ * are in spot terms; a strategy reading futures bars adds the basis.
+ */
+export interface OptionWalls {
+  readonly spot: number;
+  /** Strike at/above ATM with the most call OI — resistance. */
+  readonly callWall: number;
+  /** Strike at/below ATM with the most put OI — support. */
+  readonly putWall: number;
+  /** OI at the wall strike versus the previous session: positive = writers adding. */
+  readonly callWallOiChange: number;
+  readonly putWallOiChange: number;
+  /** When the chain was fetched, epoch ms. */
+  readonly at: number;
 }
 
 /**

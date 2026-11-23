@@ -1,11 +1,9 @@
 import type { NextConfig } from 'next';
 
 const config: NextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
   poweredByHeader: false,
-  // Disable immutable static assets so Vercel can deploy preview outputs without
-  // failing on preview comments toolbar patching.
-  supportsImmutableAssets: false,
   // Workspace packages ship TypeScript source; the market routes import them.
   transpilePackages: [
     '@tradeforger/core',

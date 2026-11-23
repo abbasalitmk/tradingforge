@@ -30,8 +30,8 @@ broker driven by the live feed, and the sandbox is demoted to payload conformanc
 **Account APIs require a static IP.** Verified: funds, positions, orders and kill
 switch return `401 UDAPI1221` from an unlisted address, while market data works from
 anywhere. That splits the system into a data plane (analytics token, valid to
-2027-09-14) and a trading plane (daily token, IP-locked) — and it means the engine
-cannot run on Vercel.
+2027-09-14) and a trading plane (daily token, IP-locked) — hosted on Hostinger VPS
+with a fixed public IP.
 
 **Order fills stream over an authenticated WebSocket.** Upstox webhooks carry no
 signature of any kind, so webhook payloads are treated as hints that trigger an
@@ -43,7 +43,7 @@ authenticated re-poll, never as facts.
 
 ```
 apps/web/           Next.js control plane — UI, OAuth callback, webhook receivers.
-                    Stateless. Holds no Upstox credentials. Safe on Vercel.
+                    Stateless. Holds no Upstox credentials. Runs with Docker on Hostinger.
 packages/core/      Domain types, Result, injectable clock, integer-paise money,
                     ULIDs, execution state machine.
 packages/db/        Postgres schema, SQL migrations, hash-chained audit log.
@@ -75,11 +75,10 @@ Live read-only smoke test of the data plane:
 UPSTOX_ANALYTICS_TOKEN=… npm run probe
 ```
 
-## Deploying the control plane
+## Deploying to Hostinger
 
 ```bash
-vercel login
-./scripts/deploy-web.sh            # deploys, prints the webhook URLs
+./scripts/deploy-hostinger.sh            # verifies, builds and deploys to Hostinger
 ```
 
 Paste the printed URLs into <https://account.upstox.com/developer/apps> and enable
@@ -149,4 +148,3 @@ expectancy after costs**, not win rate.
 - `npm install` needs `--legacy-peer-deps`. npm 10.9.0 has an arborist bug
   (`Cannot read properties of null (reading 'edgesOut')`) resolving vitest 5's peer
   set. Upgrading npm should remove the need.
-- The Vercel CLI on this machine is v50 against a current v59, and is not logged in.

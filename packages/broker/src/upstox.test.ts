@@ -130,6 +130,25 @@ describe('fills come from broker state, not from acknowledgements', () => {
     expect(events[1]).toMatchObject({ leg: 'STOPLOSS', avgPrice: P(79.5) });
   });
 
+  it('calls a stop-out a stop-out when Upstox fills it through the TARGET leg', async () => {
+    // Seen live on PNB: STOPLOSS leg CANCELLED with no order, TARGET leg's order
+    // repriced to a protected limit and filled at the stop trigger.
+    const { client, state } = fakeClient();
+    const { b, events } = liveBroker('LIVE', client);
+    await b.placeBracketOrder(bracket);
+    state.rules = [
+      { strategy: 'ENTRY', status: 'COMPLETED', order_id: 'E1', trigger_price: 100 },
+      { strategy: 'STOPLOSS', status: 'CANCELLED', order_id: null, trigger_price: 80 },
+      { strategy: 'TARGET', status: 'COMPLETED', order_id: 'T1', trigger_price: 130 },
+    ];
+    state.book = [
+      { order_id: 'E1', status: 'complete', filled_quantity: 65, average_price: 100 },
+      { order_id: 'T1', status: 'complete', filled_quantity: 65, average_price: 80.05 },
+    ];
+    await b.sync();
+    expect(events[1]).toMatchObject({ kind: 'EXIT_FILLED', leg: 'STOPLOSS', avgPrice: P(80.05) });
+  });
+
   it('reports a rejected entry so the engine does not wait on it forever', async () => {
     const { client, state } = fakeClient();
     const { b, events } = liveBroker('LIVE', client);

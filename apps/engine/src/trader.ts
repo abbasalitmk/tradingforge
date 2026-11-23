@@ -2,7 +2,7 @@ import {
   type Clock, type Paise, type Product, type Side, type PositionId, type TradingStyle,
   newPositionId, istDateKey, istMinutes, SESSION, rupeesToPaise, isTerminal,
 } from '@tradeforger/core';
-import type { BrokerPort, BrokerEvent, ExitLeg } from '@tradeforger/broker';
+import type { BrokerPort, BrokerEvent, BrokerId, ExitLeg } from '@tradeforger/broker';
 import { PositionMachine, type PositionRecord } from '@tradeforger/execution';
 
 export type Segment = 'EQ' | 'FO';
@@ -48,6 +48,8 @@ export interface ManagedPosition extends PositionRecord {
   readonly style: TradingStyle;
   readonly signalId: string;
   readonly product: Product;
+  /** The order path that opened it; every later order for it goes back there. */
+  readonly broker: BrokerId;
   readonly costPaise: Paise;
   readonly timeStopMin: number | null;
   readonly trailingGap: Paise | null;
@@ -66,14 +68,29 @@ export interface ManagedPosition extends PositionRecord {
   closedAt: number | null;
 }
 
+/** How a human settled an ORPHANED position after checking the broker. */
+export type OrphanResolution =
+  | { readonly kind: 'CLOSED'; readonly exitPrice: Paise | null; readonly note: string }
+  | { readonly kind: 'MANAGING'; readonly note: string };
+
 export interface TraderDeps {
   readonly clock: Clock;
+  /** The broker new entries go to until `setBroker` says otherwise. */
   readonly broker: BrokerPort;
+  readonly brokerId?: BrokerId;
   readonly machine: PositionMachine;
   readonly perTradeLossPaise: () => Paise;
   readonly log?: (msg: string) => void;
   readonly onClosed?: (p: ManagedPosition) => void;
 }
+
+/**
+ * Exits a person chose — not the strategy's stop, target, time stop or the
+ * session's square-off. They are real P&L, but they say nothing about whether
+ * the strategy is failing, so they neither extend nor reset the loss streak.
+ */
+export const isOperatorExit = (reason: string | null | undefined): boolean =>
+  !!reason && (reason === 'MANUAL' || reason === 'KILL_SWITCH' || reason.startsWith('RESOLVED'));
 
 const LIVE_STATES = new Set(['ENTRY_SENT', 'ENTRY_ACKED', 'ENTRY_FILLED', 'BRACKET_ARMED', 'MANAGING', 'EXIT_TRIGGERED', 'ORPHANED']);
 const REJECT_WINDOW_MS = 5 * 60_000;
@@ -88,11 +105,17 @@ const REJECT_WINDOW_MS = 5 * 60_000;
  * Positions change state ONLY on broker events. An acknowledged order is not a
  * filled one, and the previous engine's habit of assuming otherwise left live
  * positions without stops.
+ *
+ * Entries go to the active broker; everything after that goes to the broker
+ * recorded on the position. Switching PAPER ↔ LIVE therefore never strands a
+ * position on an order path that cannot see its fills or cancel its bracket.
  */
 export class Trader {
   readonly positions = new Map<string, ManagedPosition>();
   private readonly d: TraderDeps;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly brokers = new Map<BrokerId, BrokerPort>();
+  private active: BrokerId;
 
   private day = '';
   realisedPnl = 0 as Paise;
@@ -102,8 +125,28 @@ export class Trader {
 
   constructor(deps: TraderDeps) {
     this.d = deps;
-    deps.broker.onEvent((e) => { void this.serial(() => this.apply(e)); });
+    this.active = deps.brokerId ?? 'PAPER';
+    this.register(this.active, deps.broker);
     this.rollDay();
+  }
+
+  /** Make a broker reachable for the positions recorded against it, without routing entries to it. */
+  register(id: BrokerId, b: BrokerPort): void {
+    if (this.brokers.get(id) === b) return;
+    this.brokers.set(id, b);
+    b.onEvent((e) => { void this.serial(() => this.apply(e)); });
+  }
+
+  /** Route new entries to this broker. Open positions keep their own. */
+  setBroker(id: BrokerId, b: BrokerPort): void {
+    this.register(id, b);
+    this.active = id;
+  }
+
+  get activeBroker(): BrokerId { return this.active; }
+
+  private brokerOf(p: ManagedPosition): BrokerPort | null {
+    return this.brokers.get(p.broker) ?? null;
   }
 
   private log(msg: string): void {
@@ -125,6 +168,32 @@ export class Trader {
     this.consecutiveLosses = 0;
     this.orderTimes = [];
     this.rejectTimes = [];
+  }
+
+  /**
+   * Re-seed today's counters from the journal after a restart. Without this a
+   * crash mid-session would hand the daily-loss and consecutive-loss breakers
+   * a clean slate.
+   */
+  restoreDay(today: readonly ManagedPosition[]): void {
+    this.rollDay();
+    const closed = today
+      .filter((p) => p.closedAt !== null && p.realisedPnl !== null && istDateKey(new Date(p.closedAt)) === this.day)
+      .sort((a, b) => a.closedAt! - b.closedAt!);
+    this.realisedPnl = closed.reduce((s, p) => s + p.realisedPnl!, 0) as Paise;
+    this.consecutiveLosses = 0;
+    for (const p of closed) {
+      if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = p.realisedPnl! < 0 ? this.consecutiveLosses + 1 : 0;
+    }
+    this.orderTimes = [
+      ...today.filter((p) => p.state !== 'REJECTED' && istDateKey(new Date(p.openedAt)) === this.day).map((p) => p.openedAt),
+      ...closed.map((p) => p.closedAt!),
+    ].sort((a, b) => a - b);
+  }
+
+  /** Put a journaled position back under management. Its broker must already be registered. */
+  restore(p: ManagedPosition): void {
+    this.positions.set(p.id, p);
   }
 
   get ordersToday(): number { return this.orderTimes.length; }
@@ -162,6 +231,7 @@ export class Trader {
       this.rollDay();
       if (this.holds(intent.instrumentKey)) return { ok: false, reason: `already in ${intent.symbol}` };
       if (intent.quantity < 1) return { ok: false, reason: 'quantity below 1' };
+      const broker = this.brokers.get(this.active)!;
 
       const p: ManagedPosition = {
         id: newPositionId(),
@@ -182,6 +252,7 @@ export class Trader {
         style: intent.style,
         signalId: intent.signalId,
         product: intent.product,
+        broker: this.active,
         costPaise: intent.costPaise,
         timeStopMin: intent.timeStopMin,
         trailingGap: intent.trailingGap,
@@ -201,12 +272,19 @@ export class Trader {
       this.positions.set(p.id, p);
 
       const m = this.d.machine;
-      await m.transition(p, 'AI_REVIEWED');
-      await m.transition(p, 'RISK_APPROVED');
-      await m.transition(p, 'ENTRY_SENT');
+      // Nothing has reached a broker yet: if the journal refuses any of these
+      // steps, drop the intent rather than place an order we could not recover.
+      try {
+        await m.transition(p, 'AI_REVIEWED');
+        await m.transition(p, 'RISK_APPROVED');
+        await m.transition(p, 'ENTRY_SENT');
+      } catch (e) {
+        this.positions.delete(p.id);
+        return { ok: false, reason: `journal write failed, order not sent: ${e instanceof Error ? e.message : e}` };
+      }
       this.orderTimes.push(this.d.clock.ms());
 
-      const r = await this.d.broker.placeBracketOrder({
+      const r = await broker.placeBracketOrder({
         positionId: p.id,
         instrumentKey: p.instrumentKey,
         side: p.side,
@@ -260,7 +338,7 @@ export class Trader {
         if (e.quantity !== p.quantity) {
           this.log(`[partial] ${p.symbol} filled ${e.quantity}/${p.quantity}`);
         }
-        this.log(`[TRADE OPEN] ${p.contract?.tradingSymbol ?? p.symbol} ${p.side} x${e.quantity} @ ₹${(e.avgPrice / 100).toFixed(2)}`);
+        this.log(`[TRADE OPEN] ${p.contract?.tradingSymbol ?? p.symbol} ${p.side} x${e.quantity} @ ₹${(e.avgPrice / 100).toFixed(2)} (${p.broker})`);
         return;
       }
       case 'ENTRY_FAILED': {
@@ -291,7 +369,7 @@ export class Trader {
     p.closedAt = at;
     this.orderTimes.push(at);
     this.realisedPnl = (this.realisedPnl + pnl) as Paise;
-    this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
+    if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
     await m.transition(p, 'CLOSED');
     this.log(`[TRADE CLOSED] ${p.contract?.tradingSymbol ?? p.symbol} ${p.exitReason} @ ₹${(price / 100).toFixed(2)} P&L ₹${(pnl / 100).toFixed(2)}`);
     this.d.onClosed?.(p);
@@ -308,11 +386,13 @@ export class Trader {
     return this.serial(async () => {
       const p = this.positions.get(positionId);
       if (!p) return { ok: false, detail: 'position not found' };
+      const broker = this.brokerOf(p);
+      if (!broker) return { ok: false, detail: `${p.broker} broker unavailable — exit ${p.symbol} at the broker directly` };
       const m = this.d.machine;
 
       if (p.state === 'ENTRY_ACKED' && p.gttOrderId) {
-        const c = await this.d.broker.cancelBracket(p.gttOrderId);
-        await this.d.broker.sync();
+        const c = await broker.cancelBracket(p.gttOrderId);
+        await broker.sync();
         return c.ok ? { ok: true, detail: 'pending entry cancelled' } : { ok: false, detail: c.error.message };
       }
       if (p.state !== 'MANAGING') return { ok: false, detail: `cannot exit from ${p.state}` };
@@ -320,13 +400,13 @@ export class Trader {
       p.exitReason = reason;
       await m.transition(p, 'EXIT_TRIGGERED');
       if (p.gttOrderId) {
-        const c = await this.d.broker.cancelBracket(p.gttOrderId);
+        const c = await broker.cancelBracket(p.gttOrderId);
         if (!c.ok) {
-          await this.d.broker.sync();
+          await broker.sync();
           return { ok: true, detail: `bracket not cancellable (${c.error.message}); awaiting its fill` };
         }
       }
-      const r = await this.d.broker.exitPosition({
+      const r = await broker.exitPosition({
         positionId: p.id,
         instrumentKey: p.instrumentKey,
         side: p.side === 'BUY' ? 'SELL' : 'BUY',
@@ -342,6 +422,46 @@ export class Trader {
     });
   }
 
+  /**
+   * Settle an ORPHANED position after a human checked the broker: either it is
+   * gone (CLOSED, at the price they saw, if known) or it is held with a live
+   * bracket (back to MANAGING). The engine never decides this on its own.
+   */
+  resolveOrphan(positionId: string, r: OrphanResolution): Promise<{ ok: boolean; detail: string }> {
+    return this.serial(async () => {
+      const p = this.positions.get(positionId);
+      if (!p) return { ok: false, detail: 'position not found' };
+      if (p.state !== 'ORPHANED') return { ok: false, detail: `position is ${p.state}, not ORPHANED` };
+      const m = this.d.machine;
+
+      if (r.kind === 'MANAGING') {
+        if (p.filledQuantity <= 0 || p.avgEntry === null) return { ok: false, detail: 'no recorded fill — it can only be resolved as CLOSED' };
+        p.exitReason = null;
+        await m.transition(p, 'MANAGING');
+        this.log(`[RESOLVED] ${p.symbol} back to MANAGING — ${r.note}`);
+        return { ok: true, detail: 'position re-adopted' };
+      }
+
+      const now = this.d.clock.ms();
+      const entry = p.avgEntry ?? p.entry;
+      const pnl = r.exitPrice !== null && p.filledQuantity > 0
+        ? ((p.side === 'BUY' ? r.exitPrice - entry : entry - r.exitPrice) * p.filledQuantity) as Paise
+        : null;
+      p.exitPrice = r.exitPrice;
+      p.exitReason = `RESOLVED: ${r.note}`;
+      p.realisedPnl = pnl;
+      p.closedAt = now;
+      if (pnl !== null) {
+        this.rollDay();
+        this.realisedPnl = (this.realisedPnl + pnl) as Paise;
+      }
+      await m.transition(p, 'CLOSED');
+      this.log(`[RESOLVED] ${p.symbol} closed by operator — ${r.note}`);
+      if (pnl !== null) this.d.onClosed?.(p);
+      return { ok: true, detail: 'position closed' };
+    });
+  }
+
   /** Track how far a position went for and against us — the MAE/MFE of the trade log. */
   private excursion(p: ManagedPosition, price: number): void {
     if (p.avgEntry === null) return;
@@ -350,7 +470,11 @@ export class Trader {
     p.maePaise = Math.min(p.maePaise, move);
   }
 
-  /** Kill switch: mark everything exiting, then let the broker flatten. */
+  /**
+   * Kill switch: mark everything exiting, then let each broker flatten. The
+   * active broker always runs its flatten — for Upstox that also catches
+   * positions opened outside the engine.
+   */
   flattenAll(): Promise<number> {
     return this.serial(async () => {
       for (const p of this.live()) {
@@ -359,32 +483,48 @@ export class Trader {
           await this.d.machine.transition(p, 'EXIT_TRIGGERED');
         }
       }
-      const r = await this.d.broker.exitAllPositions();
-      await this.d.broker.sync();
-      return r.ok ? r.value : 0;
+      const ids = new Set<BrokerId>([this.active, ...this.live().map((p) => p.broker)]);
+      let n = 0;
+      for (const id of ids) {
+        const b = this.brokers.get(id);
+        if (!b) continue;
+        const r = await b.exitAllPositions();
+        await b.sync();
+        if (r.ok) n += r.value;
+      }
+      return n;
     });
   }
 
   /**
-   * Time-driven exits, run every second. Exits are risk-REDUCING, so they run
-   * even when entry breakers are tripped.
+   * Time-driven exits, run every second off a timer — not the tick stream, so a
+   * dead feed cannot hold them up. Exits are risk-REDUCING, so they run even
+   * when entry breakers are tripped. `eodOnly` keeps just the session-end
+   * cancel and square-off, for when a breaker has stopped every other exit.
    */
-  async manage(ltpOf: (key: string) => number | null): Promise<void> {
+  async manage(ltpOf: (key: string) => number | null, opts: { eodOnly?: boolean } = {}): Promise<void> {
     this.rollDay();
     const now = this.d.clock.ms();
     const mins = istMinutes(this.d.clock.now());
     const perTrade = this.d.perTradeLossPaise();
 
     for (const p of this.live()) {
-      if (p.state === 'ENTRY_ACKED' && p.product === 'I' && mins >= SESSION.SQUARE_OFF) {
+      // An intraday position still open from an earlier session is overdue, not
+      // "before 15:05" — square it off as soon as the market can price the exit.
+      const overdue = istDateKey(new Date(p.openedAt)) !== this.day && mins >= SESSION.OPEN;
+      const eod = p.product === 'I' && (mins >= SESSION.SQUARE_OFF || overdue);
+      // Every unfilled entry goes at 15:00, whatever its product: one filling
+      // minutes before the square-off is a trade with no runway.
+      if (p.state === 'ENTRY_ACKED' && (mins >= SESSION.CANCEL_PENDING || eod)) {
         await this.exit(p.id, 'EOD_CANCEL');
         continue;
       }
       if (p.state !== 'MANAGING') continue;
+      if (opts.eodOnly && !eod) continue;
       const ltp = ltpOf(p.instrumentKey);
       if (ltp !== null && ltp > 0) this.excursion(p, rupeesToPaise(ltp));
 
-      if (p.product === 'I' && mins >= SESSION.SQUARE_OFF) {
+      if (eod) {
         await this.exit(p.id, 'EOD_SQUARE_OFF');
         continue;
       }

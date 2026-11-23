@@ -26,13 +26,23 @@ const schema = z.object({
   DATABASE_URL: z.string().url().default('postgresql://abba@localhost:5432/tradeforger'),
   REDIS_URL: z.string().optional(),
 
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-3.5-flash-lite'),
+  GEMINI_BASE_URL: z.string().url().default('https://generativelanguage.googleapis.com/v1beta/openai'),
+  GEMINI_PROJECT_ID: z.string().optional(),
+
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('qwen/qwen3.8-27b'),
   GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
 
+  XAI_API_KEY: z.string().optional(),
+  GROK_MODEL: z.string().default('grok-2-latest'),
+  GROK_BASE_URL: z.string().url().default('https://api.x.ai/v1'),
+
   // No default: a token in source is a token everyone with the repo holds.
   TF_ENGINE_TOKEN: z.string().min(32),
   TF_ENGINE_PORT: z.coerce.number().default(4000),
+  TF_ENGINE_HOST: z.string().default('0.0.0.0'),
 
   TF_MAX_SPEND_PER_TRADE: z.coerce.number().default(10_000),
   TF_MAX_DEPLOYED_CAPITAL: z.coerce.number().default(50_000),
@@ -57,6 +67,9 @@ const schema = z.object({
   TF_FNO_TIME_STOP_MIN: z.coerce.number().int().min(0).default(30),
   TF_FNO_CHAIN_REFRESH_SEC: z.coerce.number().int().min(15).default(60),
 });
+
+/** Ceiling on RISK_BASED sizing's risk per trade, % of capital — env and dashboard alike. */
+export const MAX_RISK_PCT = 2;
 
 /** Typed exactly to arm LIVE. Deliberately awkward to type by accident. */
 export const LIVE_CONFIRMATION = 'I UNDERSTAND THIS USES REAL MONEY';

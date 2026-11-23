@@ -6,8 +6,6 @@ import {
 import { TtlCache } from './cache.ts';
 
 const DAY = 86_400_000;
-/** The scanner needs this many 5-minute bars before it will score a stock. */
-export const MIN_BARS = 15;
 
 const TTL = {
   quotes: 5_000,
@@ -166,20 +164,19 @@ export class MarketData {
   }
 
   /**
-   * Bars to rank on. Before ~10:30, at weekends and on holidays today has too
-   * few, so the last full session is used instead, and labelled as such.
+   * Bars to rank on: prior sessions as indicator warmup, today's closed bars,
+   * and — while the market is open — the still-forming bar priced at `ltp`.
+   * The ranker anchors its session measures to the last bar's day, so this is
+   * live from the first bar of the morning. Only before the open, at weekends
+   * and on holidays is the last bar from an earlier day, and it is labelled so.
    */
-  async rankingBars(key: string): Promise<Bars> {
+  async rankingBars(key: string, ltp: number | null = null, marketOpen = false): Promise<Bars> {
     const today = this.day();
-    const intra = await this.intraday(key);
-    if (intra.length >= MIN_BARS) return { candles: intra, session: { kind: 'today', date: today } };
-    const hist = await this.history(key);
-    const last = hist.at(-1);
-    if (!last) return { candles: intra, session: { kind: 'today', date: today } };
-    const date = istDateKey(new Date(last.ts));
-    return {
-      candles: hist.filter((c) => istDateKey(new Date(c.ts)) === date),
-      session: { kind: 'previous', date },
-    };
+    const [hist, intra] = await Promise.all([this.history(key), this.intraday(key)]);
+    const forming = marketOpen ? await this.formingBar(key, ltp).catch(() => null) : null;
+    const candles = mergeCandles(hist, intra, forming ? [forming] : []);
+    const last = candles.at(-1);
+    const date = last ? istDateKey(new Date(last.ts)) : today;
+    return { candles, session: { kind: date === today ? 'today' : 'previous', date } };
   }
 }

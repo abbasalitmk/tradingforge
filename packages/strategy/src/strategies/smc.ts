@@ -14,7 +14,10 @@ export interface SmcParams {
   readonly volumePeriod: number;
   readonly atrPeriod: number;
   readonly minStopAtr: number;
+  /** Widest stop allowed, in ATRs; a setup whose structure needs more is skipped, not tightened. */
   readonly stopAtrMultiple: number;
+  /** Clearance beyond the structural extreme, in ATRs, so the stop is not on the level itself. */
+  readonly stopBufferAtr: number;
   readonly targetRR: number;
   readonly minConfidence: number;
 }
@@ -25,7 +28,8 @@ export const DEFAULT_SMC: SmcParams = {
   volumePeriod: 20,
   atrPeriod: 14,
   minStopAtr: 0.5,
-  stopAtrMultiple: 2.5,
+  stopAtrMultiple: 3.5,
+  stopBufferAtr: 0.15,
   targetRR: 2,
   minConfidence: 55,
 };
@@ -154,9 +158,17 @@ export class SmcProfile implements StrategyProfile {
     const confidence = scoreConfluence(checks);
     if (confidence < p.minConfidence) return null;
 
-    const opposite = long ? sl.price : sh.price;
-    const structural = (price - opposite) * dir;
-    const stopDistance = clampStop(structural > 0 ? structural : p.stopAtrMultiple * atrNow, atrNow, p.minStopAtr, p.stopAtrMultiple);
+    // Beyond the most extreme price since the opposite swing, not the swing
+    // itself: a low printed after it (too recent to be a confirmed swing) has
+    // already broken that level, and a stop left above it sits in the noise.
+    const swing = long ? sl : sh;
+    const since = c.slice(swing.index);
+    const extreme = long ? Math.min(...since.map((b) => b.low)) : Math.max(...since.map((b) => b.high));
+    const structural = (price - extreme) * dir + p.stopBufferAtr * atrNow;
+    // Tightening a stop that structure puts further away moves it inside the
+    // structure; the setup is simply too wide to take.
+    if (structural > p.stopAtrMultiple * atrNow) return null;
+    const stopDistance = clampStop(structural, atrNow, p.minStopAtr, p.stopAtrMultiple);
     const geometry = riskGeometry(side, price, stopDistance, stopDistance * p.targetRR);
     if (!geometry) return null;
 
@@ -166,6 +178,7 @@ export class SmcProfile implements StrategyProfile {
         atr: atrNow,
         swingHigh: sh.price,
         swingLow: sl.price,
+        stopExtreme: extreme,
         vwap: vwapNow,
         volumeRatio: volRatio,
         choch: withStructure ? 0 : 1,
@@ -189,6 +202,7 @@ export const SMC_STRUCTURE: StrategyDefinition = {
     atrPeriod: { min: 7, max: 28, step: 1 },
     minStopAtr: { min: 0.25, max: 1.5, step: 0.25 },
     stopAtrMultiple: { min: 1, max: 4, step: 0.25 },
+    stopBufferAtr: { min: 0, max: 1, step: 0.05 },
     targetRR: { min: 1.2, max: 4, step: 0.25 },
     minConfidence: { min: 40, max: 90, step: 5 },
   },

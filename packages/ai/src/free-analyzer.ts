@@ -141,7 +141,7 @@ export class FreeRealtimeAnalyzer {
         notes.push('Trade candidate generated during high-volatility opening 5 minutes');
       } else if (mins >= 14 * 60 + 30) {
         flags.push('LATE_SESSION_ENTRY');
-        notes.push('Late intraday entry allows insufficient time for trade to mature before 15:10 IST square-off');
+        notes.push('Late intraday entry allows insufficient time for trade to mature before 15:05 IST square-off');
       }
     }
 
@@ -169,6 +169,26 @@ export class FreeRealtimeAnalyzer {
 
     const rationale = `${verdict}: ${notes.join('. ')}.`;
 
+    const momentumLight = (!rsi || (isLong && rsi >= 45 && rsi <= 70) || (!isLong && rsi <= 55 && rsi >= 30))
+      ? 'GREEN'
+      : (flags.includes('RSI_OVERBOUGHT') || flags.includes('RSI_OVERSOLD') ? 'RED' : 'AMBER');
+
+    const volumeLight = (!rvol || rvol >= 1.2) ? 'GREEN' : (rvol >= 0.9 ? 'AMBER' : 'RED');
+    const riskLight = (!atr || (atr > 0 && risk >= 0.8 * atr)) ? 'GREEN' : 'RED';
+    const rewardLight = rr >= 2.0 ? 'GREEN' : (rr >= 1.5 ? 'AMBER' : 'RED');
+
+    const beginnerSummary = verdict === 'REJECT'
+      ? `This setup was rejected because the risk profile is too dangerous (e.g. inverted stop or unfavorable risk/reward). Capital safety comes first.`
+      : verdict === 'CAUTION'
+        ? `This ${signal.side} setup on ${signal.symbol} is valid but carries elevated risk (${flags.join(', ')}). Consider trading with half size (0.5x).`
+        : `Strong ${signal.side} setup on ${signal.symbol}. Clean risk-to-reward ratio of ${rr.toFixed(1)}:1 with entry at ₹${entryRs.toFixed(2)}, stop-loss at ₹${stopRs.toFixed(2)} (risk ₹${risk.toFixed(2)}), and target at ₹${targetRs.toFixed(2)}.`;
+
+    const beginnerTip = verdict === 'REJECT'
+      ? 'Do not take this trade. Wait for a clearer pattern with structural support.'
+      : `Never move your stop-loss further away once entered. Cut losses quickly if ₹${stopRs.toFixed(2)} is breached.`;
+
+    const riskRating = verdict === 'REJECT' ? 'HIGH' : verdict === 'CAUTION' ? 'MEDIUM' : 'LOW';
+
     return {
       verdict,
       confidence,
@@ -179,6 +199,21 @@ export class FreeRealtimeAnalyzer {
       latencyMs: Math.max(1, this.clock.ms() - started),
       model: 'free-realtime-quant-v1',
       fellBack: false,
+      beginnerSummary,
+      beginnerTip,
+      riskRating,
+      trafficLights: {
+        momentum: momentumLight,
+        volume: volumeLight,
+        riskBuffer: riskLight,
+        rewardRatio: rewardLight,
+      },
+      actionChecklist: [
+        { item: 'Risk/Reward Ratio (>= 1.5:1)', passed: rr >= 1.5, detail: `Current R:R is ${rr.toFixed(2)}:1` },
+        { item: 'ATR Stop Buffer (> 0.8 ATR)', passed: !atr || risk >= 0.8 * atr, detail: `Stop distance: ₹${risk.toFixed(2)}` },
+        { item: 'Momentum Health (RSI)', passed: !flags.includes('RSI_OVERBOUGHT') && !flags.includes('RSI_OVERSOLD'), detail: `RSI is ${rsi?.toFixed(1) ?? 'N/A'}` },
+        { item: 'Trading Session Window', passed: !flags.includes('LATE_SESSION_ENTRY'), detail: 'Execution within allowed hours' },
+      ],
     };
   }
 }

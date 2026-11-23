@@ -82,6 +82,57 @@ export function prefilter(quotes: readonly QuoteLite[], f: ScanFilters, maxCandi
   return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, maxCandidates));
 }
 
+/** Where the LTP sits in the day's range: 0 at the low, 1 at the high. */
+export const rangePosition = (q: QuoteLite): number =>
+  q.high > q.low ? (q.ltp - q.low) / (q.high - q.low) : 0.5;
+
+/** A day move smaller than this is not a mover; one larger is close to an exchange price band. */
+export const PICK_CHANGE_PCT = { min: 0.3, max: 8 } as const;
+
+export interface UniversePickOptions {
+  readonly size: number;
+  readonly minTurnoverCr: number;
+  readonly minPrice?: number;
+  readonly maxPrice?: number;
+  /** The direction traded. BUY keeps stocks a long can work on, SELL ones a short can. */
+  readonly side: 'BUY' | 'SELL' | 'BOTH';
+}
+
+/** Up on the day, above the open, upper half of the range — or the mirror for a short. */
+const holdsMove = (q: QuoteLite, side: 'BUY' | 'SELL'): boolean => {
+  const ch = changePct(q);
+  return side === 'BUY'
+    ? ch >= PICK_CHANGE_PCT.min && q.ltp >= q.open && rangePosition(q) >= 0.5
+    : -ch >= PICK_CHANGE_PCT.min && q.ltp <= q.open && rangePosition(q) <= 0.5;
+};
+
+/**
+ * The intraday universe for autonomous mode: the day's liquid movers, from
+ * one batch-quote pass over the market — no candles.
+ *
+ * Buying only, a stock falling on the day can produce only setups the engine
+ * will skip, so the list keeps stocks up on the day, trading above their open
+ * and in the upper half of the day's range: where long breakout, VWAP and
+ * trend setups form. Short only is the mirror; BOTH takes either. Ranked by
+ * log turnover × day change, weighted toward the end of the range the move is
+ * holding, so a liquid mid-cap that is moving beats a sleepy mega-cap.
+ */
+export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOptions): QuoteLite[] {
+  const passed = quotes.filter((q) => {
+    if (!(q.ltp > 0)) return false;
+    if (o.minPrice !== undefined && o.minPrice > 0 && q.ltp < o.minPrice) return false;
+    if (o.maxPrice !== undefined && o.maxPrice > 0 && q.ltp > o.maxPrice) return false;
+    if (turnoverCr(q) < o.minTurnoverCr) return false;
+    if (Math.abs(changePct(q)) > PICK_CHANGE_PCT.max) return false;
+    return o.side === 'BOTH' ? holdsMove(q, 'BUY') || holdsMove(q, 'SELL') : holdsMove(q, o.side);
+  });
+  const score = (q: QuoteLite): number => {
+    const strength = changePct(q) >= 0 ? rangePosition(q) : 1 - rangePosition(q);
+    return Math.log10(1 + turnoverCr(q) * CRORE) * Math.abs(changePct(q)) * (0.5 + strength);
+  };
+  return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, o.size));
+}
+
 /**
  * Fine stage: every candidate through the hybrid ensemble, setup-level filters,
  * then rank by quality (ties broken by reward:risk).
@@ -95,11 +146,13 @@ export function screen(
   const out: ScanResult[] = [];
   for (const c of candidates) {
     const { best } = analyzeHybrid(
-      { instrumentKey: c.instrumentKey, symbol: c.symbol, intraday: c.intraday, daily: c.daily, clock },
+      // Scans hold closed bars only; the quote's LTP is what an order would fill at.
+      { instrumentKey: c.instrumentKey, symbol: c.symbol, intraday: c.intraday, daily: c.daily, clock, ltp: c.ltp },
       { ...opts, ...(f.strategies && f.strategies.length ? { strategies: f.strategies } : {}) },
     );
     for (const setup of [best.INTRADAY, best.SWING]) {
-      if (!setup) continue;
+      // A setup the market already played out (through its stop or target) is not an opportunity.
+      if (!setup || setup.invalidReason) continue;
       if (f.style && f.style !== 'ANY' && setup.style !== f.style) continue;
       if (f.side && f.side !== 'ANY' && setup.side !== f.side) continue;
       if (f.minQuality !== undefined && setup.quality < f.minQuality) continue;

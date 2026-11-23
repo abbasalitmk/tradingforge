@@ -52,12 +52,14 @@ export const toCandles = (rows: readonly S.CandleTuple[]): Candle[] =>
  *               OAuth token and returns UDAPI1221 unless the request comes
  *               from the account's allowlisted static IP.
  *
- * Every order-category call draws from the shared 10/sec bucket.
+ * Every order-category call draws from the shared 8/sec bucket.
  */
 export class UpstoxClient {
   readonly http: UpstoxHttp;
+  readonly tokens: TokenSource;
 
   constructor(tokens: TokenSource, opts: HttpOptions = {}) {
+    this.tokens = tokens;
     this.http = new UpstoxHttp(tokens, opts);
   }
 
@@ -140,10 +142,22 @@ export class UpstoxClient {
       plane: 'data',
     });
     if (!r.ok) return r;
-    const parsed = S.fullQuoteResponse.safeParse(r.value);
-    return parsed.success
-      ? ok(Object.values(parsed.data.data))
-      : err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${parsed.error.message}`));
+    const env = S.quoteEnvelope.safeParse(r.value);
+    if (!env.success) return err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${env.error.message}`));
+    // Validate per instrument: one odd entry (an index with null volume, a
+    // suspended stock) must never cost every other instrument its price.
+    const out: S.FullQuote[] = [];
+    const bad: string[] = [];
+    for (const [key, raw] of Object.entries(env.data.data)) {
+      const q = S.fullQuote.safeParse(raw);
+      if (q.success) out.push(q.data);
+      else bad.push(`${key}: ${q.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join(', ')}`);
+    }
+    if (out.length === 0 && bad.length > 0) {
+      return err(new UpstoxError('BAD_REQUEST', `unexpected quote shape: ${bad.slice(0, 3).join('; ')}`));
+    }
+    if (bad.length > 0) console.warn(`[upstox] skipped ${bad.length} malformed quote(s): ${bad.slice(0, 3).join('; ')}`);
+    return ok(out);
   }
 
   async historicalCandles(
@@ -203,7 +217,8 @@ export class UpstoxClient {
 
   /** Authorized wss:// URL for the V3 protobuf market feed. */
   async marketFeedUrl(): Promise<Result<string, UpstoxError>> {
-    const r = await this.http.request<unknown>('/v3/feed/market-data-feed/authorize', { plane: 'data' });
+    const plane = this.tokens.trading() ? 'trading' : 'data';
+    const r = await this.http.request<unknown>('/v3/feed/market-data-feed/authorize', { plane });
     if (!r.ok) return r;
     const parsed = S.wsAuthorizeResponse.safeParse(r.value);
     const uri = parsed.success
@@ -236,6 +251,25 @@ export class UpstoxClient {
 
   async funds(): Promise<Result<unknown, UpstoxError>> {
     return this.http.request('/v3/user/get-funds-and-margin', { plane: 'trading' });
+  }
+
+  /**
+   * The account's money in rupees: `capital` is what it started the day with
+   * (opening balance + added − withdrawn), `available` what is free to trade
+   * right now, `used` the margin open positions and orders hold.
+   */
+  async fundsSummary(): Promise<Result<{ capital: number; available: number; used: number }, UpstoxError>> {
+    const r = await this.funds();
+    if (!r.ok) return r;
+    const parsed = S.fundsV3Response.safeParse(r.value);
+    if (!parsed.success) return err(new UpstoxError('BAD_REQUEST', `unexpected funds shape: ${parsed.error.message}`));
+    const a = parsed.data.data.available_to_trade;
+    const cash = a.cash_available_to_trade.cash;
+    return ok({
+      capital: (cash.opening_balance ?? 0) + (cash.added_today ?? 0) - (cash.withdrawn_today ?? 0),
+      available: a.total,
+      used: a.cash_available_to_trade.margin_used?.total ?? 0,
+    });
   }
 
   async profile(): Promise<Result<unknown, UpstoxError>> {

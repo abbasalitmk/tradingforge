@@ -39,7 +39,7 @@ export async function preflight(
     add('audit_chain', chain.ok,
       chain.ok ? `${chain.checked} entries verified` : `broken at seq ${chain.brokenAt}`);
   } catch (e) {
-    add('audit_chain', false, e instanceof Error ? e.message : String(e));
+    add('audit_chain', false, e instanceof Error ? e.message : String(e), false);
   }
 
   // Data plane: market data must be reachable or there is nothing to trade on.

@@ -244,7 +244,7 @@ export function prepareBacktest(
  *   stop and target, the STOP is assumed to have come first.
  * - Stops fill at the stop or at a worse gap-open, plus slippage; targets
  *   fill at the target, never better.
- * - Intraday positions are flattened at the first bar at/after 15:10 IST (at
+ * - Intraday positions are flattened at the first bar at/after 15:05 IST (at
  *   its open), or at the close of the session's last bar if earlier.
  * - One position per instrument at a time.
  */

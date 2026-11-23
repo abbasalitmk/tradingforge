@@ -14,6 +14,7 @@
     "dev:web": "npm run dev -w @tradeforger/web",
     "build:web": "npm run build -w @tradeforger/web",
     "start:engine": "npm run start -w @tradeforger/engine",
+    "deploy:hostinger": "./scripts/deploy-hostinger.sh",
     "migrate": "npm run migrate -w @tradeforger/db",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

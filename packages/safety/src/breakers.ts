@@ -1,4 +1,4 @@
-import { type Clock, type Paise, istMinutes, istDateKey, SESSION, pctOf } from '@tradeforger/core';
+import { type Clock, type Paise, istMinutes, istDateKey, SESSION, pctOf, entryBlockReason } from '@tradeforger/core';
 import type { Limits } from './limits.ts';
 
 export type BreakerId =
@@ -156,8 +156,9 @@ export function evaluate(snap: RiskSnapshot, limits: Limits, clock: Clock): Verd
     trips.push({ id: 'MAINTENANCE_WINDOW', detail: 'Upstox maintenance 00:00-05:30 IST', allowExits: false });
   }
 
-  if (mins < SESSION.ENTRY_START || mins >= SESSION.ENTRY_END) {
-    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} outside entry window`, allowExits: true });
+  const outside = entryBlockReason(now);
+  if (outside) {
+    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} — ${outside}; entries 09:45–11:30 and 13:30–14:45`, allowExits: true });
   }
 
   return {
