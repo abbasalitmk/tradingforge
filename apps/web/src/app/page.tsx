@@ -378,6 +378,9 @@ interface SignalItem {
   generatedAt: number;
 }
 
+type TradeSide = 'BUY' | 'SELL' | 'BOTH';
+const TRADE_SIDE_LABEL: Record<TradeSide, string> = { BUY: '🟢 Buy only', SELL: '🔴 Short only', BOTH: '⇅ Buy + Short' };
+
 interface EngineState {
   mode: 'PAPER' | 'SANDBOX' | 'LIVE_ARMED' | 'LIVE';
   baseMode: string;
@@ -387,6 +390,7 @@ interface EngineState {
   autoTargetSymbol?: string;
   autoMinPrice?: number;
   autoMaxPrice?: number;
+  autoTradeSide?: TradeSide;
   strategyMode: 'INTRADAY' | 'SWING' | 'BOTH';
   sizing: {
     mode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED';
@@ -480,7 +484,10 @@ export default function Dashboard() {
   const [formBudget, setFormBudget] = useState<string>('10000');
   const [formFixedQty, setFormFixedQty] = useState<string>('10');
   const [formRiskPct, setFormRiskPct] = useState<string>('1.0');
+  const [formTradeSide, setFormTradeSide] = useState<TradeSide>('BUY');
   const [applyingFilters, setApplyingFilters] = useState<boolean>(false);
+  /** The form opens only on request; the applied filters are always shown above it. */
+  const [filtersOpen, setFiltersOpen] = useState<boolean>(false);
 
   // Search Autocomplete State for NSE Symbols
   const [symbolSearchQuery, setSymbolSearchQuery] = useState('');
@@ -488,6 +495,20 @@ export default function Dashboard() {
   const [isSearchingSymbols, setIsSearchingSymbols] = useState(false);
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const hasInitForm = useRef(false);
+
+  /** Fill the filter form with what the engine is actually running. */
+  const loadFormFrom = (data: EngineState): void => {
+    setFormTargetMode(data.autoTargetMode ?? 'ALL_SCANNED');
+    setFormTargetSymbol(data.autoTargetSymbol ?? 'RELIANCE');
+    setFormMinPrice(data.autoMinPrice ? String(data.autoMinPrice) : '');
+    setFormMaxPrice(data.autoMaxPrice && data.autoMaxPrice < 500000 ? String(data.autoMaxPrice) : '');
+    setFormTradeSide(data.autoTradeSide ?? 'BUY');
+    setFormStrategyMode(data.strategyMode ?? 'BOTH');
+    setFormSizingMode(data.sizing?.mode ?? 'FIXED_BUDGET');
+    setFormBudget(data.sizing?.budget ? String(data.sizing.budget) : '10000');
+    setFormFixedQty(data.sizing?.fixedQty ? String(data.sizing.fixedQty) : '10');
+    setFormRiskPct(data.sizing?.riskPct ? String(data.sizing.riskPct) : '1.0');
+  };
 
   // Debounced search for NSE symbols
   useEffect(() => {
@@ -658,15 +679,7 @@ export default function Dashboard() {
         if (data.autoTargetSymbol) setAutoTargetSymbol(data.autoTargetSymbol);
         if (!hasInitForm.current) {
           hasInitForm.current = true;
-          setFormTargetMode(data.autoTargetMode ?? 'ALL_SCANNED');
-          setFormTargetSymbol(data.autoTargetSymbol ?? 'RELIANCE');
-          setFormMinPrice(data.autoMinPrice ? String(data.autoMinPrice) : '');
-          setFormMaxPrice(data.autoMaxPrice && data.autoMaxPrice < 500000 ? String(data.autoMaxPrice) : '');
-          setFormStrategyMode(data.strategyMode ?? 'BOTH');
-          setFormSizingMode(data.sizing?.mode ?? 'FIXED_BUDGET');
-          setFormBudget(data.sizing?.budget ? String(data.sizing.budget) : '10000');
-          setFormFixedQty(data.sizing?.fixedQty ? String(data.sizing.fixedQty) : '10');
-          setFormRiskPct(data.sizing?.riskPct ? String(data.sizing.riskPct) : '1.0');
+          loadFormFrom(data);
         }
         setOfflineReason(null);
         setLastLiveAt(Date.now());
@@ -841,6 +854,7 @@ export default function Dashboard() {
       (formTargetMode === 'SINGLE_STOCK' && formTargetSymbol.trim().toUpperCase() !== (state.autoTargetSymbol ?? 'RELIANCE').trim().toUpperCase()) ||
       (formMinPrice.trim() ? Number(formMinPrice) : 0) !== (state.autoMinPrice ?? 0) ||
       (formMaxPrice.trim() ? Number(formMaxPrice) : 500000) !== (state.autoMaxPrice ?? 500000) ||
+      formTradeSide !== (state.autoTradeSide ?? 'BUY') ||
       formStrategyMode !== (state.strategyMode ?? 'BOTH') ||
       formSizingMode !== (state.sizing?.mode ?? 'FIXED_BUDGET') ||
       (formSizingMode === 'FIXED_BUDGET' && (Number(formBudget) || 10000) !== (state.sizing?.budget ?? 10000)) ||
@@ -863,6 +877,7 @@ export default function Dashboard() {
       targetSymbol: sym,
       minPrice: minP,
       maxPrice: maxP,
+      tradeSide: formTradeSide,
       strategyMode: formStrategyMode,
       sizingMode: formSizingMode,
       budget: budgetVal,
@@ -877,6 +892,7 @@ export default function Dashboard() {
       targetSymbol?: string;
       minPrice?: number;
       maxPrice?: number;
+      tradeSide?: TradeSide;
       strategyMode?: 'INTRADAY' | 'SWING' | 'BOTH';
       sizing?: { mode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED'; budget: number; fixedQty: number; riskPct: number };
     }>('/strategy/filters', payload);
@@ -895,6 +911,7 @@ export default function Dashboard() {
         autoTargetSymbol: r.data.targetSymbol ?? sym,
         autoMinPrice: r.data.minPrice ?? minP,
         autoMaxPrice: r.data.maxPrice ?? maxP,
+        autoTradeSide: r.data.tradeSide ?? formTradeSide,
         strategyMode: r.data.strategyMode ?? formStrategyMode,
         sizing: r.data.sizing ?? {
           mode: formSizingMode,
@@ -908,7 +925,8 @@ export default function Dashboard() {
     setAutoTargetMode(r.data.targetMode ?? formTargetMode);
     setAutoTargetSymbol(r.data.targetSymbol ?? sym);
 
-    showToast('✓ All trading filters and position sizing successfully applied!', 'ok');
+    setFiltersOpen(false);
+    showToast('✓ Filters applied — the engine now trades only with these settings', 'ok');
   };
 
   const handleSetSizing = async (sizingMode: 'FIXED_BUDGET' | 'FIXED_QTY' | 'RISK_BASED', val: number) => {
@@ -1789,12 +1807,34 @@ export default function Dashboard() {
                 ACTIVE
               </span>
             </div>
-            {hasPendingChanges && (
-              <span style={{ fontSize: 11.5, color: '#f59e0b', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span>⚠️ Unapplied changes in form</span>
-                <span style={{ color: 'var(--muted)' }}>(click "Apply Settings & Filters" below)</span>
-              </span>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              {filtersOpen && hasPendingChanges && (
+                <span style={{ fontSize: 11.5, color: '#f59e0b', fontWeight: 600 }}>
+                  ⚠️ Unapplied changes — click "Apply Settings &amp; Filters" below
+                </span>
+              )}
+              <button
+                type="button"
+                aria-expanded={filtersOpen}
+                onClick={() => {
+                  // Opening always starts from what the engine runs; closing discards unapplied edits.
+                  if (s) loadFormFrom(s);
+                  setFiltersOpen((o) => !o);
+                }}
+                style={{
+                  background: filtersOpen ? 'var(--panel)' : 'var(--accent)',
+                  color: filtersOpen ? 'var(--fg)' : '#ffffff',
+                  border: `1px solid ${filtersOpen ? 'var(--line)' : 'var(--accent)'}`,
+                  borderRadius: 8,
+                  padding: '6px 16px',
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {filtersOpen ? '✕ Close filters' : '⚙️ Filters'}
+              </button>
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1813,6 +1853,14 @@ export default function Dashboard() {
                 {(s.autoMinPrice || (s.autoMaxPrice && s.autoMaxPrice < 500000))
                   ? `₹${s.autoMinPrice || 0} – ₹${s.autoMaxPrice && s.autoMaxPrice < 500000 ? s.autoMaxPrice : 'Any'}`
                   : 'Any Price (No Range Limit)'}
+              </strong>
+            </div>
+
+            {/* Direction Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, background: 'var(--panel)', border: '1px solid var(--line)', fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Direction:</span>
+              <strong style={{ color: (s.autoTradeSide ?? 'BUY') === 'BUY' ? 'var(--ok)' : (s.autoTradeSide === 'SELL' ? 'var(--danger)' : 'var(--accent)') }}>
+                {TRADE_SIDE_LABEL[s.autoTradeSide ?? 'BUY']}
               </strong>
             </div>
 
@@ -1846,6 +1894,7 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {filtersOpen && (<>
         {/* Divider */}
         <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
 
@@ -2369,7 +2418,45 @@ export default function Dashboard() {
         {/* Divider */}
         <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
 
-        {/* Filter 4: Strategy Profile */}
+        {/* Filter 4: Trade Direction */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Trade Direction:</span>
+            {(['BUY', 'SELL', 'BOTH'] as const).map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setFormTradeSide(d)}
+                aria-pressed={formTradeSide === d}
+                style={{
+                  background: formTradeSide === d ? 'var(--accent)' : 'var(--panel-subtle)',
+                  color: formTradeSide === d ? '#ffffff' : 'var(--fg)',
+                  border: `1px solid ${formTradeSide === d ? 'var(--accent)' : 'var(--line)'}`,
+                  borderRadius: 6,
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {TRADE_SIDE_LABEL[d]}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+            {formTradeSide === 'BUY'
+              ? 'Only bullish trades: buy stocks intraday, buy calls in F&O'
+              : formTradeSide === 'SELL'
+                ? 'Only bearish trades: short sell intraday, buy puts in F&O'
+                : 'Bullish and bearish trades (a swing short is never automated)'}
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: 'var(--line)', opacity: 0.7 }} />
+
+        {/* Filter 5: Strategy Profile */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>Strategy Profile:</span>
@@ -2427,10 +2514,11 @@ export default function Dashboard() {
               )}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
-              Sets target scope, price limits, sizing model, and strategies into the live engine simultaneously.
+              Sets target scope, price limits, direction, sizing model, and strategies into the live engine simultaneously.
             </div>
           </div>
 
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
             type="button"
             onClick={handleApplyAllFilters}
@@ -2453,7 +2541,17 @@ export default function Dashboard() {
           >
             <span>{applyingFilters ? 'Applying...' : '✓ Apply Settings & Filters'}</span>
           </button>
+          <button
+            type="button"
+            onClick={() => { loadFormFrom(s); setFiltersOpen(false); }}
+            disabled={applyingFilters}
+            style={{ background: 'transparent', color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+          >
+            Cancel
+          </button>
+          </div>
         </div>
+        </>)}
       </div>
       </div>
     );

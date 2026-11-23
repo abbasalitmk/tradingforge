@@ -134,20 +134,22 @@ describe('screener', () => {
       day('THIN', 510, 495, 512, 494, 100),
     ];
 
-    it('long-only keeps liquid stocks that are up and holding their gains', () => {
-      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: true }).map((x) => x.symbol)).toEqual(['LEADER']);
+    it('buy only keeps liquid stocks that are up and holding their gains', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY' }).map((x) => x.symbol)).toEqual(['LEADER']);
     });
 
-    it('with shorting allowed, a falling stock is a candidate too', () => {
-      const both = pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: false }).map((x) => x.symbol);
-      expect(both[0]).toBe('LEADER');
-      expect(both).toEqual(expect.arrayContaining(['FADING', 'DOWN']));
-      expect(both).not.toEqual(expect.arrayContaining(['QUIET']));
+    it('short only keeps stocks that are down and holding their losses', () => {
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'SELL' }).map((x) => x.symbol)).toEqual(['DOWN']);
+    });
+
+    it('both takes either kind of mover, never a fading or quiet one', () => {
+      const both = pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BOTH' }).map((x) => x.symbol);
+      expect(both).toEqual(['LEADER', 'DOWN']);
     });
 
     it('respects the price band and the size', () => {
-      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, longOnly: true, maxPrice: 505 })).toEqual([]);
-      expect(pickUniverse(quotes, { size: 1, minTurnoverCr: 1, longOnly: false })).toHaveLength(1);
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY', maxPrice: 505 })).toEqual([]);
+      expect(pickUniverse(quotes, { size: 1, minTurnoverCr: 1, side: 'BOTH' })).toHaveLength(1);
     });
   });
 

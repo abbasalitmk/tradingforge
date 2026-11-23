@@ -77,24 +77,22 @@ describe('autonomous entry decision', () => {
     expect(modeForSegments({ intraday: false, swing: false, fno: true })).toBeNull();
   });
 
-  it('is long-only by default: an intraday SELL is a short and is blocked', () => {
-    expect(decide(setup({ side: 'SELL' }), equity, on, paper).blockers).toContain('short selling off (long-only)');
-    expect(decide(setup({ side: 'SELL' }), equity, { ...on, allowShort: true }, paper).blockers).toEqual([]);
+  it('trades only the direction the filter allows: buy by default, short or both on request', () => {
+    expect(decide(setup({ side: 'SELL' }), equity, on, paper).blockers).toContain('direction filter is buy only');
+    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'SELL' }, paper).blockers).toEqual([]);
+    expect(decide(setup(), equity, { ...on, tradeSide: 'SELL' }, paper).blockers).toContain('direction filter is short only');
   });
 
   it('never automates a swing SELL, even with shorting allowed', () => {
-    const swing = { ...on, allowShort: true, segments: { ...on.segments, swing: true } };
+    const swing = { ...on, tradeSide: 'BOTH' as const, segments: { ...on.segments, swing: true } };
     expect(decide(setup({ style: 'SWING', side: 'SELL' }), equity, swing, paper).blockers.join()).toContain('delivery holdings');
   });
 
-  it('trades a bearish F&O setup only by buying a put', () => {
+  it('applies the direction filter to the F&O view', () => {
     const fno = { ...on, segments: { ...on.segments, fno: true } };
-    const sell = setup({ side: 'SELL' });
-    expect(decide(sell, index, fno, { ...paper, fnoInstrument: 'OPTIONS' }).blockers).toEqual([]);
-    expect(decide(sell, index, fno, { ...paper, fnoInstrument: 'FUTURES' }).blockers).toContain('short futures off (long-only)');
-    // Not knowing the instrument is treated as futures.
-    expect(decide(sell, index, fno, paper).blockers).toContain('short futures off (long-only)');
-    expect(decide(sell, index, { ...fno, allowShort: true }, { ...paper, fnoInstrument: 'FUTURES' }).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL' }), index, fno, paper).blockers).toContain('direction filter is buy only');
+    expect(decide(setup({ side: 'SELL' }), index, { ...fno, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
   });
 
   it('lets only a tradeable vote lead', () => {
@@ -102,7 +100,8 @@ describe('autonomous entry decision', () => {
       ({ strategyId, name: strategyId, style: 'INTRADAY' as const, side, confidence: 80, signal: null, reasons: [] });
     expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper)).toBe(true);
     expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, on, paper)).toBe(false);
-    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), index, { ...on, segments: { ...on.segments, fno: true } }, { ...paper, fnoInstrument: 'OPTIONS' })).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, { ...on, tradeSide: 'SELL' }, paper)).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, { ...on, tradeSide: 'SELL' }, paper)).toBe(false);
     const live = { ...paper, mode: 'LIVE' as const, approved: (id: string) => id === 'ORB_SUPERTREND' };
     expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, live)).toBe(false);
     expect(canLead(vote('ORB_SUPERTREND', 'BUY'), equity, on, live)).toBe(true);
@@ -163,7 +162,7 @@ describe('portfolio limits and strategy gating', () => {
       '5 positions open (max 5)', '2 open from ORB_SUPERTREND (max 2)', '3 long positions open (max 3)',
     ]));
     // A short is a different bet from the open longs.
-    expect(decide(setup({ side: 'SELL' }), equity, { ...on, allowShort: true }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'BOTH' }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
   });
 
   it('pauses a strategy only once its own record is meaningful and losing', () => {
@@ -181,9 +180,9 @@ describe('portfolio limits and strategy gating', () => {
     const parsed = AutoConfigSchema.parse(old);
     expect([parsed.maxOpenPositions, parsed.maxPerStrategy, parsed.maxSameSide, parsed.trailStop, parsed.pauseLosingStrategies, parsed.minNetRewardRisk, parsed.skipFailedStrategies])
       .toEqual([5, 2, 3, false, true, 1.25, true]);
-    // A config saved before long-only existed must not keep shorting after the upgrade.
-    const { allowShort: _h, autoUniverse: _i, autoUniverseSize: _j, autoUniverseMinTurnoverCr: _k, ...older } = DEFAULT_AUTO;
-    expect(AutoConfigSchema.parse(older)).toMatchObject({ allowShort: false, autoUniverse: true, autoUniverseSize: 15 });
+    // A config saved before the direction filter existed trades buy only after the upgrade.
+    const { tradeSide: _h, autoUniverse: _i, autoUniverseSize: _j, autoUniverseMinTurnoverCr: _k, ...older } = DEFAULT_AUTO;
+    expect(AutoConfigSchema.parse(older)).toMatchObject({ tradeSide: 'BUY', autoUniverse: true, autoUniverseSize: 15 });
   });
 
   it('keeps a strategy that failed validation from leading entries, in paper too', () => {

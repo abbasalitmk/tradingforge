@@ -34,7 +34,7 @@ import { planRecovery, type UpstoxView } from './recovery.ts';
 import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
 import {
-  LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments,
+  LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments, sideAllowed,
   type AutoConfig, type DecisionContext, type StrategyRecord, type LiveAnalysis, type LiveSetup, type Target,
 } from './live.ts';
 import { MarketScanner } from './scan.ts';
@@ -572,10 +572,9 @@ type EntryResult = { ok: true; detail?: string } | { ok: false; reason: string }
 async function enterEquity(signal: Signal, product: Product, ai: AiDecision, meta: EntryMeta): Promise<EntryResult> {
   const key = signal.instrumentKey;
   // Last line behind decide(): a delivery SELL would sell demat holdings, and
-  // an intraday SELL is a short the user has not allowed.
-  if (signal.side === 'SELL' && (product === 'D' || !state.auto.allowShort)) {
-    return { ok: false, reason: product === 'D' ? 'swing SELL refused — it would sell delivery holdings' : 'short selling is off (long-only)' };
-  }
+  // the direction filter is the user's, whatever path reached here.
+  if (signal.side === 'SELL' && product === 'D') return { ok: false, reason: 'swing SELL refused — it would sell delivery holdings' };
+  if (!sideAllowed(signal.side, state.auto.tradeSide)) return { ok: false, reason: `direction filter is ${state.auto.tradeSide} — ${signal.side} refused` };
   if (trader.holds(key)) return { ok: false, reason: 'already holding' };
   if (!verdictNow().allowEntries) return { ok: false, reason: 'circuit breaker tripped' };
 
@@ -699,9 +698,9 @@ async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: En
     return { ok: false, reason };
   }
   const { plan } = planned;
-  // Options are always bought; only a futures plan can be a SELL.
-  if (plan.side === 'SELL' && !state.auto.allowShort) {
-    const reason = 'short futures refused (long-only)';
+  // The filter is on the view: a put is a bearish (SELL) view even though the order buys.
+  if (!sideAllowed(signal.side, state.auto.tradeSide)) {
+    const reason = `direction filter is ${state.auto.tradeSide} — ${signal.side === 'BUY' ? 'bullish' : 'bearish'} setup refused`;
     fnoDesk.record(fnoDesk.view(symbol, signal, plan, 'REJECTED', reason));
     return { ok: false, reason };
   }
@@ -1018,7 +1017,7 @@ async function refreshAutoUniverse(): Promise<void> {
       minTurnoverCr: state.auto.autoUniverseMinTurnoverCr,
       minPrice: state.auto.minPrice,
       maxPrice: state.auto.maxPrice > 0 && state.auto.maxPrice < 500000 ? Math.min(state.auto.maxPrice, affordable) : affordable,
-      longOnly: !state.auto.allowShort,
+      side: state.auto.tradeSide,
     });
     const stay = ranked.filter((q) => autoPicks.has(q.instrumentKey)).slice(0, size);
     const picks = [...stay, ...ranked.filter((q) => !autoPicks.has(q.instrumentKey)).slice(0, size - stay.length)];
@@ -1085,7 +1084,6 @@ function decisionContext(): DecisionContext {
     },
     record: (id) => strategyRecords.get(id) ?? null,
     verdict: (id) => registry.activeVerdict(id),
-    fnoInstrument: cfg.TF_FNO_INSTRUMENT,
   };
 }
 
@@ -1689,6 +1687,7 @@ const server = createServer(async (req, res) => {
       autoTargetSymbol: state.auto.targetSymbol ?? 'RELIANCE',
       autoMinPrice: state.auto.minPrice ?? 0,
       autoMaxPrice: state.auto.maxPrice ?? 500000,
+      autoTradeSide: state.auto.tradeSide,
       strategyMode: state.strategyMode,
       sizing: { mode: state.sizingMode, budget: state.budget, fixedQty: state.fixedQty, riskPct: state.riskPct },
       limits: {
@@ -1949,12 +1948,17 @@ const server = createServer(async (req, res) => {
         if (bad) return json(404, { error: bad });
       }
 
+      const side = body['tradeSide'];
+      const tradeSide = side === 'BUY' || side === 'SELL' || side === 'BOTH' ? side : state.auto.tradeSide;
+      if (tradeSide !== state.auto.tradeSide) autoUniverse.attemptedAt = 0; // re-pick for the new direction now
+
       state.auto = {
         ...state.auto,
         targetMode,
         targetSymbol,
         minPrice,
         maxPrice,
+        tradeSide,
       };
 
       // 3. Strategy Mode — drives which segments the live loop may enter.
@@ -1996,6 +2000,7 @@ const server = createServer(async (req, res) => {
         targetSymbol: state.auto.targetSymbol,
         minPrice: state.auto.minPrice,
         maxPrice: state.auto.maxPrice,
+        tradeSide: state.auto.tradeSide,
         strategyMode: state.strategyMode,
         sizing: {
           mode: state.sizingMode,
@@ -2241,7 +2246,7 @@ const server = createServer(async (req, res) => {
         if (bad) return json(404, { error: bad });
       }
       state.auto = parsed.data;
-      // Universe settings (or allowShort, which flips the pick filter) apply now, not in 5 minutes.
+      // Universe settings apply now, not in 5 minutes.
       autoUniverse.attemptedAt = 0;
       // Keep the dashboard's strategy mode truthful about what the loop enters.
       const m = modeForSegments(state.auto.segments);

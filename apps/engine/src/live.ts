@@ -59,12 +59,12 @@ export const AutoConfigSchema = z.object({
    */
   skipFailedStrategies: z.boolean().default(true),
   /**
-   * Intraday short selling in the cash segment (and short futures). Off: the
-   * engine is long-only, and a bearish view is traded only by buying a put.
-   * A swing SELL is never automated whatever this says — on a delivery
-   * product it sells shares out of the demat account.
+   * Which views autonomous mode trades: BUY (long only), SELL (short only) or
+   * BOTH. A bearish F&O setup buys a put under options, or sells a future. A
+   * swing SELL is never automated whatever this says — on a delivery product
+   * it sells shares out of the demat account.
    */
-  allowShort: z.boolean().default(false),
+  tradeSide: z.enum(['BUY', 'SELL', 'BOTH']).default('BUY'),
   /**
    * Re-pick the day's strongest liquid stocks from the whole NSE market every
    * few minutes and analyse them alongside the default universe and the
@@ -96,7 +96,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   trailStop: false,
   pauseLosingStrategies: true,
   skipFailedStrategies: true,
-  allowShort: false,
+  tradeSide: 'BUY',
   autoUniverse: true,
   autoUniverseSize: 15,
   autoUniverseMinTurnoverCr: 25,
@@ -180,8 +180,6 @@ export interface DecisionContext {
   readonly record?: (strategyId: string) => StrategyRecord | null;
   /** Validation verdict on the parameters in use; null = never validated. */
   readonly verdict?: (strategyId: string) => { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null;
-  /** What an F&O entry buys or sells. Unknown is treated as futures: a SELL there is a short. */
-  readonly fnoInstrument?: 'OPTIONS' | 'FUTURES';
 }
 
 /** Where a setup of this style on this target would be entered, or why it cannot be. */
@@ -200,15 +198,15 @@ export function routeFor(
   return { route: null, blocker: target.fnoUnderlying ? 'F&O segment off' : target.cashTradeable ? 'intraday segment off' : 'not cash-tradeable' };
 }
 
-/**
- * Why this side cannot be entered on this route, or null. A BUY always can.
- * On F&O with options a bearish setup buys a put, so it is not a short.
- */
-export function shortBlocker(side: Side, route: Route | null, cfg: AutoConfig, ctx: DecisionContext): string | null {
-  if (side !== 'SELL' || route === null) return null;
-  if (route === 'EQ_SWING') return 'swing SELL would sell delivery holdings — never automated';
-  if (route === 'FNO') return ctx.fnoInstrument !== 'OPTIONS' && !cfg.allowShort ? 'short futures off (long-only)' : null;
-  return cfg.allowShort ? null : 'short selling off (long-only)';
+/** The direction filter: does it let this side trade? */
+export const sideAllowed = (side: Side, tradeSide: AutoConfig['tradeSide']): boolean =>
+  tradeSide === 'BOTH' || tradeSide === side;
+
+/** Why this side cannot be entered on this route, or null. */
+export function sideBlocker(side: Side, route: Route | null, cfg: AutoConfig): string | null {
+  if (!sideAllowed(side, cfg.tradeSide)) return `direction filter is ${cfg.tradeSide === 'BUY' ? 'buy only' : 'short only'}`;
+  if (side === 'SELL' && route === 'EQ_SWING') return 'swing SELL would sell delivery holdings — never automated';
+  return null;
 }
 
 /** Blockers that belong to the strategy itself, whatever the instrument. */
@@ -241,7 +239,7 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
  */
 export function canLead(vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext): boolean {
   if (!vote.side) return false;
-  if (shortBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg, ctx)) return false;
+  if (sideBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg)) return false;
   return strategyBlockers(vote.strategyId, cfg, ctx).length === 0;
 }
 
@@ -260,8 +258,8 @@ export function decide(
   const blockers: string[] = [];
   const { route, blocker } = routeFor(setup.style, target, cfg);
   if (blocker) blockers.push(blocker);
-  const short = shortBlocker(setup.side, route, cfg, ctx);
-  if (short) blockers.push(short);
+  const side = sideBlocker(setup.side, route, cfg);
+  if (side) blockers.push(side);
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');

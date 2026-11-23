@@ -23,7 +23,7 @@ interface AutoConfig {
   trailStop: boolean;
   pauseLosingStrategies: boolean;
   skipFailedStrategies: boolean;
-  allowShort: boolean;
+  tradeSide: 'BUY' | 'SELL' | 'BOTH';
   autoUniverse: boolean;
   autoUniverseSize: number;
   autoUniverseMinTurnoverCr: number;
@@ -105,14 +105,14 @@ interface WatchlistResponse {
 type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
-  | 'allowShort' | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'>;
+  | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
   maxEntriesPerDay: a.maxEntriesPerDay, strategies: [...a.strategies],
   maxOpenPositions: a.maxOpenPositions, maxPerStrategy: a.maxPerStrategy, maxSameSide: a.maxSameSide,
   trailStop: a.trailStop, pauseLosingStrategies: a.pauseLosingStrategies, skipFailedStrategies: a.skipFailedStrategies,
-  allowShort: a.allowShort, autoUniverse: a.autoUniverse,
+  autoUniverse: a.autoUniverse,
   autoUniverseSize: a.autoUniverseSize, autoUniverseMinTurnoverCr: a.autoUniverseMinTurnoverCr,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
@@ -198,7 +198,6 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       trailStop: draft.trailStop,
       pauseLosingStrategies: draft.pauseLosingStrategies,
       skipFailedStrategies: draft.skipFailedStrategies,
-      allowShort: draft.allowShort,
       autoUniverse: draft.autoUniverse,
       autoUniverseSize: draft.autoUniverseSize,
       autoUniverseMinTurnoverCr: draft.autoUniverseMinTurnoverCr,
@@ -255,6 +254,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           <Stat label="Scope" value={a.targetMode === 'SINGLE_STOCK' ? a.targetSymbol : 'All watched'} />
           <Stat label="Eligible now" value={eligible.length} color={eligible.length ? 'var(--ok)' : undefined} />
           <Stat label="Entries today" value={`${live.entriesToday} / ${a.maxEntriesPerDay}`} />
+          <Stat label="Direction" value={a.tradeSide === 'BUY' ? 'Buy only' : a.tradeSide === 'SELL' ? 'Short only' : 'Buy + Short'} />
           <Stat label="Segments" value={[a.segments.intraday && 'Intraday', a.segments.swing && 'Swing', a.segments.fno && 'F&O'].filter(Boolean).join(' + ') || 'none'} />
           <Stat
             label="Prices"
@@ -366,11 +366,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Direction &amp; stocks:</span>
-          <Chip on={!draft.allowShort} onClick={() => setDraft({ ...draft, allowShort: !draft.allowShort })}
-            title="Long-only: cash entries are BUY only; a bearish F&O setup buys a put. Off allows intraday short selling and short futures. A swing SELL is never automated.">
-            {draft.allowShort ? 'Short selling ALLOWED' : 'Long-only (no short selling)'}
-          </Chip>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Stock selection:</span>
           <Chip on={draft.autoUniverse} onClick={() => setDraft({ ...draft, autoUniverse: !draft.autoUniverse })}
             title="Every 5 minutes from 09:20, pick the day's most liquid stocks that are up and holding their gains, and analyse them with the watchlist">
             Auto-pick today&apos;s movers {draft.autoUniverse ? 'on' : 'off'}

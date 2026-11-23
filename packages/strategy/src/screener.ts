@@ -94,19 +94,28 @@ export interface UniversePickOptions {
   readonly minTurnoverCr: number;
   readonly minPrice?: number;
   readonly maxPrice?: number;
-  /** Only stocks a long entry can work on: up on the day, above the open, upper half of the range. */
-  readonly longOnly: boolean;
+  /** The direction traded. BUY keeps stocks a long can work on, SELL ones a short can. */
+  readonly side: 'BUY' | 'SELL' | 'BOTH';
 }
+
+/** Up on the day, above the open, upper half of the range — or the mirror for a short. */
+const holdsMove = (q: QuoteLite, side: 'BUY' | 'SELL'): boolean => {
+  const ch = changePct(q);
+  return side === 'BUY'
+    ? ch >= PICK_CHANGE_PCT.min && q.ltp >= q.open && rangePosition(q) >= 0.5
+    : -ch >= PICK_CHANGE_PCT.min && q.ltp <= q.open && rangePosition(q) <= 0.5;
+};
 
 /**
  * The intraday universe for autonomous mode: the day's liquid movers, from
  * one batch-quote pass over the market — no candles.
  *
- * Long-only, a stock falling on the day can produce only setups the engine
+ * Buying only, a stock falling on the day can produce only setups the engine
  * will skip, so the list keeps stocks up on the day, trading above their open
  * and in the upper half of the day's range: where long breakout, VWAP and
- * trend setups form. Ranked by log turnover × day change, weighted toward the
- * top of the range, so a liquid mid-cap that is moving beats a sleepy mega-cap.
+ * trend setups form. Short only is the mirror; BOTH takes either. Ranked by
+ * log turnover × day change, weighted toward the end of the range the move is
+ * holding, so a liquid mid-cap that is moving beats a sleepy mega-cap.
  */
 export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOptions): QuoteLite[] {
   const passed = quotes.filter((q) => {
@@ -114,13 +123,13 @@ export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOption
     if (o.minPrice !== undefined && o.minPrice > 0 && q.ltp < o.minPrice) return false;
     if (o.maxPrice !== undefined && o.maxPrice > 0 && q.ltp > o.maxPrice) return false;
     if (turnoverCr(q) < o.minTurnoverCr) return false;
-    const ch = changePct(q);
-    const move = o.longOnly ? ch : Math.abs(ch);
-    if (move < PICK_CHANGE_PCT.min || move > PICK_CHANGE_PCT.max) return false;
-    return !o.longOnly || (q.ltp >= q.open && rangePosition(q) >= 0.5);
+    if (Math.abs(changePct(q)) > PICK_CHANGE_PCT.max) return false;
+    return o.side === 'BOTH' ? holdsMove(q, 'BUY') || holdsMove(q, 'SELL') : holdsMove(q, o.side);
   });
-  const score = (q: QuoteLite): number =>
-    Math.log10(1 + turnoverCr(q) * CRORE) * Math.abs(changePct(q)) * (o.longOnly ? 0.5 + rangePosition(q) : 1);
+  const score = (q: QuoteLite): number => {
+    const strength = changePct(q) >= 0 ? rangePosition(q) : 1 - rangePosition(q);
+    return Math.log10(1 + turnoverCr(q) * CRORE) * Math.abs(changePct(q)) * (0.5 + strength);
+  };
   return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, o.size));
 }
 
