@@ -253,6 +253,25 @@ export class UpstoxClient {
     return this.http.request('/v3/user/get-funds-and-margin', { plane: 'trading' });
   }
 
+  /**
+   * The account's money in rupees: `capital` is what it started the day with
+   * (opening balance + added − withdrawn), `available` what is free to trade
+   * right now, `used` the margin open positions and orders hold.
+   */
+  async fundsSummary(): Promise<Result<{ capital: number; available: number; used: number }, UpstoxError>> {
+    const r = await this.funds();
+    if (!r.ok) return r;
+    const parsed = S.fundsV3Response.safeParse(r.value);
+    if (!parsed.success) return err(new UpstoxError('BAD_REQUEST', `unexpected funds shape: ${parsed.error.message}`));
+    const a = parsed.data.data.available_to_trade;
+    const cash = a.cash_available_to_trade.cash;
+    return ok({
+      capital: (cash.opening_balance ?? 0) + (cash.added_today ?? 0) - (cash.withdrawn_today ?? 0),
+      available: a.total,
+      used: a.cash_available_to_trade.margin_used?.total ?? 0,
+    });
+  }
+
   async profile(): Promise<Result<unknown, UpstoxError>> {
     return this.http.request('/v2/user/profile', { plane: 'trading' });
   }

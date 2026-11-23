@@ -33,6 +33,8 @@ interface AutoConfig {
   reentryCooldownMin: number;
   closedBarEntries: boolean;
   htfBias: boolean;
+  htfBiasStrict: boolean;
+  maxLeverage: number;
 }
 
 interface AutoUniverseView {
@@ -82,6 +84,10 @@ interface LiveAnalysisResponse {
   auto: AutoConfig;
   entriesToday: number;
   entriesBySession?: { MORNING: number; AFTERNOON: number };
+  account?: {
+    riskCapital: number; fromBroker: boolean; available: number | null;
+    marginUtilisationPct: number; maxExposure: number; deployed: number;
+  };
   setups: LiveSetupView[];
   analyzed: number;
   autoUniverse?: AutoUniverseView;
@@ -113,7 +119,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -124,7 +130,8 @@ const draftOf = (a: AutoConfig): Draft => ({
   autoUniverseSize: a.autoUniverseSize, autoUniverseMinTurnoverCr: a.autoUniverseMinTurnoverCr,
   maxEntriesMorning: a.maxEntriesMorning, maxEntriesAfternoon: a.maxEntriesAfternoon,
   maxPerSector: a.maxPerSector, reentryCooldownMin: a.reentryCooldownMin,
-  closedBarEntries: a.closedBarEntries, htfBias: a.htfBias,
+  closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
+  maxLeverage: a.maxLeverage,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -218,6 +225,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       reentryCooldownMin: draft.reentryCooldownMin,
       closedBarEntries: draft.closedBarEntries,
       htfBias: draft.htfBias,
+      htfBiasStrict: draft.htfBiasStrict,
+      maxLeverage: draft.maxLeverage,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -275,6 +284,19 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             label="AM · PM entries"
             value={`${live.entriesBySession?.MORNING ?? 0}/${a.maxEntriesMorning} · ${live.entriesBySession?.AFTERNOON ?? 0}/${a.maxEntriesAfternoon}`}
           />
+          {live.account && (
+            <Stat
+              label={live.account.fromBroker ? 'Capital (Upstox)' : 'Capital (configured)'}
+              value={`₹${live.account.riskCapital.toLocaleString('en-IN')} · ₹${live.account.deployed.toLocaleString('en-IN')} / ₹${live.account.maxExposure.toLocaleString('en-IN')}`}
+            />
+          )}
+          {live.account?.fromBroker && (
+            <Stat
+              label="Margin used"
+              value={`${live.account.marginUtilisationPct}%`}
+              color={live.account.marginUtilisationPct >= 80 ? 'var(--danger)' : live.account.marginUtilisationPct >= 60 ? 'var(--warn)' : undefined}
+            />
+          )}
           <Stat label="Direction" value={a.tradeSide === 'BUY' ? 'Buy only' : a.tradeSide === 'SELL' ? 'Short only' : 'Buy + Short'} />
           <Stat label="Segments" value={[a.segments.intraday && 'Intraday', a.segments.swing && 'Swing', a.segments.fno && 'F&O'].filter(Boolean).join(' + ') || 'none'} />
           <Stat
@@ -353,6 +375,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxPerSector', 'Max per sector', 1, 50, 1, 'open positions in one NSE industry'],
             ['reentryCooldownMin', 'Re-entry cooldown (min)', 0, 120, 1, 'after a position in the symbol closes'],
             ['maxOpenPositions', 'Max open positions', 1, 50, 1, 'across all strategies'],
+            ['maxLeverage', 'Max intraday leverage (×)', 1, 5, 0.5, 'open MIS exposure ÷ capital; risk stays a % of capital'],
             ['maxPerStrategy', 'Max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
             ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
             ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
@@ -400,6 +423,12 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             title="Intraday entries only in the direction of the 15-minute trend: close vs VWAP, EMA20 vs EMA50, ADX ≥ 20">
             15-min trend filter {draft.htfBias ? 'on' : 'off'}
           </Chip>
+          {draft.htfBias && (
+            <Chip on={draft.htfBiasStrict} onClick={() => setDraft({ ...draft, htfBiasStrict: !draft.htfBiasStrict })}
+              title="Strict: VWAP side, EMA20/50 and ADX must all agree. Off: price on the trade's side of 15-min VWAP and no full 15-min trend against it">
+              {draft.htfBiasStrict ? 'Strict: full alignment' : 'VWAP side, no trend against'}
+            </Chip>
+          )}
           <Note>Entries only 09:45–11:30 and 13:30–14:45 IST. Pending entries cancel at 15:00; intraday positions square off at 15:05.</Note>
         </div>
 

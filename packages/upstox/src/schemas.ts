@@ -116,6 +116,21 @@ export const gttDetail = z.object({
 }).passthrough();
 export const gttDetailResponse = envelope(z.array(gttDetail));
 
+/** v3 get-funds-and-margin (the v2 shape above is per segment), the fields the engine sizes from. */
+export const fundsV3Response = envelope(z.object({
+  available_to_trade: z.object({
+    total: z.number(),
+    cash_available_to_trade: z.object({
+      cash: z.object({
+        opening_balance: z.number().nullable().optional(),
+        added_today: z.number().nullable().optional(),
+        withdrawn_today: z.number().nullable().optional(),
+      }).passthrough(),
+      margin_used: z.object({ total: z.number() }).passthrough().optional(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough());
+
 export const orderBookEntry = z.object({
   order_id: z.string(),
   status: z.string(),

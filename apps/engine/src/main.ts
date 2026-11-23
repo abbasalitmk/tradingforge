@@ -362,6 +362,83 @@ function ensureUpstoxBroker(): UpstoxBroker {
   return upstoxBroker;
 }
 
+// ─────────────────────────────── account capital ───────────────────────────────
+
+/**
+ * The Upstox account's real money. TF_MAX_DEPLOYED_CAPITAL is a ceiling, not
+ * a balance: sizing and the daily/per-trade loss limits taken as percentages
+ * of it would be percentages of money the account may not have.
+ */
+const account = {
+  capitalPaise: null as Paise | null, availablePaise: null as Paise | null, usedPaise: null as Paise | null,
+  at: 0, error: null as string | null,
+};
+
+async function refreshAccount(): Promise<void> {
+  if (tokens.trading() === null) return;
+  const r = await client.fundsSummary();
+  if (!r.ok) {
+    account.error = r.error.message;
+    return;
+  }
+  account.capitalPaise = rupeesToPaise(r.value.capital);
+  account.availablePaise = rupeesToPaise(r.value.available);
+  account.usedPaise = rupeesToPaise(r.value.used);
+  account.at = clock.ms();
+  account.error = null;
+}
+
+/** Capital the risk rules work from: in LIVE, the smaller of the configured ceiling and the account. */
+function capitalPaise(): Paise {
+  const ceiling = rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL);
+  return currentMode() === 'LIVE' && account.capitalPaise !== null && account.capitalPaise > 0
+    ? Math.min(ceiling, account.capitalPaise) as Paise
+    : ceiling;
+}
+
+/** Share of the account's capital Upstox holds as margin now — the MARGIN breaker's input. LIVE only. */
+function marginUtilisationPct(): number {
+  if (currentMode() !== 'LIVE' || !account.capitalPaise || account.capitalPaise <= 0 || account.usedPaise === null) return 0;
+  return Math.round((account.usedPaise / account.capitalPaise) * 1000) / 10;
+}
+
+/**
+ * Notional the account may still put on: capital × leverage for intraday,
+ * capital alone for delivery, less what open positions already hold — and
+ * never past the configured deployed-capital ceiling.
+ */
+function exposureRoomPaise(product: Product): Paise {
+  const deployed = trader.deployed();
+  const ceiling = rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed;
+  const leverage = product === 'I' ? state.auto.maxLeverage : 1;
+  return Math.max(0, Math.min(ceiling, capitalPaise() * leverage - deployed)) as Paise;
+}
+
+/**
+ * Shrink a LIVE order to what the account can margin right now, or refuse it.
+ * Upstox cancels an order the funds cannot cover — and a run of those trips
+ * the reject-rate breaker — so the check happens here, before placement.
+ */
+async function fitToFunds(o: {
+  instrumentKey: string; quantity: number; lotSize: number; side: Side; product: Product; price: number;
+}): Promise<{ ok: true; quantity: number } | { ok: false; reason: string }> {
+  if (currentMode() !== 'LIVE') return { ok: true, quantity: o.quantity };
+  await refreshAccount();
+  if (account.availablePaise === null) return { ok: false, reason: `account funds unavailable${account.error ? `: ${account.error}` : ''}` };
+  const m = await client.margin([{
+    instrument_key: o.instrumentKey, quantity: o.quantity, product: o.product, transaction_type: o.side, price: o.price,
+  }]);
+  if (!m.ok || !(m.value.finalMargin > 0)) return { ok: false, reason: `margin check failed${m.ok ? '' : `: ${m.error.message}`}` };
+  const available = paiseToRupees(account.availablePaise);
+  if (m.value.finalMargin <= available) return { ok: true, quantity: o.quantity };
+  // Keep 5% back: margin moves with price between this check and the fill.
+  const perUnit = m.value.finalMargin / o.quantity;
+  const fits = Math.floor((available * 0.95) / perUnit / o.lotSize) * o.lotSize;
+  return fits >= o.lotSize
+    ? { ok: true, quantity: fits }
+    : { ok: false, reason: `insufficient funds: ₹${m.value.finalMargin.toFixed(2)} margin for ${o.quantity}, ₹${available.toFixed(2)} available` };
+}
+
 // ─────────────────────────────── risk snapshot ───────────────────────────────
 
 function unrealisedTotal(): Paise {
@@ -374,7 +451,7 @@ function snapshot(): RiskSnapshot {
     worst = Math.min(worst, trader.unrealised(p, ltpOf(p.instrumentKey)));
   }
   return {
-    startingCapitalPaise: rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL),
+    startingCapitalPaise: capitalPaise(),
     realisedPnlPaise: trader.realisedPnl,
     unrealisedPnlPaise: unrealisedTotal(),
     openPositions: trader.live().length,
@@ -383,7 +460,7 @@ function snapshot(): RiskSnapshot {
     rejectsLast5Min: trader.rejectsLast5Min,
     orderTimestamps: trader.orderTimestamps,
     lastTickMs: state.lastTickMs,
-    marginUtilisationPct: 0,
+    marginUtilisationPct: marginUtilisationPct(),
     // An ORPHANED position is an engine/broker disagreement by definition.
     divergenceDetected: trader.hasOrphan(),
     manualHalt: state.manualHalt,
@@ -593,8 +670,8 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     fixedQty: state.fixedQty,
     budget: rupeesToPaise(state.budget),
     riskPct: state.riskPct,
-    capital: rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL),
-    availableMargin: (rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed) as Paise,
+    capital: capitalPaise(),
+    availableMargin: exposureRoomPaise(product),
     lotSize: 1,
     avgDailyVolume: Math.max(watchlist.get(key)?.volume ?? 0, 50_000),
     deployedCapital: deployed,
@@ -602,8 +679,13 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
   if (!sized.ok) return { ok: false, reason: `sizing: ${sized.reason} — ${sized.detail}` };
 
   // CAUTION shrinks the size; it must never round a rejection up to one share.
-  const qty = Math.floor(sized.result.quantity * ai.sizeMultiplier);
+  let qty = Math.floor(sized.result.quantity * ai.sizeMultiplier);
   if (qty < 1) return { ok: false, reason: 'AI caution reduced size below one share' };
+  const funded = await fitToFunds({
+    instrumentKey: key, quantity: qty, lotSize: 1, side: signal.side, product, price: paiseToRupees(signal.entry),
+  });
+  if (!funded.ok) return { ok: false, reason: funded.reason };
+  qty = funded.quantity;
 
   // Edge after costs. The strategy's R:R ignores brokerage, STT, exchange fees,
   // GST and stamp duty; on a tight intraday stop those are a large slice of the
@@ -678,7 +760,7 @@ async function sizeFno(plan: FnoPlan, volume: number, aiMultiplier: number): Pro
     fixedQty: cfg.TF_FNO_MAX_LOTS * c.lotSize,
     budget: rupeesToPaise(state.budget),
     riskPct: state.riskPct,
-    capital: rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL),
+    capital: capitalPaise(),
     availableMargin: (rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed) as Paise,
     lotSize: c.lotSize,
     avgDailyVolume: volume > 0 ? volume : Number.MAX_SAFE_INTEGER,
@@ -727,6 +809,11 @@ async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: En
   const c = plan.contract;
   feed.subscribe([c.instrumentKey], 'full');
   if (await primePrice(c.instrumentKey) === null) return fail(`no live quote for ${c.tradingSymbol}`);
+  const funded = await fitToFunds({
+    instrumentKey: c.instrumentKey, quantity: sized.qty, lotSize: c.lotSize, side: plan.side, product: 'I', price: paiseToRupees(plan.entry),
+  });
+  if (!funded.ok) return fail(funded.reason);
+  const lots = funded.quantity / c.lotSize;
 
   const r = await trader.open({
     segment: 'FO',
@@ -735,17 +822,17 @@ async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: En
     instrumentKey: c.instrumentKey,
     symbol: c.tradingSymbol,
     side: plan.side,
-    quantity: sized.qty,
+    quantity: funded.quantity,
     product: 'I',
     entry: plan.entry,
     stopLoss: plan.stopLoss,
     target: plan.target,
     trailingGap: plan.trailingGap,
-    costPaise: sized.cost,
+    costPaise: Math.round((sized.cost * funded.quantity) / sized.qty) as Paise,
     timeStopMin: c.instrumentType !== 'FUT' && cfg.TF_FNO_TIME_STOP_MIN > 0 ? cfg.TF_FNO_TIME_STOP_MIN : null,
     contract: {
       tradingSymbol: c.tradingSymbol, instrumentType: c.instrumentType, strike: c.strike,
-      expiry: c.expiry, lotSize: c.lotSize, lots: sized.lots,
+      expiry: c.expiry, lotSize: c.lotSize, lots,
     },
     underlyingSymbol: symbol,
     strategyId: meta.strategyId,
@@ -1368,6 +1455,13 @@ function startLoops(): void {
     void trader.manage(ltpOf, { eodOnly }).catch((e) => console.error('[manage]', e));
   }, 1_000);
 
+  // The account's real capital: the risk limits size from it in LIVE.
+  void refreshAccount();
+  setInterval(() => {
+    const mins = istMinutes(clock.now());
+    if (mins >= SESSION.OPEN - 15 && mins <= SESSION.CLOSE) void refreshAccount();
+  }, 60_000);
+
   // Live fills are pulled; the portfolio stream only makes them arrive sooner.
   setInterval(() => {
     if (upstoxBroker && trader.live().some((p) => p.broker === 'UPSTOX')) void upstoxBroker.sync();
@@ -1747,6 +1841,16 @@ const server = createServer(async (req, res) => {
         maxSpendPerTrade: cfg.TF_MAX_SPEND_PER_TRADE,
         maxDeployed: cfg.TF_MAX_DEPLOYED_CAPITAL,
         dailyLossLimitPct: cfg.TF_DAILY_LOSS_LIMIT_PCT,
+        riskCapital: paiseToRupees(capitalPaise()),
+      },
+      account: {
+        capital: account.capitalPaise !== null ? paiseToRupees(account.capitalPaise) : null,
+        available: account.availablePaise !== null ? paiseToRupees(account.availablePaise) : null,
+        marginUsed: account.usedPaise !== null ? paiseToRupees(account.usedPaise) : null,
+        marginUtilisationPct: marginUtilisationPct(),
+        maxExposure: paiseToRupees((capitalPaise() * state.auto.maxLeverage) as Paise),
+        at: account.at || null,
+        error: account.error,
       },
       pnl: {
         realised: paiseToRupees(trader.realisedPnl),
@@ -1814,6 +1918,14 @@ const server = createServer(async (req, res) => {
       auto: state.auto,
       entriesToday: state.autoEntries.count,
       entriesBySession: state.autoEntries.bySession,
+      account: {
+        riskCapital: paiseToRupees(capitalPaise()),
+        fromBroker: currentMode() === 'LIVE' && account.capitalPaise !== null,
+        available: account.availablePaise !== null ? paiseToRupees(account.availablePaise) : null,
+        marginUtilisationPct: marginUtilisationPct(),
+        maxExposure: paiseToRupees((capitalPaise() * state.auto.maxLeverage) as Paise),
+        deployed: paiseToRupees(trader.deployed()),
+      },
       focus: state.focus ? {
         ...state.focus,
         analysis: focus ? analysisView(focus) : null,
@@ -2394,7 +2506,7 @@ async function main(): Promise<void> {
     broker: live ? ensureUpstoxBroker() : paperBroker,
     brokerId: live ? 'UPSTOX' : 'PAPER',
     machine: positionMachine,
-    perTradeLossPaise: () => pctOf(rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL), cfg.limits.perTradeLossPct),
+    perTradeLossPaise: () => pctOf(capitalPaise(), cfg.limits.perTradeLossPct),
     onClosed: onPositionClosed,
   });
 

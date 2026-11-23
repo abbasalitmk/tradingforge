@@ -3,8 +3,8 @@ import {
   decide, canLead, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
-const upBias = { side: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
-const downBias = { ...upBias, side: 'SELL' as const, close: 99, reason: '15-min down' };
+const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
+const downBias = { ...upBias, side: 'SELL' as const, vwapSide: 'SELL' as const, emaSide: 'SELL' as const, close: 99, reason: '15-min down' };
 const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typeof decide>[0] => ({
   instrumentKey: 'NSE_EQ|X', symbol: 'X', style: 'INTRADAY', side: 'BUY',
   entry: 100, stopLoss: 98, target: 104, rewardRisk: 2, quality: 80,
@@ -203,8 +203,8 @@ describe('portfolio limits and strategy gating', () => {
 describe('session discipline', () => {
   it('takes intraday entries only with the 15-minute trend', () => {
     expect(decide(setup({ side: 'SELL', stopLoss: 102, target: 96 }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers.join())
-      .toContain('against 15-min bias');
-    expect(decide(setup({ bias: { ...upBias, side: null, reason: '15-min ADX 12 < 20 — no trend' } }), equity, on, paper).blockers.join())
+      .toContain('against a 15-min trend');
+    expect(decide(setup({ bias: { ...upBias, side: null, reason: '15-min ADX 12 < 20 — no trend' } }), equity, { ...on, htfBiasStrict: true }, paper).blockers.join())
       .toContain('no trend');
     expect(decide(setup({ bias: null }), equity, on, paper).blockers).toContain('15-min bias unavailable');
     expect(decide(setup({ bias: null }), equity, { ...on, htfBias: false }, paper).blockers).toEqual([]);
@@ -217,7 +217,22 @@ describe('session discipline', () => {
     expect(decide({ ...fade, bias: null }, equity, on, paper).blockers).toEqual([]);
     expect(decide({ ...fade, bias: downBias }, equity, on, paper).blockers.join()).toContain('fade against a 15-min trend');
     // A trend strategy still needs the trend with it.
-    expect(decide(setup({ bias: flat }), equity, on, paper).blockers.join()).toContain('no trend');
+    expect(decide(setup({ bias: flat }), equity, { ...on, htfBiasStrict: true }, paper).blockers.join()).toContain('no trend');
+  });
+
+  it('by default needs price on the right side of 15-min VWAP and no full trend against (23 Nov trades)', () => {
+    // PNB: bought into a full 15-min downtrend — blocked.
+    expect(decide(setup({ bias: downBias }), equity, on, paper).blockers.join()).toContain('against a 15-min trend');
+    // KARURVYSYA: above VWAP, EMAs not yet crossed up — traded (+1.86R).
+    const early = { ...upBias, side: null, emaSide: 'SELL' as const, reason: '15-min mixed' };
+    expect(decide(setup({ bias: early }), equity, on, paper).blockers).toEqual([]);
+    // ...but strict mode wants the EMAs and ADX too.
+    expect(decide(setup({ bias: early }), equity, { ...on, htfBiasStrict: true }, paper).blockers.join()).toContain('against 15-min bias');
+    // Below VWAP with EMAs still up: a long has nothing under it.
+    const under = { ...upBias, side: null, vwapSide: 'SELL' as const, reason: '15-min mixed' };
+    expect(decide(setup({ bias: under }), equity, on, paper).blockers.join()).toContain('wrong side of 15-min VWAP');
+    // An index has no VWAP; the EMAs decide.
+    expect(decide(setup({ bias: { ...upBias, side: null, vwapSide: null, vwap: null } }), equity, on, paper).blockers).toEqual([]);
   });
 
   it('caps entries per session inside the daily cap', () => {

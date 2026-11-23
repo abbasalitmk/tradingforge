@@ -4,7 +4,12 @@ import { resample15 } from './strategies/gmma.ts';
 
 /** The 15-minute trend a 5-minute entry must agree with. */
 export interface TrendBias {
+  /** Full alignment: VWAP side, EMA20/50 and ADX all agree. */
   readonly side: Side | null;
+  /** Which side of session VWAP the last complete 15-min close is on; null without volume. */
+  readonly vwapSide: Side | null;
+  /** Which way EMA20 sits against EMA50 on the 15-min chart. */
+  readonly emaSide: Side | null;
   readonly close: number | null;
   readonly vwap: number | null;
   readonly ema20: number | null;
@@ -41,7 +46,8 @@ export function trendBias15(closed5m: readonly Candle[], minAdx = BIAS_MIN_ADX):
   const e50 = latest(ema(closes, 50));
   const a = latest(adx(bars, 14).adx);
   const vw = latest(vwap(closed5m));
-  const base = { close, vwap: vw, ema20: e20, ema50: e50, adx: a };
+  const sideOf = (x: number | null, y: number | null): Side | null => (x === null || y === null || x === y ? null : x > y ? 'BUY' : 'SELL');
+  const base = { close, vwap: vw, ema20: e20, ema50: e50, adx: a, vwapSide: sideOf(close, vw), emaSide: sideOf(e20, e50) };
   if (close === null || e20 === null || e50 === null || a === null) {
     return { ...base, side: null, reason: `not enough 15-min history (${bars.length} bars, EMA50 needs 50)` };
   }

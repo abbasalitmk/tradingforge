@@ -40,3 +40,25 @@ describe('full quotes', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('funds summary', () => {
+  it('reads start-of-day capital and free margin from the v3 funds response', async () => {
+    // As Upstox returned it on 2026-11-23, with three MIS positions open.
+    const r = await clientReturning({
+      status: 'success',
+      data: {
+        available_to_trade: {
+          total: -23.87,
+          cash_available_to_trade: {
+            total: -23.87,
+            cash: { opening_balance: 1000, added_today: 3000, withdrawn_today: 0, amount_from_stock_sale: 0, unpaid_charges: 0 },
+            margin_used: { total: 4023.87 },
+          },
+          pledge_available_to_trade: {},
+        },
+        unavailable_to_trade: {},
+      },
+    }).fundsSummary();
+    expect(r).toEqual({ ok: true, value: { capital: 4000, available: -23.87, used: 4023.87 } });
+  });
+});

@@ -16,6 +16,20 @@ import {
  */
 export const MARKET_PROTECTION = -1;
 
+/**
+ * Which leg actually closed a bracket, from the fill price. Upstox may fill a
+ * triggered stop through the TARGET leg's resting order (repriced to a
+ * protected limit) and mark the STOPLOSS leg cancelled, so the order id alone
+ * says TARGET for what was a stop-out. The leg whose trigger the fill sits
+ * nearer to is the one that fired.
+ */
+export function exitLegOf(fill: number, rules: readonly schemas.GttRule[], fallback: 'TARGET' | 'STOPLOSS'): 'TARGET' | 'STOPLOSS' {
+  const target = rules.find((r) => r.strategy === 'TARGET')?.trigger_price;
+  const stop = rules.find((r) => r.strategy === 'STOPLOSS')?.trigger_price;
+  if (!(fill > 0) || target == null || stop == null) return fallback;
+  return Math.abs(fill - stop) < Math.abs(fill - target) ? 'STOPLOSS' : 'TARGET';
+}
+
 export interface UpstoxBrokerOptions {
   readonly client: UpstoxClient;
   readonly clock: Clock;
@@ -321,9 +335,10 @@ export class UpstoxBroker implements BrokerPort {
       if (done(fill, 'MANUAL')) return;
     }
 
-    for (const leg of ['TARGET', 'STOPLOSS'] as const) {
-      const rule = rules.find((r) => r.strategy === leg);
-      if (rule?.order_id && done(byId.get(rule.order_id), leg)) return;
+    for (const name of ['TARGET', 'STOPLOSS'] as const) {
+      const rule = rules.find((r) => r.strategy === name);
+      const o = rule?.order_id ? byId.get(rule.order_id) : undefined;
+      if (o && done(o, exitLegOf(o.average_price ?? 0, rules, name))) return;
     }
   }
 

@@ -52,6 +52,13 @@ export const AutoConfigSchema = z.object({
   closedBarEntries: z.boolean().default(true),
   /** Intraday entries only in the direction of the 15-minute trend (VWAP, EMA20/50, ADX). */
   htfBias: z.boolean().default(true),
+  /**
+   * Strict: VWAP side, EMA20/50 and ADX must all agree. Otherwise (default)
+   * price must be on the trade's side of 15-min VWAP and the 15-min trend
+   * must not be fully against it — an early trend whose EMAs have not crossed
+   * yet still trades.
+   */
+  htfBiasStrict: z.boolean().default(false),
   /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
   maxOpenPositions: z.number().int().min(1).max(50).default(5),
   maxPerStrategy: z.number().int().min(1).max(50).default(2),
@@ -88,6 +95,13 @@ export const AutoConfigSchema = z.object({
    */
   autoUniverse: z.boolean().default(true),
   autoUniverseSize: z.number().int().min(1).max(30).default(15),
+  /**
+   * Intraday exposure ceiling as a multiple of the account's capital: with
+   * ₹4,000 and 3×, open MIS positions may total ₹12,000. Risk per trade is
+   * still a % of capital at the stop — leverage changes how many shares, never
+   * how much a stop-out loses. Delivery is always 1×.
+   */
+  maxLeverage: z.number().min(1).max(5).default(3),
   /** Day turnover floor for an auto-picked stock, ₹ crore. */
   autoUniverseMinTurnoverCr: z.number().min(1).max(5000).default(25),
 });
@@ -112,6 +126,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   reentryCooldownMin: 5,
   closedBarEntries: true,
   htfBias: true,
+  htfBiasStrict: false,
   maxOpenPositions: 5,
   maxPerStrategy: 2,
   maxSameSide: 3,
@@ -122,6 +137,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   autoUniverse: true,
   autoUniverseSize: 15,
   autoUniverseMinTurnoverCr: 25,
+  maxLeverage: 3,
 };
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
@@ -255,7 +271,14 @@ export function biasBlocker(
     return bias?.side && bias.side !== side ? `${side} fade against a 15-min trend — ${bias.reason}` : null;
   }
   if (!bias) return '15-min bias unavailable';
-  return bias.side === side ? null : `${side} against 15-min bias — ${bias.reason}`;
+  if (cfg.htfBiasStrict) return bias.side === side ? null : `${side} against 15-min bias — ${bias.reason}`;
+  if (bias.side && bias.side !== side) return `${side} against a 15-min trend — ${bias.reason}`;
+  // An index has no VWAP; its EMAs carry the read alone.
+  const read = bias.vwapSide ?? bias.emaSide;
+  if (read !== side) {
+    return bias.vwapSide ? `${side} with price on the wrong side of 15-min VWAP — ${bias.reason}` : `${side} against 15-min EMAs — ${bias.reason}`;
+  }
+  return null;
 }
 
 /** Blockers that belong to the strategy itself, whatever the instrument. */
