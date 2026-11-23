@@ -216,16 +216,50 @@ describe('exits outside the bracket', () => {
     expect(sells.ok && sells.value.filter((o) => o.side === 'SELL')).toHaveLength(1);
   });
 
-  it('squares off intraday positions at 15:10 IST', async () => {
-    const s = setup('15:00');
+  it('squares off intraday positions at 15:05 IST', async () => {
+    const s = setup('14:50');
     s.tick(100);
     const r = await s.trader.open(intent());
     await s.settle();
-    s.clock.set(at('15:10'));
+    s.clock.set(at('15:04'));
+    await s.trader.manage(() => 101);
+    await s.settle();
+    expect(r.ok && r.position.state).toBe('MANAGING');
+    s.clock.set(at('15:05'));
     await s.trader.manage(() => 101);
     await s.settle();
     expect(r.ok && r.position.exitReason).toBe('EOD_SQUARE_OFF');
     expect(r.ok && r.position.state).toBe('CLOSED');
+  });
+
+  it('cancels every unfilled entry at 15:00 IST, delivery included', async () => {
+    const s = setup('14:58');
+    s.tick(100);
+    // Hold the entry unfilled, as a GTT waiting on its trigger would be.
+    Object.assign(s.broker, { fillEntry: () => {} });
+    const r = await s.trader.open(intent({ product: 'D', style: 'SWING' }));
+    await s.settle();
+    expect(r.ok && r.position.state).toBe('ENTRY_ACKED');
+    await s.trader.manage(() => null);
+    expect(r.ok && r.position.state).toBe('ENTRY_ACKED');
+    s.clock.set(at('15:00'));
+    await s.trader.manage(() => null);
+    await s.settle();
+    expect(r.ok && r.position.state).toBe('CANCELLED');
+  });
+
+  it('eodOnly still squares off at 15:05 but skips the discretionary exits', async () => {
+    const s = setup('14:50');
+    s.tick(100);
+    const r = await s.trader.open(intent({ timeStopMin: 1 }));
+    await s.settle();
+    s.clock.set(at('15:03'));
+    await s.trader.manage(() => 100, { eodOnly: true });
+    expect(r.ok && r.position.state).toBe('MANAGING');
+    s.clock.set(at('15:05'));
+    await s.trader.manage(() => 100, { eodOnly: true });
+    await s.settle();
+    expect(r.ok && r.position.exitReason).toBe('EOD_SQUARE_OFF');
   });
 
   it('time-stops a flat option before theta eats it, but leaves a winner alone', async () => {

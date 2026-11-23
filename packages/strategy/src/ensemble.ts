@@ -1,5 +1,6 @@
 import { type Candle, type Clock, type Side, type Signal, paiseToRupees, rupeesToPaise } from '@tradeforger/core';
 import { STRATEGY_CATALOG, type Params, type StrategyDefinition } from './catalog.ts';
+import type { OptionWalls } from './profile.ts';
 
 export interface StrategyVote {
   readonly strategyId: string;
@@ -50,6 +51,8 @@ export interface HybridInput {
    * hold only closed 5-minute bars, but an order fills at the live price.
    */
   readonly ltp?: number | null;
+  /** Option-chain walls, for an F&O underlying with a loaded chain. */
+  readonly options?: OptionWalls | null;
 }
 
 export interface HybridOptions {
@@ -141,6 +144,7 @@ export function analyzeHybrid(
         candles,
         higherTf: def.timeframe === '5m' ? input.daily : [],
         clock: input.clock,
+        ...(def.timeframe === '5m' && input.options ? { options: input.options } : {}),
       });
     }
     return {

@@ -9,6 +9,13 @@ import {
   type BrokerEvent, type BrokerListener, type ExitRequest, type ExitLeg,
 } from './port.ts';
 
+/**
+ * Market price protection on every market order we send: -1 is Upstox's
+ * automatic band. The exchange rejects API market orders without protection
+ * (0); a fixed percentage would be one number for every instrument's volatility.
+ */
+export const MARKET_PROTECTION = -1;
+
 export interface UpstoxBrokerOptions {
   readonly client: UpstoxClient;
   readonly clock: Clock;
@@ -106,6 +113,7 @@ export class UpstoxBroker implements BrokerPort {
       trigger_price: req.orderType.includes('SL') ? paiseToRupees(req.triggerPrice) : 0,
       is_amo: false,
       slice: false,
+      ...(req.orderType === 'MARKET' || req.orderType === 'SL-M' ? { market_protection: MARKET_PROTECTION } : {}),
     };
     const blocked = this.gate('order', payload);
     if (blocked) return err(blocked);
@@ -145,6 +153,7 @@ export class UpstoxBroker implements BrokerPort {
       return paiseToRupees(roundedPaise as Paise);
     };
 
+    const protection = o.marketProtection ?? MARKET_PROTECTION;
     const payload = {
       type: 'MULTIPLE',
       quantity: o.quantity,
@@ -152,14 +161,16 @@ export class UpstoxBroker implements BrokerPort {
       instrument_token: o.instrumentKey,
       transaction_type: o.side,
       rules: [
-        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: toTick(o.entryPrice) },
-        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: toTick(o.targetPrice) },
+        // Every leg goes out as a market order with price protection (MPP):
+        // the exchange refuses unprotected API market orders.
+        { strategy: 'ENTRY', trigger_type: o.entryTrigger, trigger_price: toTick(o.entryPrice), market_protection: protection },
+        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: toTick(o.targetPrice), market_protection: protection },
         {
           strategy: 'STOPLOSS',
           trigger_type: 'IMMEDIATE',
           trigger_price: toTick(o.stopLossPrice),
           ...(o.trailingGap && o.trailingGap > 0 ? { trailing_gap: toTick(o.trailingGap) } : {}),
-          market_protection: o.marketProtection ?? -1,
+          market_protection: protection,
         },
       ],
     };
@@ -220,7 +231,7 @@ export class UpstoxBroker implements BrokerPort {
       quantity: req.quantity, product: req.product, validity: 'DAY', price: 0,
       tag: `x-${req.positionId}`.slice(0, 20), instrument_token: req.instrumentKey,
       order_type: 'MARKET', transaction_type: req.side, disclosed_quantity: 0,
-      trigger_price: 0, is_amo: false, slice: false,
+      trigger_price: 0, is_amo: false, slice: false, market_protection: MARKET_PROTECTION,
     });
     if (r.ok) t.manualExitOrderId = r.value.brokerOrderId;
     return r;

@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import type { Candle, Clock, Mode, Side } from '@tradeforger/core';
-import { analyzeHybrid, type HybridSetup, type StrategyVote, type Params } from '@tradeforger/strategy';
+import type { Candle, Clock, EntrySession, Mode, Side } from '@tradeforger/core';
+import {
+  analyzeHybrid, getStrategy, trendBias15, type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
+} from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
   /** Master switch for autonomous entries. Analysis runs either way. */
@@ -36,6 +38,20 @@ export const AutoConfigSchema = z.object({
   /** Strategy ids allowed to trigger entries. Empty = every catalog strategy. */
   strategies: z.array(z.string()).max(50),
   maxEntriesPerDay: z.number().int().min(0).max(50),
+  /** Entries allowed in each entry session (09:45–11:30, 13:30–14:45), inside the daily cap. */
+  maxEntriesMorning: z.number().int().min(0).max(50).default(5),
+  maxEntriesAfternoon: z.number().int().min(0).max(50).default(3),
+  /** Open positions allowed in one NSE industry — several are one correlated bet. */
+  maxPerSector: z.number().int().min(1).max(50).default(2),
+  /** Minutes before a symbol may be entered again after a position in it closes (one 5-min bar). */
+  reentryCooldownMin: z.number().int().min(0).max(120).default(5),
+  /**
+   * Intraday setups are read off CLOSED 5-minute bars only. With this off they
+   * include the still-forming bar, and a signal can appear and vanish within it.
+   */
+  closedBarEntries: z.boolean().default(true),
+  /** Intraday entries only in the direction of the 15-minute trend (VWAP, EMA20/50, ADX). */
+  htfBias: z.boolean().default(true),
   /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
   maxOpenPositions: z.number().int().min(1).max(50).default(5),
   maxPerStrategy: z.number().int().min(1).max(50).default(2),
@@ -90,6 +106,12 @@ export const DEFAULT_AUTO: AutoConfig = {
   confirmSeconds: 6,
   strategies: [],
   maxEntriesPerDay: 5,
+  maxEntriesMorning: 5,
+  maxEntriesAfternoon: 3,
+  maxPerSector: 2,
+  reentryCooldownMin: 5,
+  closedBarEntries: true,
+  htfBias: true,
   maxOpenPositions: 5,
   maxPerStrategy: 2,
   maxSameSide: 3,
@@ -139,6 +161,8 @@ export interface LiveSetup extends HybridSetup {
   readonly stableSeconds: number;
   /** Analysis included the still-forming bar. */
   readonly partialBar: boolean;
+  /** The 15-minute trend an intraday entry must agree with. */
+  readonly bias: TrendBias | null;
   /** Set when the live price has already made the setup untradeable. */
   readonly invalidReason: string | null;
   /** What autonomous mode would do with it right now, and what stops it. */
@@ -163,6 +187,8 @@ export interface Target {
   readonly fnoUnderlying: boolean;
   /** Only an equity can be bought in the cash segment. */
   readonly cashTradeable: boolean;
+  /** NSE industry, for the per-sector cap; null when unknown (indices, outside the Nifty 500). */
+  readonly sector?: string | null;
 }
 
 export interface DecisionContext {
@@ -170,11 +196,17 @@ export interface DecisionContext {
   /** Strategy has a human-APPROVED registry version. */
   readonly approved: (strategyId: string) => boolean;
   readonly entriesToday: number;
+  /** The entry session now (null outside both), and the entries already made in each. */
+  readonly session?: EntrySession | null;
+  readonly entriesBySession?: Readonly<Record<EntrySession, number>>;
+  /** Seconds left before this symbol may be re-entered after an exit; 0 when free. */
+  readonly reentryWaitSec?: (symbol: string) => number;
   /** What is open right now, for the portfolio limits. */
   readonly open?: {
     readonly total: number;
     readonly byStrategy: Readonly<Record<string, number>>;
     readonly bySide: Readonly<Record<'BUY' | 'SELL', number>>;
+    readonly bySector?: Readonly<Record<string, number>>;
   };
   /** Recorded performance of a strategy in this mode, if any. */
   readonly record?: (strategyId: string) => StrategyRecord | null;
@@ -209,6 +241,23 @@ export function sideBlocker(side: Side, route: Route | null, cfg: AutoConfig): s
   return null;
 }
 
+/**
+ * Why an intraday entry this way is against the 15-minute trend, or null.
+ * A trend strategy needs the trend with it; a counter-trend one (mean
+ * reversion, traps, OI walls) fades moves by design, so it is stopped only
+ * by a 15-minute trend running against it.
+ */
+export function biasBlocker(
+  style: 'INTRADAY' | 'SWING', side: Side, bias: TrendBias | null, cfg: AutoConfig, strategyId?: string,
+): string | null {
+  if (!cfg.htfBias || style !== 'INTRADAY') return null;
+  if (strategyId && getStrategy(strategyId)?.counterTrend) {
+    return bias?.side && bias.side !== side ? `${side} fade against a 15-min trend — ${bias.reason}` : null;
+  }
+  if (!bias) return '15-min bias unavailable';
+  return bias.side === side ? null : `${side} against 15-min bias — ${bias.reason}`;
+}
+
 /** Blockers that belong to the strategy itself, whatever the instrument. */
 function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionContext): string[] {
   const blockers: string[] = [];
@@ -237,9 +286,10 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
  * not block for who it is or which way it points — so a tradeable signal is
  * never hidden behind a stronger one that could not be traded.
  */
-export function canLead(vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext): boolean {
+export function canLead(vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext, bias: TrendBias | null = null): boolean {
   if (!vote.side) return false;
   if (sideBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg)) return false;
+  if (biasBlocker(vote.style, vote.side, bias, cfg, vote.strategyId)) return false;
   return strategyBlockers(vote.strategyId, cfg, ctx).length === 0;
 }
 
@@ -260,6 +310,8 @@ export function decide(
   if (blocker) blockers.push(blocker);
   const side = sideBlocker(setup.side, route, cfg);
   if (side) blockers.push(side);
+  const bias = biasBlocker(setup.style, setup.side, setup.bias, cfg, setup.primaryStrategyId);
+  if (bias) blockers.push(bias);
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');
@@ -274,6 +326,12 @@ export function decide(
   }
   blockers.push(...strategyBlockers(setup.primaryStrategyId, cfg, ctx));
   if (ctx.entriesToday >= cfg.maxEntriesPerDay) blockers.push(`daily entry cap ${cfg.maxEntriesPerDay} reached`);
+  if (ctx.session && ctx.entriesBySession) {
+    const cap = ctx.session === 'MORNING' ? cfg.maxEntriesMorning : cfg.maxEntriesAfternoon;
+    if (ctx.entriesBySession[ctx.session] >= cap) blockers.push(`${ctx.session.toLowerCase()} entry cap ${cap} reached`);
+  }
+  const wait = ctx.reentryWaitSec?.(target.symbol) ?? 0;
+  if (wait > 0) blockers.push(`re-entry cooldown: ${target.symbol} closed recently, ${wait}s left`);
 
   // Portfolio: several entries from one strategy, or all on one side, are one
   // correlated bet sized as several. Cap the concentration, not just the count.
@@ -283,6 +341,8 @@ export function decide(
     if (byLead >= cfg.maxPerStrategy) blockers.push(`${byLead} open from ${setup.primaryStrategyId} (max ${cfg.maxPerStrategy})`);
     const sameSide = ctx.open.bySide[setup.side] ?? 0;
     if (sameSide >= cfg.maxSameSide) blockers.push(`${sameSide} ${setup.side === 'BUY' ? 'long' : 'short'} positions open (max ${cfg.maxSameSide})`);
+    const inSector = target.sector ? ctx.open.bySector?.[target.sector] ?? 0 : 0;
+    if (target.sector && inSector >= cfg.maxPerSector) blockers.push(`${inSector} open in ${target.sector} (max ${cfg.maxPerSector} per sector)`);
   }
 
   return { route, blockers };
@@ -298,6 +358,8 @@ export function mergeCandles(...sources: ReadonlyArray<readonly Candle[]>): Cand
   return [...byTs.values()].sort((a, b) => a.ts - b.ts);
 }
 
+const BAR_MS = 5 * 60_000;
+
 export interface CandleSource {
   /** Prior sessions + today's closed 5-min bars, oldest first. */
   intraday(key: string): readonly Candle[];
@@ -305,6 +367,8 @@ export interface CandleSource {
   partial(key: string): Candle | null;
   daily(key: string): readonly Candle[];
   ltp(key: string): number | null;
+  /** Option-chain walls for an F&O underlying whose chain is loaded. */
+  options?(key: string): OptionWalls | null;
 }
 
 /**
@@ -336,15 +400,22 @@ export class LiveAnalyzer {
     const seen = new Set<string>();
 
     for (const t of targets) {
-      const partial = this.src.partial(t.instrumentKey);
-      const intraday = partial ? mergeCandles(this.src.intraday(t.instrumentKey), [partial]) : [...this.src.intraday(t.instrumentKey)];
+      // A REST fetch can hand back the bar still forming; only bars whose five
+      // minutes are over count as closed.
+      const closed = this.src.intraday(t.instrumentKey).filter((c) => c.ts + BAR_MS <= now);
+      const partial = cfg.closedBarEntries ? null : this.src.partial(t.instrumentKey);
+      const intraday = partial ? mergeCandles(closed, [partial]) : closed;
+      const bias = closed.length > 0 ? trendBias15(closed) : null;
       const ltp = this.src.ltp(t.instrumentKey);
       // Every setup is priced at the live LTP: swing strategies read yesterday's close.
       const r = analyzeHybrid(
-        { instrumentKey: t.instrumentKey, symbol: t.symbol, intraday, daily: this.src.daily(t.instrumentKey), clock: this.clock, ltp },
+        {
+          instrumentKey: t.instrumentKey, symbol: t.symbol, intraday, daily: this.src.daily(t.instrumentKey), clock: this.clock, ltp,
+          options: this.src.options?.(t.instrumentKey) ?? null,
+        },
         {
           params, ...(strategies && strategies.length ? { strategies } : {}),
-          canLead: (v) => canLead(v, t, cfg, ctx),
+          canLead: (v) => canLead(v, t, cfg, ctx, bias),
         },
       );
 
@@ -362,6 +433,7 @@ export class LiveAnalyzer {
           stableSince: since,
           stableSeconds: Math.floor((now - since) / 1000),
           partialBar: partial !== null && s.style === 'INTRADAY',
+          bias: s.style === 'INTRADAY' ? bias : null,
           invalidReason: s.invalidReason ?? null,
         };
         const d = decide(base, t, cfg, ctx);

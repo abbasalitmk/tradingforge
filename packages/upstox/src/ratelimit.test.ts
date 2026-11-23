@@ -4,11 +4,11 @@ import { RateLimiter, ORDER_LIMITS, STANDARD_LIMITS } from './ratelimit.ts';
 
 const clock = () => new FixedClock(new Date('2026-09-14T04:30:00Z'));
 
-describe('order limiter — 10/sec', () => {
-  it('allows exactly 10 in the first second', () => {
+describe('order limiter — 8/sec, strictly under the SEBI 10/sec algo threshold', () => {
+  it('allows exactly 8 in the first second', () => {
     const c = clock();
     const l = new RateLimiter(ORDER_LIMITS, c);
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 8; i++) {
       expect(l.delayMs()).toBe(0);
       l.record();
     }
@@ -18,7 +18,7 @@ describe('order limiter — 10/sec', () => {
   it('recovers once the oldest hit ages out of the window', () => {
     const c = clock();
     const l = new RateLimiter(ORDER_LIMITS, c);
-    for (let i = 0; i < 10; i++) l.record();
+    for (let i = 0; i < 8; i++) l.record();
     expect(l.delayMs()).toBeGreaterThan(0);
     c.advance(1001);
     expect(l.delayMs()).toBe(0);
@@ -38,22 +38,22 @@ describe('order limiter — 10/sec', () => {
 });
 
 describe('the order bucket is shared across all order operations', () => {
-  it('place/modify/cancel/GTT together hit the same 10/sec ceiling', () => {
+  it('place/modify/cancel/GTT together hit the same 8/sec ceiling', () => {
     const c = clock();
     const shared = new RateLimiter(ORDER_LIMITS, c);
-    // Four different operation types, ten calls total.
-    for (const _op of ['place', 'modify', 'cancel', 'gtt', 'place', 'modify', 'cancel', 'gtt', 'place', 'modify']) {
+    // Four different operation types, eight calls total.
+    for (const _op of ['place', 'modify', 'cancel', 'gtt', 'place', 'modify', 'cancel', 'gtt']) {
       expect(shared.delayMs()).toBe(0);
       shared.record();
     }
-    // An eleventh must wait — this is the bug that four separate limiters
+    // A ninth must wait — this is the bug that four separate limiters
     // would miss, each believing it was compliant.
     expect(shared.delayMs()).toBeGreaterThan(0);
   });
 });
 
 describe('standard limiter — 50/sec', () => {
-  it('is five times more permissive than the order bucket', () => {
+  it('is more permissive than the order bucket', () => {
     const c = clock();
     const l = new RateLimiter(STANDARD_LIMITS, c);
     for (let i = 0; i < 50; i++) l.record();

@@ -3,11 +3,13 @@ import {
   decide, canLead, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
+const upBias = { side: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
+const downBias = { ...upBias, side: 'SELL' as const, close: 99, reason: '15-min down' };
 const setup = (over: Partial<Parameters<typeof decide>[0]> = {}): Parameters<typeof decide>[0] => ({
   instrumentKey: 'NSE_EQ|X', symbol: 'X', style: 'INTRADAY', side: 'BUY',
   entry: 100, stopLoss: 98, target: 104, rewardRisk: 2, quality: 80,
   primaryStrategyId: 'ORB_SUPERTREND', agreeing: [], conflicting: [], votes: [], reasons: [],
-  generatedAt: 0, stableSince: 0, stableSeconds: 10, partialBar: true, invalidReason: null,
+  generatedAt: 0, stableSince: 0, stableSeconds: 10, partialBar: true, invalidReason: null, bias: upBias,
   ...over,
 });
 const equity: Target = { instrumentKey: 'NSE_EQ|X', symbol: 'X', fnoUnderlying: false, cashTradeable: true };
@@ -78,9 +80,9 @@ describe('autonomous entry decision', () => {
   });
 
   it('trades only the direction the filter allows: buy by default, short or both on request', () => {
-    expect(decide(setup({ side: 'SELL' }), equity, on, paper).blockers).toContain('direction filter is buy only');
-    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
-    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'SELL' }, paper).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, on, paper).blockers).toContain('direction filter is buy only');
+    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, { ...on, tradeSide: 'SELL' }, paper).blockers).toEqual([]);
     expect(decide(setup(), equity, { ...on, tradeSide: 'SELL' }, paper).blockers).toContain('direction filter is short only');
   });
 
@@ -91,20 +93,23 @@ describe('autonomous entry decision', () => {
 
   it('applies the direction filter to the F&O view', () => {
     const fno = { ...on, segments: { ...on.segments, fno: true } };
-    expect(decide(setup({ side: 'SELL' }), index, fno, paper).blockers).toContain('direction filter is buy only');
-    expect(decide(setup({ side: 'SELL' }), index, { ...fno, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL', bias: downBias }), index, fno, paper).blockers).toContain('direction filter is buy only');
+    expect(decide(setup({ side: 'SELL', bias: downBias }), index, { ...fno, tradeSide: 'BOTH' }, paper).blockers).toEqual([]);
   });
 
   it('lets only a tradeable vote lead', () => {
     const vote = (strategyId: string, side: 'BUY' | 'SELL') =>
       ({ strategyId, name: strategyId, style: 'INTRADAY' as const, side, confidence: 80, signal: null, reasons: [] });
-    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper)).toBe(true);
-    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, on, paper)).toBe(false);
-    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, { ...on, tradeSide: 'SELL' }, paper)).toBe(true);
-    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, { ...on, tradeSide: 'SELL' }, paper)).toBe(false);
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper, upBias)).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, on, paper, downBias)).toBe(false);
+    expect(canLead(vote('VWAP_PULLBACK', 'SELL'), equity, { ...on, tradeSide: 'SELL' }, paper, downBias)).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, { ...on, tradeSide: 'SELL' }, paper, upBias)).toBe(false);
     const live = { ...paper, mode: 'LIVE' as const, approved: (id: string) => id === 'ORB_SUPERTREND' };
-    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, live)).toBe(false);
-    expect(canLead(vote('ORB_SUPERTREND', 'BUY'), equity, on, live)).toBe(true);
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, live, upBias)).toBe(false);
+    expect(canLead(vote('ORB_SUPERTREND', 'BUY'), equity, on, live, upBias)).toBe(true);
+    // A vote against the 15-minute trend cannot lead; neither can any without one.
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper, downBias)).toBe(false);
+    expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper, null)).toBe(false);
   });
 
   it('rejects out-of-range user settings', () => {
@@ -147,7 +152,7 @@ describe('swing setups re-priced to the live market', () => {
 
   it('a gap toward the target is caught by the R:R floor in decide()', () => {
     const { setup: s } = repriceToMarket(swing, 108);
-    const d = decide({ ...s, stableSince: 0, stableSeconds: 60, partialBar: false, invalidReason: null }, equity,
+    const d = decide({ ...s, stableSince: 0, stableSeconds: 60, partialBar: false, invalidReason: null, bias: null }, equity,
       { ...on, segments: { ...on.segments, swing: true } }, paper);
     expect(d.blockers.join()).toContain('R:R');
   });
@@ -162,7 +167,7 @@ describe('portfolio limits and strategy gating', () => {
       '5 positions open (max 5)', '2 open from ORB_SUPERTREND (max 2)', '3 long positions open (max 3)',
     ]));
     // A short is a different bet from the open longs.
-    expect(decide(setup({ side: 'SELL' }), equity, { ...on, tradeSide: 'BOTH' }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, { ...on, tradeSide: 'BOTH' }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
   });
 
   it('pauses a strategy only once its own record is meaningful and losing', () => {
@@ -192,5 +197,46 @@ describe('portfolio limits and strategy gating', () => {
     // Never validated is not the same as failed: paper is where it earns a record.
     expect(decide(setup(), equity, on, { ...paper, verdict: () => null }).blockers).toEqual([]);
     expect(decide(setup(), equity, on, { ...paper, verdict: () => ({ status: 'VALIDATED' as const, oosExpectancyR: 0.2 }) }).blockers).toEqual([]);
+  });
+});
+
+describe('session discipline', () => {
+  it('takes intraday entries only with the 15-minute trend', () => {
+    expect(decide(setup({ side: 'SELL', stopLoss: 102, target: 96 }), equity, { ...on, tradeSide: 'BOTH' }, paper).blockers.join())
+      .toContain('against 15-min bias');
+    expect(decide(setup({ bias: { ...upBias, side: null, reason: '15-min ADX 12 < 20 — no trend' } }), equity, on, paper).blockers.join())
+      .toContain('no trend');
+    expect(decide(setup({ bias: null }), equity, on, paper).blockers).toContain('15-min bias unavailable');
+    expect(decide(setup({ bias: null }), equity, { ...on, htfBias: false }, paper).blockers).toEqual([]);
+  });
+
+  it('lets a counter-trend strategy fade a flat 15-minute tape, never a trend against it', () => {
+    const fade = setup({ primaryStrategyId: 'BB_RSI_REVERSION' });
+    const flat = { ...upBias, side: null, reason: '15-min ADX 12 < 20 — no trend' };
+    expect(decide({ ...fade, bias: flat }, equity, on, paper).blockers).toEqual([]);
+    expect(decide({ ...fade, bias: null }, equity, on, paper).blockers).toEqual([]);
+    expect(decide({ ...fade, bias: downBias }, equity, on, paper).blockers.join()).toContain('fade against a 15-min trend');
+    // A trend strategy still needs the trend with it.
+    expect(decide(setup({ bias: flat }), equity, on, paper).blockers.join()).toContain('no trend');
+  });
+
+  it('caps entries per session inside the daily cap', () => {
+    const ctx = { ...paper, entriesToday: 5, session: 'AFTERNOON' as const, entriesBySession: { MORNING: 5, AFTERNOON: 3 } };
+    const d = decide(setup(), equity, { ...on, maxEntriesPerDay: 8 }, ctx);
+    expect(d.blockers).toEqual(['afternoon entry cap 3 reached']);
+    expect(decide(setup(), equity, { ...on, maxEntriesPerDay: 8 }, { ...ctx, entriesBySession: { MORNING: 5, AFTERNOON: 2 } }).blockers).toEqual([]);
+  });
+
+  it('waits out the re-entry cooldown after a position in the symbol closes', () => {
+    const d = decide(setup(), equity, on, { ...paper, reentryWaitSec: (sym) => (sym === 'X' ? 120 : 0) });
+    expect(d.blockers.join()).toContain('re-entry cooldown');
+  });
+
+  it('caps open positions per sector', () => {
+    const banked: Target = { ...equity, sector: 'Financial Services' };
+    const open = { total: 2, byStrategy: {}, bySide: { BUY: 2, SELL: 0 }, bySector: { 'Financial Services': 2 } };
+    expect(decide(setup(), banked, on, { ...paper, open }).blockers.join()).toContain('per sector');
+    expect(decide(setup(), { ...banked, sector: 'Power' }, on, { ...paper, open }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...paper, open }).blockers).toEqual([]);
   });
 });

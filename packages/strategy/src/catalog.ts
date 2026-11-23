@@ -11,6 +11,12 @@ import { ICHIMOKU_CLOUD } from './strategies/ichimoku.ts';
 import { SMC_STRUCTURE } from './strategies/smc.ts';
 import { CANDLESTICK_PATTERNS } from './strategies/candlestick.ts';
 import { TECHNICAL_COMPOSITE } from './strategies/technicalComposite.ts';
+import { GAP_AND_GO } from './strategies/gapAndGo.ts';
+import { EMA_CROSS } from './strategies/emaCross.ts';
+import { PDH_PDL_CPR } from './strategies/pdhCpr.ts';
+import { BB_RSI_REVERSION } from './strategies/bbRsiReversion.ts';
+import { FAILED_BREAKOUT_TRAP } from './strategies/failedBreakout.ts';
+import { OI_WALL_REVERSAL } from './strategies/oiWall.ts';
 
 // The definition contract lives in definition.ts (so strategy files can use it
 // without an import cycle); re-exported here so the catalog's API is unchanged.
@@ -18,6 +24,7 @@ export { type Params, type ParamBound, type StrategyDefinition, tagged, clampPar
 export {
   VWAP_PULLBACK, SUPERTREND_MOMENTUM, BB_SQUEEZE_BREAKOUT, RSI_MEAN_REVERSION, DONCHIAN_BREAKOUT, GMMA_TREND,
   ICHIMOKU_CLOUD, SMC_STRUCTURE, CANDLESTICK_PATTERNS, TECHNICAL_COMPOSITE,
+  GAP_AND_GO, EMA_CROSS, PDH_PDL_CPR, BB_RSI_REVERSION, FAILED_BREAKOUT_TRAP, OI_WALL_REVERSAL,
 };
 
 export const ORB_SUPERTREND: StrategyDefinition = {
@@ -75,6 +82,13 @@ export const STRATEGY_CATALOG: StrategyDefinition[] = [
   SMC_STRUCTURE,
   CANDLESTICK_PATTERNS,
   TECHNICAL_COMPOSITE,
+  // Intraday playbook: gap, EMA cross, PDH/PDL + CPR, mean reversion, traps, OI walls.
+  GAP_AND_GO,
+  EMA_CROSS,
+  PDH_PDL_CPR,
+  BB_RSI_REVERSION,
+  FAILED_BREAKOUT_TRAP,
+  OI_WALL_REVERSAL,
 ];
 
 export const getStrategy = (id: string): StrategyDefinition | undefined =>

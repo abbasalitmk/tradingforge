@@ -497,10 +497,12 @@ export class Trader {
   }
 
   /**
-   * Time-driven exits, run every second. Exits are risk-REDUCING, so they run
-   * even when entry breakers are tripped.
+   * Time-driven exits, run every second off a timer — not the tick stream, so a
+   * dead feed cannot hold them up. Exits are risk-REDUCING, so they run even
+   * when entry breakers are tripped. `eodOnly` keeps just the session-end
+   * cancel and square-off, for when a breaker has stopped every other exit.
    */
-  async manage(ltpOf: (key: string) => number | null): Promise<void> {
+  async manage(ltpOf: (key: string) => number | null, opts: { eodOnly?: boolean } = {}): Promise<void> {
     this.rollDay();
     const now = this.d.clock.ms();
     const mins = istMinutes(this.d.clock.now());
@@ -508,14 +510,17 @@ export class Trader {
 
     for (const p of this.live()) {
       // An intraday position still open from an earlier session is overdue, not
-      // "before 15:10" — square it off as soon as the market can price the exit.
+      // "before 15:05" — square it off as soon as the market can price the exit.
       const overdue = istDateKey(new Date(p.openedAt)) !== this.day && mins >= SESSION.OPEN;
       const eod = p.product === 'I' && (mins >= SESSION.SQUARE_OFF || overdue);
-      if (p.state === 'ENTRY_ACKED' && eod) {
+      // Every unfilled entry goes at 15:00, whatever its product: one filling
+      // minutes before the square-off is a trade with no runway.
+      if (p.state === 'ENTRY_ACKED' && (mins >= SESSION.CANCEL_PENDING || eod)) {
         await this.exit(p.id, 'EOD_CANCEL');
         continue;
       }
       if (p.state !== 'MANAGING') continue;
+      if (opts.eodOnly && !eod) continue;
       const ltp = ltpOf(p.instrumentKey);
       if (ltp !== null && ltp > 0) this.excursion(p, rupeesToPaise(ltp));
 

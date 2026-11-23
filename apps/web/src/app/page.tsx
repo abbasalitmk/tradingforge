@@ -2483,7 +2483,7 @@ export default function Dashboard() {
           </div>
 
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {formStrategyMode === 'BOTH' ? 'Intraday (5-min) and swing (daily) strategies both trade' : formStrategyMode === 'INTRADAY' ? 'Intraday strategies on 5-min bars · squared off by 15:10 IST' : 'Swing strategies on daily bars · delivery, held overnight'}
+            {formStrategyMode === 'BOTH' ? 'Intraday (5-min) and swing (daily) strategies both trade' : formStrategyMode === 'INTRADAY' ? 'Intraday strategies on 5-min bars · squared off by 15:05 IST' : 'Swing strategies on daily bars · delivery, held overnight'}
           </div>
         </div>
 
@@ -2964,7 +2964,7 @@ export default function Dashboard() {
           <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 18px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ color: 'var(--muted)', fontSize: 12, fontWeight: 500 }}>Active Auto Strategy</div>
-              <Hint term="Strategy Modes" explanation="Intraday: 5-min strategies, squared off by 15:10 IST. Swing: daily-bar strategies, delivery positions held overnight. Both: either kind may enter. This controls what autonomous mode trades." />
+              <Hint term="Strategy Modes" explanation="Intraday: 5-min strategies, squared off by 15:05 IST. Swing: daily-bar strategies, delivery positions held overnight. Both: either kind may enter. This controls what autonomous mode trades." />
             </div>
             <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ color: 'var(--accent)' }}>DUAL (Intraday + Swing)</span>

@@ -14,7 +14,10 @@ export interface BucketSpec {
  * the category, so independent limiters would each believe they were compliant
  * while collectively breaching.
  */
-export const ORDER_LIMITS: BucketSpec = { perSecond: 10, perMinute: 500, per30Min: 2000 };
+// 8/sec, not Upstox's 10: SEBI's retail-algo framework treats a client above
+// 10 orders a second as an algo needing exchange registration, so this stays
+// strictly below it with room for clock skew between us and the exchange.
+export const ORDER_LIMITS: BucketSpec = { perSecond: 8, perMinute: 500, per30Min: 2000 };
 export const STANDARD_LIMITS: BucketSpec = { perSecond: 50, perMinute: 500, per30Min: 2000 };
 
 /**

@@ -158,10 +158,15 @@ describe('divergence and maintenance block exits too', () => {
 
 describe('session windows', () => {
   it.each([
-    ['09:16 IST — before entry window opens', '2026-09-14T03:46:00Z', true],
-    ['09:20 IST — entry window opens',        '2026-09-14T03:50:00Z', false],
-    ['14:44 IST — last minute of window',     '2026-09-14T09:14:00Z', false],
-    ['14:45 IST — entry window closes',       '2026-09-14T09:15:00Z', true],
+    ['09:16 IST — opening volatility',          '2026-09-14T03:46:00Z', true],
+    ['09:44:59 IST — still opening volatility', '2026-09-14T04:14:59Z', true],
+    ['09:45:00 IST — morning session opens',    '2026-09-14T04:15:00Z', false],
+    ['11:30:00 IST — morning session last second', '2026-09-14T06:00:00Z', false],
+    ['11:30:01 IST — midday chop',              '2026-09-14T06:00:01Z', true],
+    ['13:29:59 IST — still midday chop',        '2026-09-14T07:59:59Z', true],
+    ['13:30:00 IST — afternoon session opens',  '2026-09-14T08:00:00Z', false],
+    ['14:45:00 IST — afternoon last second',    '2026-09-14T09:15:00Z', false],
+    ['14:45:01 IST — after the cut-off',        '2026-09-14T09:15:01Z', true],
   ])('%s', (_label, iso, expectTrip) => {
     const v = evaluate(snapshot({ lastTickMs: new Date(iso).getTime() }), DEFAULT_LIMITS, new FixedClock(new Date(iso)));
     expect(ids(v).includes('OUTSIDE_WINDOW')).toBe(expectTrip);
@@ -170,8 +175,8 @@ describe('session windows', () => {
 
 describe('square-off', () => {
   it.each([
-    ['15:09 IST', '2026-09-14T09:39:00Z', false],
-    ['15:10 IST', '2026-09-14T09:40:00Z', true],
+    ['15:04 IST', '2026-09-14T09:34:00Z', false],
+    ['15:05 IST', '2026-09-14T09:35:00Z', true],
     ['15:25 IST', '2026-09-14T09:55:00Z', true],
   ])('%s', (_l, iso, expected) => {
     expect(mustSquareOff(new FixedClock(new Date(iso)))).toBe(expected);

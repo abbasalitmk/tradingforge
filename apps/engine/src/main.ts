@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import {
-  SystemClock, istHHMM, istDateKey, istMinutes, SESSION, rupeesToPaise, paiseToRupees,
+  SystemClock, istHHMM, istDateKey, istMinutes, SESSION, rupeesToPaise, paiseToRupees, entrySession, type EntrySession,
   type Paise, type Candle, type Tick, type Side, type Signal, type SizingMode, type Mode, type Product, pctOf, computeIndianCharges,
 } from '@tradeforger/core';
 import { db, audit, closeDb, runMigrations } from '@tradeforger/db';
@@ -25,8 +25,8 @@ import {
   DEFAULT_OPTION_PLAN, DEFAULT_STRIKE_PARAMS, fetchMasterRows, parseMaster, parseEquities, FnoDesk,
   type FnoPlan, type FnoPlanView, type DerivativeContract, type EquityInstrument,
 } from '@tradeforger/fno';
-import { STRATEGY_CATALOG, pickUniverse, type ScanFilters, type QuoteLite } from '@tradeforger/strategy';
-import { loadConfig, LIVE_CONFIRMATION, type EngineConfig } from './config.ts';
+import { STRATEGY_CATALOG, pickUniverse, sectorOf, type ScanFilters, type QuoteLite, type OptionWalls } from '@tradeforger/strategy';
+import { loadConfig, LIVE_CONFIRMATION, MAX_RISK_PCT, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
 import { Trader, isOperatorExit, type ManagedPosition } from './trader.ts';
 import { PositionStore, EngineStateStore } from './journal.ts';
@@ -166,7 +166,7 @@ const state = {
     minRewardRisk: cfg.TF_AUTO_MIN_RR,
     segments: segmentsForMode(cfg.TF_AUTO_TRADING_MODE, DEFAULT_AUTO.segments),
   } as AutoConfig,
-  autoEntries: { day: '', count: 0 },
+  autoEntries: { day: '', count: 0, bySession: { MORNING: 0, AFTERNOON: 0 } as Record<EntrySession, number> },
   /** The single stock the dashboard is analysing in real time. */
   focus: null as { instrumentKey: string; symbol: string } | null,
   /** Resolved instrument for SINGLE_STOCK scope; analysed whatever the focus is. */
@@ -176,7 +176,7 @@ const state = {
   sizingMode: cfg.TF_SIZING_MODE as SizingMode,
   budget: cfg.TF_BUDGET,
   fixedQty: cfg.TF_FIXED_QTY ?? 10,
-  riskPct: cfg.TF_RISK_PCT,
+  riskPct: Math.min(cfg.TF_RISK_PCT, MAX_RISK_PCT),
   manualHalt: false,
   startedAt: clock.ms(),
   ticks: 0,
@@ -511,7 +511,14 @@ async function primePrice(instrumentKey: string): Promise<number | null> {
   return q.last_price;
 }
 
+/** When each symbol (an F&O position's underlying) last had a position close. */
+const lastExitAt = new Map<string, number>();
+const noteExit = (p: ManagedPosition): void => {
+  if (p.closedAt !== null) lastExitAt.set(p.underlyingSymbol ?? p.symbol, Math.max(lastExitAt.get(p.underlyingSymbol ?? p.symbol) ?? 0, p.closedAt));
+};
+
 function onPositionClosed(p: ManagedPosition): void {
+  noteExit(p);
   // The strategy's record must include this trade before its next entry is judged.
   void memory.record(p, currentMode()).then(() => refreshStrategyRecords()).catch(() => undefined);
   void audit(sql, {
@@ -776,12 +783,33 @@ const memory = new TradeMemory(sql);
 let equities: EquityInstrument[] = [];
 let masterContracts: DerivativeContract[] | null = null;
 
+/** Call/put OI walls from the loaded chain of the F&O underlying `key` signals for. */
+function optionWallsFor(key: string): OptionWalls | null {
+  if (!state.fnoEnabled) return null;
+  for (const d of fnoDesk.states.values()) {
+    if (d.signalKey !== key || !d.chain || !d.analytics) continue;
+    const { chain, analytics } = d;
+    const at = (strike: number) => chain.rows.find((r) => r.strike === strike);
+    const added = (q: { oi: number; prevOi: number } | null | undefined): number => (q ? q.oi - q.prevOi : 0);
+    return {
+      spot: chain.spot,
+      callWall: analytics.callWall,
+      putWall: analytics.putWall,
+      callWallOiChange: added(at(analytics.callWall)?.call),
+      putWallOiChange: added(at(analytics.putWall)?.put),
+      at: chain.fetchedAt,
+    };
+  }
+  return null;
+}
+
 const candleSource = {
   intraday: (key: string): Candle[] =>
     mergeCandles(historyCache.get(key) ?? [], intradayCandlesCache.get(key) ?? []).slice(-400),
   partial: (key: string): Candle | null => aggregator5m.peek(key),
   daily: (key: string): Candle[] => dailyCandlesCache.get(key) ?? [],
   ltp: ltpOf,
+  options: optionWallsFor,
 };
 const analyzer = new LiveAnalyzer(clock, candleSource);
 
@@ -833,7 +861,7 @@ function targets(): Target[] {
     const desk = state.fnoEnabled ? fnoDesk.states.get(w.symbol) : undefined;
     map.set(w.instrumentKey, {
       instrumentKey: w.instrumentKey, symbol: w.symbol, cashTradeable: true,
-      fnoUnderlying: desk?.signalKey === w.instrumentKey,
+      fnoUnderlying: desk?.signalKey === w.instrumentKey, sector: sectorOf(w.symbol),
     });
   }
   if (state.fnoEnabled) {
@@ -841,19 +869,19 @@ function targets(): Target[] {
       if (!d.signalKey || map.has(d.signalKey)) continue;
       map.set(d.signalKey, {
         instrumentKey: d.signalKey, symbol: d.symbol,
-        cashTradeable: d.signalKey.startsWith('NSE_EQ|'), fnoUnderlying: true,
+        cashTradeable: d.signalKey.startsWith('NSE_EQ|'), fnoUnderlying: true, sector: sectorOf(d.symbol),
       });
     }
   }
   if (state.focus && !map.has(state.focus.instrumentKey)) {
     map.set(state.focus.instrumentKey, {
-      ...state.focus, cashTradeable: state.focus.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false,
+      ...state.focus, cashTradeable: state.focus.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false, sector: sectorOf(state.focus.symbol),
     });
   }
   const single = state.auto.targetMode === 'SINGLE_STOCK' ? state.singleTarget : null;
   if (single && !map.has(single.instrumentKey)) {
     map.set(single.instrumentKey, {
-      ...single, cashTradeable: single.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false,
+      ...single, cashTradeable: single.instrumentKey.startsWith('NSE_EQ|'), fnoUnderlying: false, sector: sectorOf(single.symbol),
     });
   }
   return [...map.values()];
@@ -1077,13 +1105,24 @@ function decisionContext(): DecisionContext {
   const open = trader.live();
   const byStrategy: Record<string, number> = {};
   for (const p of open) if (p.strategyId) byStrategy[p.strategyId] = (byStrategy[p.strategyId] ?? 0) + 1;
+  const bySector: Record<string, number> = {};
+  for (const p of open) {
+    const sector = sectorOf(p.underlyingSymbol ?? p.symbol);
+    if (sector) bySector[sector] = (bySector[sector] ?? 0) + 1;
+  }
+  const now = clock.ms();
+  const cooldownMs = state.auto.reentryCooldownMin * 60_000;
   return {
     mode: currentMode(),
     approved: (id) => registry.approved(id) !== null,
     entriesToday: state.autoEntries.count,
+    session: entrySession(clock.now()),
+    entriesBySession: state.autoEntries.bySession,
+    reentryWaitSec: (symbol) => Math.max(0, Math.ceil(((lastExitAt.get(symbol) ?? 0) + cooldownMs - now) / 1000)),
     open: {
       total: open.length,
       byStrategy,
+      bySector,
       bySide: { BUY: open.filter((p) => p.side === 'BUY').length, SELL: open.filter((p) => p.side === 'SELL').length },
     },
     record: (id) => strategyRecords.get(id) ?? null,
@@ -1093,7 +1132,7 @@ function decisionContext(): DecisionContext {
 
 function rollAutoDay(): void {
   const today = istDateKey(clock.now());
-  if (state.autoEntries.day !== today) state.autoEntries = { day: today, count: 0 };
+  if (state.autoEntries.day !== today) state.autoEntries = { day: today, count: 0, bySession: { MORNING: 0, AFTERNOON: 0 } };
 }
 
 const strategyVersionFor = (strategyId: string): string | undefined =>
@@ -1121,6 +1160,8 @@ async function act(a: LiveAnalysis, s: LiveSetup): Promise<void> {
     : await enterEquity(lead, s.route === 'EQ_SWING' ? 'D' : 'I', ai, meta);
   if (r.ok) {
     state.autoEntries.count++;
+    const session = entrySession(clock.now());
+    if (session) state.autoEntries.bySession[session]++;
     log('PLACED', `${ai.verdict} · size ×${ai.sizeMultiplier}${r.detail ? ` · ${r.detail}` : ''}`);
   } else {
     log('REJECTED', r.reason);
@@ -1317,11 +1358,14 @@ function startLoops(): void {
     }
   }, 30_000);
 
-  // Exits: EOD square-off, time stops, per-trade loss. Unless a breaker that
-  // also blocks exits (divergence, maintenance) is tripped — then a human acts.
+  // Exits: 15:00 pending-entry cancel, 15:05 square-off, time stops, per-trade
+  // loss — on a timer, so they fire whether or not the feed is ticking. A
+  // breaker that blocks exits (divergence, maintenance) leaves the discretionary
+  // exits to a human, but never the session-end ones: one orphaned position
+  // must not carry every other intraday position into the closing auction.
   setInterval(() => {
-    if (!verdictNow().allowExits) return;
-    void trader.manage(ltpOf).catch((e) => console.error('[manage]', e));
+    const eodOnly = !verdictNow().allowExits;
+    void trader.manage(ltpOf, { eodOnly }).catch((e) => console.error('[manage]', e));
   }, 1_000);
 
   // Live fills are pulled; the portfolio stream only makes them arrive sooner.
@@ -1441,7 +1485,7 @@ async function restoreSettings(): Promise<void> {
     if (s.sizing.mode === 'FIXED_QTY' || s.sizing.mode === 'FIXED_BUDGET' || s.sizing.mode === 'RISK_BASED') state.sizingMode = s.sizing.mode;
     if (s.sizing.budget > 0) state.budget = s.sizing.budget;
     if (s.sizing.fixedQty > 0) state.fixedQty = Math.floor(s.sizing.fixedQty);
-    if (s.sizing.riskPct > 0 && s.sizing.riskPct <= 5) state.riskPct = s.sizing.riskPct;
+    if (s.sizing.riskPct > 0 && s.sizing.riskPct <= MAX_RISK_PCT) state.riskPct = s.sizing.riskPct;
   }
   for (const w of (s.watchlistExtra ?? []).slice(0, MAX_WATCHLIST_EXTRA)) {
     const eq = resolveEquity(w.symbol);
@@ -1518,10 +1562,15 @@ async function recoverPositions(): Promise<void> {
   // The daily entry cap counts entries the broker accepted (act() counts r.ok);
   // a restart must not hand autonomous mode a fresh day's quota.
   const today = istDateKey(clock.now());
-  state.autoEntries = {
-    day: today,
-    count: todays.filter((p) => istDateKey(new Date(p.openedAt)) === today && p.state !== 'REJECTED').length,
-  };
+  const entered = todays.filter((p) => istDateKey(new Date(p.openedAt)) === today && p.state !== 'REJECTED');
+  const bySession: Record<EntrySession, number> = { MORNING: 0, AFTERNOON: 0 };
+  for (const p of entered) {
+    const session = entrySession(new Date(p.openedAt));
+    if (session) bySession[session]++;
+  }
+  state.autoEntries = { day: today, count: entered.length, bySession };
+  // The re-entry cooldown survives a restart too.
+  for (const p of todays) noteExit(p);
   if (open.length === 0) return;
 
   const live = open.filter((p) => p.broker === 'UPSTOX');
@@ -1764,6 +1813,7 @@ const server = createServer(async (req, res) => {
       mode: currentMode(),
       auto: state.auto,
       entriesToday: state.autoEntries.count,
+      entriesBySession: state.autoEntries.bySession,
       focus: state.focus ? {
         ...state.focus,
         analysis: focus ? analysisView(focus) : null,
@@ -1984,7 +2034,7 @@ const server = createServer(async (req, res) => {
       }
       if (body['riskPct'] !== undefined) {
         const r = Number(body['riskPct']);
-        if (Number.isFinite(r) && r > 0 && r <= 5) state.riskPct = r;
+        if (Number.isFinite(r) && r > 0 && r <= MAX_RISK_PCT) state.riskPct = r;
       }
 
       // 5. Optional Auto-Trading toggle
@@ -2042,7 +2092,7 @@ const server = createServer(async (req, res) => {
       if ([budget, fixedQty, riskPct].some((x) => Number.isNaN(x))) {
         return json(400, { error: 'budget, fixedQty and riskPct must be positive numbers' });
       }
-      if (riskPct !== undefined && riskPct > 5) return json(400, { error: 'riskPct above 5% per trade is refused' });
+      if (riskPct !== undefined && riskPct > MAX_RISK_PCT) return json(400, { error: `riskPct above ${MAX_RISK_PCT}% per trade is refused` });
       if (mode) state.sizingMode = mode;
       if (budget !== undefined) state.budget = budget;
       if (fixedQty !== undefined) state.fixedQty = Math.floor(fixedQty);

@@ -52,7 +52,7 @@ export const toCandles = (rows: readonly S.CandleTuple[]): Candle[] =>
  *               OAuth token and returns UDAPI1221 unless the request comes
  *               from the account's allowlisted static IP.
  *
- * Every order-category call draws from the shared 10/sec bucket.
+ * Every order-category call draws from the shared 8/sec bucket.
  */
 export class UpstoxClient {
   readonly http: UpstoxHttp;

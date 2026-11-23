@@ -68,6 +68,9 @@ const schema = z.object({
   TF_FNO_CHAIN_REFRESH_SEC: z.coerce.number().int().min(15).default(60),
 });
 
+/** Ceiling on RISK_BASED sizing's risk per trade, % of capital — env and dashboard alike. */
+export const MAX_RISK_PCT = 2;
+
 /** Typed exactly to arm LIVE. Deliberately awkward to type by accident. */
 export const LIVE_CONFIRMATION = 'I UNDERSTAND THIS USES REAL MONEY';
 

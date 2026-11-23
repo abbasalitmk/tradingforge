@@ -23,6 +23,12 @@ export interface StrategyDefinition {
   /** Candle interval the strategy reads. */
   readonly timeframe: '5m' | '1d';
   readonly description: string;
+  /**
+   * Fades a move rather than joining one (mean reversion, failed breakouts,
+   * OI-wall rejections). The 15-minute trend filter lets it trade when that
+   * trend is flat or with it, and blocks it only when the trend runs against.
+   */
+  readonly counterTrend?: boolean;
   readonly defaults: Params;
   readonly bounds: Readonly<Record<string, ParamBound>>;
   create(params?: Params): StrategyProfile;

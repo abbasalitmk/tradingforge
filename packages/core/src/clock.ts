@@ -3,7 +3,7 @@
  *
  * Every time-dependent rule — session windows, square-off deadlines, feed
  * staleness, breaker cooldowns — reads time through this. Tests drive a
- * FixedClock so a "15:10 square-off" case does not require waiting until 15:10,
+ * FixedClock so a "15:05 square-off" case does not require waiting until 15:05,
  * and the replay harness can run a session at 100x with identical behaviour.
  */
 export interface Clock {
@@ -63,15 +63,59 @@ export const HHMM = (h: number, m: number): number => h * 60 + m;
 export const SESSION = {
   /** Exchange open. */
   OPEN: HHMM(9, 15),
-  /** No entries before this — the opening auction's first minutes are noise. */
+  /** Strategies signal from here — the opening auction's first minutes are noise. */
   ENTRY_START: HHMM(9, 20),
-  /** No new entries after this; too little runway to reach a target. */
+  /** Strategies stop signalling here; too little runway to reach a target. */
   ENTRY_END: HHMM(14, 45),
-  /** Unconditional flatten for intraday product. */
-  SQUARE_OFF: HHMM(15, 10),
+  /** Pending (unfilled) entry orders are cancelled from here. */
+  CANCEL_PENDING: HHMM(15, 0),
+  /**
+   * Unconditional flatten for intraday product — clear of the closing auction
+   * session, where continuous trading stops and stop-loss orders are refused,
+   * and of the broker's own auto square-off.
+   */
+  SQUARE_OFF: HHMM(15, 5),
   /** Exchange close. */
   CLOSE: HHMM(15, 30),
   /** Upstox funds API returns 423 in this window. */
   MAINTENANCE_START: HHMM(0, 0),
   MAINTENANCE_END: HHMM(5, 30),
 } as const;
+
+/** Seconds since IST midnight — entry windows are bounded to the second. */
+export function istSeconds(d: Date): number {
+  return istMinutes(d) * 60 + d.getUTCSeconds();
+}
+
+const HHMMSS = (h: number, m: number, s = 0): number => (h * 60 + m) * 60 + s;
+
+/**
+ * When autonomous entries may be placed, both ends inclusive. Strategies signal
+ * 09:20–14:45 (what they were validated on); execution narrows that to the
+ * morning prime and the afternoon momentum sessions, skipping the opening
+ * volatility (09:15–09:44:59) and the midday chop (11:30:01–13:29:59).
+ */
+export const ENTRY_SESSIONS = {
+  MORNING: { from: HHMMSS(9, 45), to: HHMMSS(11, 30), label: '09:45–11:30' },
+  AFTERNOON: { from: HHMMSS(13, 30), to: HHMMSS(14, 45), label: '13:30–14:45' },
+} as const;
+export type EntrySession = keyof typeof ENTRY_SESSIONS;
+
+/** The entry session this moment falls in, or null when entries are blocked. */
+export function entrySession(d: Date): EntrySession | null {
+  const s = istSeconds(d);
+  for (const k of Object.keys(ENTRY_SESSIONS) as EntrySession[]) {
+    if (s >= ENTRY_SESSIONS[k].from && s <= ENTRY_SESSIONS[k].to) return k;
+  }
+  return null;
+}
+
+/** Why entries are blocked right now, or null inside an entry session. */
+export function entryBlockReason(d: Date): string | null {
+  if (entrySession(d)) return null;
+  const s = istSeconds(d);
+  if (s < HHMMSS(9, 15)) return 'before market open';
+  if (s < ENTRY_SESSIONS.MORNING.from) return 'opening volatility (09:15–09:44)';
+  if (s < ENTRY_SESSIONS.AFTERNOON.from) return 'midday chop (11:30–13:29)';
+  return 'after the 14:45 entry cut-off';
+}

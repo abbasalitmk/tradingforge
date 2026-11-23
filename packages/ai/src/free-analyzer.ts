@@ -141,7 +141,7 @@ export class FreeRealtimeAnalyzer {
         notes.push('Trade candidate generated during high-volatility opening 5 minutes');
       } else if (mins >= 14 * 60 + 30) {
         flags.push('LATE_SESSION_ENTRY');
-        notes.push('Late intraday entry allows insufficient time for trade to mature before 15:10 IST square-off');
+        notes.push('Late intraday entry allows insufficient time for trade to mature before 15:05 IST square-off');
       }
     }
 

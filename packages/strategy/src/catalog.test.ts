@@ -30,6 +30,13 @@ const signalsOf = (def: StrategyDefinition, dir: 'up' | 'down', seed = 1) => {
   return runs.get(k)!;
 };
 
+/**
+ * Strategies that need a market the random-walk fixture never makes (an
+ * overnight gap, an option chain, a ranging low-ADX tape, a narrow-CPR day).
+ * Their signals are tested on hand-built scenarios in playbook.test.ts.
+ */
+const SCENARIO_ONLY = new Set(['GAP_AND_GO', 'OI_WALL_REVERSAL', 'BB_RSI_REVERSION', 'PDH_PDL_CPR']);
+
 describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) => {
   it('has bounded params whose defaults sit inside the bounds', () => {
     for (const [k, b] of Object.entries(def.bounds)) {
@@ -39,6 +46,8 @@ describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) 
       expect(v!).toBeLessThanOrEqual(b.max);
     }
   });
+
+  if (SCENARIO_ONLY.has(def.id)) return;
 
   it('produces signals with sane geometry, tagged with its id', () => {
     const all = [...signalsOf(def, 'up'), ...signalsOf(def, 'down')];
@@ -60,7 +69,8 @@ describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) 
     }
   });
 
-  it('leans with the trend: more longs in an uptrend than in a downtrend', () => {
+  // A counter-trend strategy buys weakness: it leans against the trend by design.
+  if (!def.counterTrend) it('leans with the trend: more longs in an uptrend than in a downtrend', () => {
     const buys = (dir: 'up' | 'down') => signalsOf(def, dir).filter((x) => x.s.side === 'BUY').length;
     expect(buys('up')).toBeGreaterThan(buys('down'));
   });
@@ -95,7 +105,7 @@ describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) 
 describe('lookahead guard', () => {
   const guarded = [
     'VWAP_PULLBACK', 'SUPERTREND_MOMENTUM', 'BB_SQUEEZE_BREAKOUT', 'GMMA_TREND', 'RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT',
-    'ICHIMOKU_CLOUD', 'SMC_STRUCTURE', 'CANDLESTICK_PATTERNS', 'TECHNICAL_COMPOSITE',
+    'ICHIMOKU_CLOUD', 'SMC_STRUCTURE', 'CANDLESTICK_PATTERNS', 'TECHNICAL_COMPOSITE', 'EMA_CROSS_9_21', 'FAILED_BREAKOUT_TRAP',
   ];
   it.each(guarded)('%s ignores bars after the clock', (id) => {
     const def = getStrategy(id)!;
