@@ -989,10 +989,14 @@ async function refreshAutoUniverse(): Promise<void> {
   }
   autoUniverse.busy = true;
   autoUniverse.attemptedAt = clock.ms();
+  // Company shares only. ETFs (INF… fund-unit ISINs) share the EQ series, but a
+  // gold or index ETF tracks something else entirely, is mostly not allowed
+  // intraday at Upstox, and its steady turnover crowds the movers list.
+  const stocks = equities.filter((e) => (e.isin ?? e.instrumentKey.split('|')[1] ?? '').startsWith('INE'));
   try {
     const quotes: QuoteLite[] = [];
-    for (let i = 0; i < equities.length; i += QUOTE_BATCH) {
-      const batch = equities.slice(i, i + QUOTE_BATCH);
+    for (let i = 0; i < stocks.length; i += QUOTE_BATCH) {
+      const batch = stocks.slice(i, i + QUOTE_BATCH);
       const byKey = new Map(batch.map((e) => [e.instrumentKey, e]));
       const r = await client.quotes(batch.map((e) => e.instrumentKey));
       if (!r.ok) throw new Error(`quotes: ${r.error.message}`);
