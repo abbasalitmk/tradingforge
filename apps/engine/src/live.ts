@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { Candle, Clock, EntrySession, Mode, Side } from '@tradeforger/core';
+import { FixedClock, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
+import { atr, latest, vwap } from '@tradeforger/indicators';
 import {
   analyzeHybrid, getStrategy, trendBias15, type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
 } from '@tradeforger/strategy';
@@ -59,6 +60,21 @@ export const AutoConfigSchema = z.object({
    * yet still trades.
    */
   htfBiasStrict: z.boolean().default(false),
+  /**
+   * Exhaustion guard: a trend entry no further than this many ATRs from
+   * session VWAP. Beyond it the move has already happened and the entry is
+   * the last one in (PFOCUS, 23 Nov: shorted 7.7 ATR under VWAP, stopped
+   * out). Counter-trend strategies are exempt — the stretch is their setup.
+   * 0 turns it off.
+   */
+  maxVwapStretchAtr: z.number().min(0).max(20).default(5),
+  /**
+   * An intraday setup is entered only while fresh: within this many minutes
+   * of first signalling. One that waited out a full position cap or the
+   * midday block is stale by the time a slot opens, and is skipped for a new
+   * signal rather than taken the second the slot frees. 0 turns it off.
+   */
+  maxSetupAgeMin: z.number().int().min(0).max(120).default(10),
   /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
   maxOpenPositions: z.number().int().min(1).max(50).default(5),
   maxPerStrategy: z.number().int().min(1).max(50).default(2),
@@ -127,6 +143,8 @@ export const DEFAULT_AUTO: AutoConfig = {
   closedBarEntries: true,
   htfBias: true,
   htfBiasStrict: false,
+  maxVwapStretchAtr: 5,
+  maxSetupAgeMin: 10,
   maxOpenPositions: 5,
   maxPerStrategy: 2,
   maxSameSide: 3,
@@ -179,6 +197,8 @@ export interface LiveSetup extends HybridSetup {
   readonly partialBar: boolean;
   /** The 15-minute trend an intraday entry must agree with. */
   readonly bias: TrendBias | null;
+  /** (price − session VWAP) ÷ 5-min ATR, signed; null when either is unknown. */
+  readonly vwapStretchAtr?: number | null;
   /** Set when the live price has already made the setup untradeable. */
   readonly invalidReason: string | null;
   /** What autonomous mode would do with it right now, and what stops it. */
@@ -281,6 +301,18 @@ export function biasBlocker(
   return null;
 }
 
+/** Why a trend entry this way chases a move already far from VWAP, or null. */
+export function stretchBlocker(
+  style: 'INTRADAY' | 'SWING', side: Side, stretch: number | null | undefined, cfg: AutoConfig, strategyId?: string,
+): string | null {
+  if (style !== 'INTRADAY' || !cfg.maxVwapStretchAtr || stretch == null) return null;
+  if (strategyId && getStrategy(strategyId)?.counterTrend) return null;
+  const along = side === 'BUY' ? stretch : -stretch;
+  return along > cfg.maxVwapStretchAtr
+    ? `${side} chases a move ${along.toFixed(1)} ATR from VWAP (max ${cfg.maxVwapStretchAtr})`
+    : null;
+}
+
 /** Blockers that belong to the strategy itself, whatever the instrument. */
 function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionContext): string[] {
   const blockers: string[] = [];
@@ -309,10 +341,13 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
  * not block for who it is or which way it points — so a tradeable signal is
  * never hidden behind a stronger one that could not be traded.
  */
-export function canLead(vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext, bias: TrendBias | null = null): boolean {
+export function canLead(
+  vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext, bias: TrendBias | null = null, stretch: number | null = null,
+): boolean {
   if (!vote.side) return false;
   if (sideBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg)) return false;
   if (biasBlocker(vote.style, vote.side, bias, cfg, vote.strategyId)) return false;
+  if (stretchBlocker(vote.style, vote.side, stretch, cfg, vote.strategyId)) return false;
   return strategyBlockers(vote.strategyId, cfg, ctx).length === 0;
 }
 
@@ -335,12 +370,17 @@ export function decide(
   if (side) blockers.push(side);
   const bias = biasBlocker(setup.style, setup.side, setup.bias, cfg, setup.primaryStrategyId);
   if (bias) blockers.push(bias);
+  const stretch = stretchBlocker(setup.style, setup.side, setup.vwapStretchAtr, cfg, setup.primaryStrategyId);
+  if (stretch) blockers.push(stretch);
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
   if (!cfg.enabled) blockers.push('autonomous mode off');
   if (setup.quality < cfg.minQuality) blockers.push(`quality ${setup.quality} < ${cfg.minQuality}`);
   if (setup.rewardRisk < cfg.minRewardRisk) blockers.push(`R:R ${setup.rewardRisk.toFixed(2)} < ${cfg.minRewardRisk}`);
   if (setup.stableSeconds < cfg.confirmSeconds) blockers.push(`stable ${setup.stableSeconds}s < ${cfg.confirmSeconds}s`);
+  if (setup.style === 'INTRADAY' && cfg.maxSetupAgeMin > 0 && setup.stableSeconds > cfg.maxSetupAgeMin * 60) {
+    blockers.push(`stale: signalling for ${Math.floor(setup.stableSeconds / 60)} min (max ${cfg.maxSetupAgeMin}) — waiting for a fresh setup`);
+  }
   if (cfg.minPrice > 0 && setup.entry < cfg.minPrice) {
     blockers.push(`price ₹${setup.entry.toFixed(2)} < min ₹${cfg.minPrice}`);
   }
@@ -382,6 +422,41 @@ export function mergeCandles(...sources: ReadonlyArray<readonly Candle[]>): Cand
 }
 
 const BAR_MS = 5 * 60_000;
+
+/**
+ * How long `strategyId` has already been signalling `side`, from the closed
+ * bars before the last: walk back one bar at a time while it still fires the
+ * same way, up to `maxBars`. Run when a setup is first seen — after a restart
+ * or on a newly picked stock — so a signal that has stood all morning is not
+ * taken for a new one.
+ */
+export function signalAgeMs(
+  strategyId: string, side: Side, closed: readonly Candle[], daily: readonly Candle[],
+  params: Params | undefined, maxBars: number, ctx: { instrumentKey: string; symbol: string },
+): number {
+  const def = getStrategy(strategyId);
+  if (!def || def.timeframe !== '5m') return 0;
+  const profile = def.create(params);
+  let bars = 0;
+  while (bars < maxBars) {
+    const past = closed.slice(0, closed.length - 1 - bars);
+    const last = past[past.length - 1];
+    if (!last) break;
+    const s = profile.evaluate({ ...ctx, candles: past, higherTf: daily, clock: new FixedClock(new Date(last.ts + BAR_MS)) });
+    if (!s || s.side !== side) break;
+    bars++;
+  }
+  return bars * BAR_MS;
+}
+
+/** How far the price sits from today's VWAP in 5-min ATRs, signed, from closed bars. */
+export function vwapStretchAtr(closed: readonly Candle[], ltp: number | null): number | null {
+  const a = latest(atr(closed, 14));
+  const vw = latest(vwap(closed));
+  const price = ltp ?? closed[closed.length - 1]?.close ?? null;
+  if (a === null || a <= 0 || vw === null || price === null) return null;
+  return (price - vw) / a;
+}
 
 export interface CandleSource {
   /** Prior sessions + today's closed 5-min bars, oldest first. */
@@ -430,6 +505,7 @@ export class LiveAnalyzer {
       const intraday = partial ? mergeCandles(closed, [partial]) : closed;
       const bias = closed.length > 0 ? trendBias15(closed) : null;
       const ltp = this.src.ltp(t.instrumentKey);
+      const stretch = vwapStretchAtr(closed, ltp);
       // Every setup is priced at the live LTP: swing strategies read yesterday's close.
       const r = analyzeHybrid(
         {
@@ -438,7 +514,7 @@ export class LiveAnalyzer {
         },
         {
           params, ...(strategies && strategies.length ? { strategies } : {}),
-          canLead: (v) => canLead(v, t, cfg, ctx, bias),
+          canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch),
         },
       );
 
@@ -449,7 +525,15 @@ export class LiveAnalyzer {
         seen.add(key);
         const sig = `${s.side}|${s.primaryStrategyId}`;
         const prev = this.stability.get(key);
-        const since = prev && prev.sig === sig ? prev.since : now;
+        let since = prev && prev.sig === sig ? prev.since : now;
+        // First sight, or a new lead/side: measure how long it has really been
+        // signalling, so neither a restart nor a change of lead makes it new.
+        if (since === now && s.style === 'INTRADAY' && cfg.closedBarEntries && cfg.maxSetupAgeMin > 0) {
+          since -= signalAgeMs(
+            s.primaryStrategyId, s.side, closed, this.src.daily(t.instrumentKey), params[s.primaryStrategyId],
+            Math.ceil(cfg.maxSetupAgeMin / 5) + 1, t,
+          );
+        }
         this.stability.set(key, { sig, since });
         const base = {
           ...s,
@@ -457,6 +541,7 @@ export class LiveAnalyzer {
           stableSeconds: Math.floor((now - since) / 1000),
           partialBar: partial !== null && s.style === 'INTRADAY',
           bias: s.style === 'INTRADAY' ? bias : null,
+          vwapStretchAtr: s.style === 'INTRADAY' ? stretch : null,
           invalidReason: s.invalidReason ?? null,
         };
         const d = decide(base, t, cfg, ctx);

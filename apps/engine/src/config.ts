@@ -71,8 +71,8 @@ const schema = z.object({
 /** Ceiling on RISK_BASED sizing's risk per trade, % of capital — env and dashboard alike. */
 export const MAX_RISK_PCT = 2;
 
-/** Typed exactly to arm LIVE. Deliberately awkward to type by accident. */
-export const LIVE_CONFIRMATION = 'I UNDERSTAND THIS USES REAL MONEY';
+/** Typed to arm LIVE: one deliberate word, after the dashboard's real-money warning. */
+export const LIVE_CONFIRMATION = 'LIVE';
 
 export type EngineConfig = z.infer<typeof schema> & { limits: Limits };
 

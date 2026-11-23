@@ -232,6 +232,21 @@ describe('exits outside the bracket', () => {
     expect(r.ok && r.position.state).toBe('CLOSED');
   });
 
+  it('lets a position reach its own stop; the per-trade backstop only catches a failed one', async () => {
+    // Planned risk 65 × ₹30 = ₹1,950, per-trade limit ₹1,000 (sized before the capital fell).
+    const clock = new FixedClock(at('10:00'));
+    const broker = new PaperBroker(clock, { ...DEFAULT_PAPER_CONFIG, latencyMs: 0, slippageBps: 0 });
+    const machine = new PositionMachine(async () => {});
+    const trader = new Trader({ clock, broker, machine, perTradeLossPaise: () => P(1_000), log: () => {} });
+    broker.onTick({ instrumentKey: KEY, ltp: 100, ts: clock.ms() });
+    const r = await trader.open(intent());
+    await new Promise((res) => setTimeout(res, 0));
+    await trader.manage(() => 75); // −₹1,625: past the limit, inside the planned risk
+    expect(r.ok && r.position.state).toBe('MANAGING');
+    await trader.manage(() => 65); // −₹2,275: past planned risk + 15% — the stop failed
+    expect(r.ok && r.position.exitReason).toBe('PER_TRADE_LOSS');
+  });
+
   it('cancels every unfilled entry at 15:00 IST, delivery included', async () => {
     const s = setup('14:58');
     s.tick(100);

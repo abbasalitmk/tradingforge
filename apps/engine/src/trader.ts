@@ -94,6 +94,8 @@ export const isOperatorExit = (reason: string | null | undefined): boolean =>
 
 const LIVE_STATES = new Set(['ENTRY_SENT', 'ENTRY_ACKED', 'ENTRY_FILLED', 'BRACKET_ARMED', 'MANAGING', 'EXIT_TRIGGERED', 'ORPHANED']);
 const REJECT_WINDOW_MS = 5 * 60_000;
+/** How far past its planned risk a position may run before the per-trade backstop takes over from the stop. */
+const STOP_SLIPPAGE_ALLOWANCE = 1.15;
 
 /**
  * Sole owner of position state.
@@ -529,7 +531,13 @@ export class Trader {
         continue;
       }
       const pnl = this.unrealised(p, ltp);
-      if (perTrade > 0 && -pnl >= perTrade) {
+      // A backstop for a stop that failed — a gap through it, a bracket the
+      // exchange dropped — not a second, tighter stop. At exactly the planned
+      // risk it would race the bracket and exit early on an LTP tick at the
+      // stop; a position sized before the capital fell is allowed its stop.
+      const planned = Math.abs(p.entry - p.stopLoss) * p.filledQuantity;
+      const limit = Math.max(perTrade, planned * STOP_SLIPPAGE_ALLOWANCE);
+      if (perTrade > 0 && -pnl >= limit) {
         await this.exit(p.id, 'PER_TRADE_LOSS');
         continue;
       }

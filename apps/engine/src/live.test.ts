@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { FixedClock } from '@tradeforger/core';
+import { getStrategy } from '@tradeforger/strategy';
+import { intraday, closeOf } from '../../../packages/strategy/src/fixtures.ts';
 import {
-  decide, canLead, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  decide, canLead, signalAgeMs, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
@@ -233,6 +236,41 @@ describe('session discipline', () => {
     expect(decide(setup({ bias: under }), equity, on, paper).blockers.join()).toContain('wrong side of 15-min VWAP');
     // An index has no VWAP; the EMAs decide.
     expect(decide(setup({ bias: { ...upBias, side: null, vwapSide: null, vwap: null } }), equity, on, paper).blockers).toEqual([]);
+  });
+
+  it('refuses to chase a move already far from VWAP (PFOCUS, 23 Nov), not one still near it', () => {
+    const short = (stretch: number) => setup({ side: 'SELL', bias: downBias, vwapStretchAtr: stretch });
+    const both = { ...on, tradeSide: 'BOTH' as const };
+    // PFOCUS: shorted 7.7 ATR under VWAP — stopped out.
+    expect(decide(short(-7.7), equity, both, paper).blockers.join()).toContain('chases a move 7.7 ATR from VWAP');
+    // RATNAVEER: bought 4.2 ATR over VWAP — inside the limit, hit its target.
+    expect(decide(setup({ vwapStretchAtr: 4.2 }), equity, on, paper).blockers).toEqual([]);
+    // Stretched the other way is not a chase; a fade strategy is exempt; 0 turns it off.
+    expect(decide(setup({ vwapStretchAtr: -7 }), equity, on, paper).blockers).toEqual([]);
+    expect(decide(setup({ vwapStretchAtr: 9, primaryStrategyId: 'BB_RSI_REVERSION' }), equity, on, paper).blockers).toEqual([]);
+    expect(decide(short(-7.7), equity, { ...both, maxVwapStretchAtr: 0 }, paper).blockers).toEqual([]);
+  });
+
+  it('skips a setup that went stale waiting for a slot, and enters a fresh one', () => {
+    // 23 Nov: every close was followed by an entry within seconds — setups that
+    // had stood behind the position cap for an hour.
+    expect(decide(setup({ stableSeconds: 3600 }), equity, on, paper).blockers.join()).toContain('stale: signalling for 60 min');
+    expect(decide(setup({ stableSeconds: 300 }), equity, on, paper).blockers).toEqual([]);
+    expect(decide(setup({ stableSeconds: 3600 }), equity, { ...on, maxSetupAgeMin: 0 }, paper).blockers).toEqual([]);
+  });
+
+  it('measures how long a signal has stood from earlier closed bars, on first sight', () => {
+    const def = getStrategy('ORB_SUPERTREND')!;
+    const bars = intraday('2026-01-05', 8, { seed: 1, start: 1000, drift: 0.0006, vol: 0.003, volume: 20_000 });
+    const fires = (i: number) => def.create().evaluate({
+      instrumentKey: 'K', symbol: 'S', candles: bars.slice(0, i + 1), higherTf: [], clock: new FixedClock(new Date(closeOf(bars[i]!, '5m'))),
+    });
+    // A bar where ORB fired on this bar and the two before it.
+    const i = bars.findIndex((_, k) => k > 2 && [k, k - 1, k - 2].every((j) => fires(j)?.side === 'BUY'));
+    expect(i).toBeGreaterThan(0);
+    const age = signalAgeMs('ORB_SUPERTREND', 'BUY', bars.slice(0, i + 1), [], undefined, 5, { instrumentKey: 'K', symbol: 'S' });
+    expect(age).toBeGreaterThanOrEqual(2 * 5 * 60_000);
+    expect(signalAgeMs('ORB_SUPERTREND', 'SELL', bars.slice(0, i + 1), [], undefined, 5, { instrumentKey: 'K', symbol: 'S' })).toBe(0);
   });
 
   it('caps entries per session inside the daily cap', () => {

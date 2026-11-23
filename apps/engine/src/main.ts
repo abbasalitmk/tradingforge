@@ -2506,7 +2506,8 @@ async function main(): Promise<void> {
     broker: live ? ensureUpstoxBroker() : paperBroker,
     brokerId: live ? 'UPSTOX' : 'PAPER',
     machine: positionMachine,
-    perTradeLossPaise: () => pctOf(capitalPaise(), cfg.limits.perTradeLossPct),
+    // Never tighter than the risk sizing allows a trade, or it cuts every position before its stop.
+    perTradeLossPaise: () => pctOf(capitalPaise(), Math.max(cfg.limits.perTradeLossPct, state.riskPct)),
     onClosed: onPositionClosed,
   });
 

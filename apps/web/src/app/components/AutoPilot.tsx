@@ -35,6 +35,8 @@ interface AutoConfig {
   htfBias: boolean;
   htfBiasStrict: boolean;
   maxLeverage: number;
+  maxVwapStretchAtr: number;
+  maxSetupAgeMin: number;
 }
 
 interface AutoUniverseView {
@@ -119,7 +121,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -131,7 +133,7 @@ const draftOf = (a: AutoConfig): Draft => ({
   maxEntriesMorning: a.maxEntriesMorning, maxEntriesAfternoon: a.maxEntriesAfternoon,
   maxPerSector: a.maxPerSector, reentryCooldownMin: a.reentryCooldownMin,
   closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
-  maxLeverage: a.maxLeverage,
+  maxLeverage: a.maxLeverage, maxVwapStretchAtr: a.maxVwapStretchAtr, maxSetupAgeMin: a.maxSetupAgeMin,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -227,6 +229,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       htfBias: draft.htfBias,
       htfBiasStrict: draft.htfBiasStrict,
       maxLeverage: draft.maxLeverage,
+      maxVwapStretchAtr: draft.maxVwapStretchAtr,
+      maxSetupAgeMin: draft.maxSetupAgeMin,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -369,6 +373,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['minRewardRisk', 'Min reward : risk', 1, 10, 0.1, 'strategy levels, at the live price'],
             ['minNetRewardRisk', 'Min R:R after charges', 0.5, 10, 0.05, 'brokerage, STT, fees, GST, stamp'],
             ['confirmSeconds', 'Hold before entry (s)', 2, 300, 1, 'setup must stay unchanged'],
+            ['maxSetupAgeMin', 'Max setup age (min)', 0, 120, 1, 'older signals are stale — not taken when a slot frees; 0 = off'],
             ['maxEntriesPerDay', 'Max entries per day', 0, 50, 1, '0 pauses new entries'],
             ['maxEntriesMorning', 'Max morning entries', 0, 50, 1, '09:45–11:30 IST'],
             ['maxEntriesAfternoon', 'Max afternoon entries', 0, 50, 1, '13:30–14:45 IST'],
@@ -376,6 +381,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['reentryCooldownMin', 'Re-entry cooldown (min)', 0, 120, 1, 'after a position in the symbol closes'],
             ['maxOpenPositions', 'Max open positions', 1, 50, 1, 'across all strategies'],
             ['maxLeverage', 'Max intraday leverage (×)', 1, 5, 0.5, 'open MIS exposure ÷ capital; risk stays a % of capital'],
+            ['maxVwapStretchAtr', 'Max distance from VWAP (ATR)', 0, 20, 0.5, "don't chase a move already this far from VWAP; 0 = off"],
             ['maxPerStrategy', 'Max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
             ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
             ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
