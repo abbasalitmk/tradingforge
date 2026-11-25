@@ -13,7 +13,7 @@ interface Vote {
   strategyId: string;
   name: string;
   style: 'INTRADAY' | 'SWING';
-  timeframe: '5m' | '1d' | null;
+  timeframe: '5m' | '15m' | '1d' | null;
   side: Side | null;
   confidence: number;
   reasons: string[];

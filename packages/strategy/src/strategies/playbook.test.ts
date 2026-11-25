@@ -3,7 +3,7 @@ import { FixedClock, type Candle } from '@tradeforger/core';
 import type { StrategyDefinition } from '../definition.ts';
 import type { OptionWalls } from '../profile.ts';
 import { GAP_AND_GO } from './gapAndGo.ts';
-import { PDH_PDL_CPR, cpr } from './pdhCpr.ts';
+import { PDH_PDL_CPR, PDH_PDL_CPR_15M, cpr } from './pdhCpr.ts';
 import { BB_RSI_REVERSION } from './bbRsiReversion.ts';
 import { FAILED_BREAKOUT_TRAP } from './failedBreakout.ts';
 import { OI_WALL_REVERSAL } from './oiWall.ts';
@@ -69,6 +69,22 @@ describe('PDH/PDL narrow-CPR breakout', () => {
     const s = run(PDH_PDL_CPR, [...day('2026-01-05', quiet(75, 100)), ...day('2026-01-06', yesterday), ...day('2026-01-07', [...today, [100.5, 101.4, 100.4, 101.3, 2500]])]);
     expect(s?.side).toBe('BUY');
     expect(s!.indicators?.['pdh']).toBe(101);
+  });
+
+  it('produces valid 15m PDH_PDL_CPR_15M signals on resampled 15m bars', () => {
+    const d1 = day('2026-01-05', quiet(25, 100)).map((b, i) => ({ ...b, ts: at('2026-01-05', i * 3) }));
+    const d2 = yesterday.slice(0, 25).map((bar, i) => ({
+      ts: at('2026-01-06', i * 3), open: bar[0], high: bar[1], low: bar[2], close: bar[3], volume: bar[4] * 3,
+    }));
+    const d3Bars: Bar[] = [...quiet(10, 100.4, 1000), [100.5, 101.5, 100.4, 101.4, 3000]];
+    const d3 = d3Bars.map((bar, i) => ({
+      ts: at('2026-01-07', i * 3), open: bar[0], high: bar[1], low: bar[2], close: bar[3], volume: bar[4],
+    }));
+    const all15 = [...d1, ...d2, ...d3];
+    const clock = new FixedClock(new Date(all15[all15.length - 1]!.ts + 900_000));
+    const s = PDH_PDL_CPR_15M.create().evaluate({ instrumentKey: 'K', symbol: 'S', candles: all15, higherTf: [], clock });
+    expect(s?.side).toBe('BUY');
+    expect(s?.strategyId).toBe('PDH_PDL_CPR_15M');
   });
 
   it('skips a thin breakout and a wide-CPR day', () => {

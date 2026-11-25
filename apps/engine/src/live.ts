@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { FixedClock, paiseToRupees, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
+import { FixedClock, istDateKey, paiseToRupees, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
 import { atr, latest, vwap } from '@tradeforger/indicators';
 import {
-  analyzeHybrid, dayChangePct, getStrategy, guardSignalStop, marketDirection, trendBias15, type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
+  analyzeHybrid, completeBars15, dayChangePct, getStrategy, guardSignalStop, marketDirection, trendBias15,
+  type HybridSetup, type StrategyVote, type Params, type TrendBias, type OptionWalls,
 } from '@tradeforger/strategy';
 
 export const AutoConfigSchema = z.object({
@@ -39,7 +40,7 @@ export const AutoConfigSchema = z.object({
   /** Strategy ids allowed to trigger entries. Empty = every catalog strategy. */
   strategies: z.array(z.string()).max(50),
   maxEntriesPerDay: z.number().int().min(0).max(50),
-  /** Entries allowed in each entry session (09:45–11:30, 13:30–14:45), inside the daily cap. */
+  /** Entries allowed in each entry session (09:30–11:30, 13:30–14:45), inside the daily cap. */
   maxEntriesMorning: z.number().int().min(0).max(50).default(5),
   maxEntriesAfternoon: z.number().int().min(0).max(50).default(3),
   /** Open positions allowed in one NSE industry — several are one correlated bet. */
@@ -99,10 +100,29 @@ export const AutoConfigSchema = z.object({
   relativeStrength: z.boolean().default(true),
   /**
    * Intraday trend targets at this multiple of the risk; 0 keeps each
-   * strategy's own. 3R beat 2R in both months: the charges on a trade are a
-   * near-fixed cost, so the winners have to be large enough to carry them.
+   * strategy's own. Empirically capped around 2.0–2.5R on intraday NSE stocks.
    */
-  targetR: z.number().min(0).max(6).default(3),
+  targetR: z.number().min(0).max(6).default(2.5),
+  /**
+   * Cap intraday targets at this multiple of prior-day 14d Daily ATR from
+   * today's open (0 turns off). Prevents demanding +6% from a stock whose daily ATR is 2%.
+   */
+  maxTargetDailyAtr: z.number().min(0).max(5).default(1.5),
+  /**
+   * Reject intraday setups whose live LTP has already chased > N ATRs past
+   * bar-close signal entry (or > 1.5N ATRs past breakout trigger). 0 = off.
+   */
+  maxEntryChaseAtr: z.number().min(0).max(5).default(0.5),
+  /**
+   * Cost-buffered breakeven & staged ATR trail once in profit (+1.2R -> +0.35R,
+   * +1.6R -> trail by 1.25 ATR) without noisy bar-0 trailing.
+   */
+  stagedTrail: z.boolean().default(true),
+  /**
+   * Reject entries where round-trip costs at the stop exceed this % of 1R risk
+   * (e.g. ₹13 cost on ₹43 risk = 30% > 20%). 0 turns off.
+   */
+  maxCostPctOfRisk: z.number().min(0).max(100).default(20),
   /** Portfolio limits: open positions in total, led by any one strategy, and on one side. */
   maxOpenPositions: z.number().int().min(1).max(50).default(5),
   maxPerStrategy: z.number().int().min(1).max(50).default(2),
@@ -173,11 +193,15 @@ export const DEFAULT_AUTO: AutoConfig = {
   htfBiasStrict: false,
   maxVwapStretchAtr: 5,
   maxSetupAgeMin: 10,
-  minStopPct: 0.5,
+  minStopPct: 0.65,
   stopClusterGuard: true,
   marketFilter: true,
   relativeStrength: true,
-  targetR: 3,
+  targetR: 2.5,
+  maxTargetDailyAtr: 1.5,
+  maxEntryChaseAtr: 0.5,
+  stagedTrail: true,
+  maxCostPctOfRisk: 20,
   maxOpenPositions: 5,
   maxPerStrategy: 2,
   maxSameSide: 3,
@@ -303,7 +327,45 @@ export function routeFor(
   return { route: null, blocker: target.fnoUnderlying ? 'F&O segment off' : target.cashTradeable ? 'intraday segment off' : 'not cash-tradeable' };
 }
 
-/** The direction filter: does it let this side trade? */
+/** Return instrument keys whose last tick is missing or older than `maxAgeMs`. */
+export function staleInstruments(
+  keys: Iterable<string>,
+  lastTickByKey: ReadonlyMap<string, number>,
+  nowMs: number,
+  maxAgeMs = 3000,
+): string[] {
+  const stale: string[] = [];
+  for (const k of keys) {
+    const last = lastTickByKey.get(k);
+    if (last === undefined || nowMs - last >= maxAgeMs) stale.push(k);
+  }
+  return stale;
+}
+
+/** Reject an intraday entry when LTP has already bolted too far past signal close or breakout trigger. */
+export function chaseBlocker(
+  setup: Pick<LiveSetup, 'style' | 'side' | 'entry' | 'barCloseEntry' | 'signalEntry' | 'atr' | 'primaryStrategyId'>,
+  cfg: AutoConfig,
+): string | null {
+  if (setup.style !== 'INTRADAY' || cfg.maxEntryChaseAtr <= 0 || !setup.atr || !(setup.atr > 0)) return null;
+  const long = setup.side === 'BUY';
+  const dir = long ? 1 : -1;
+  if (setup.barCloseEntry !== undefined) {
+    const slipAtr = ((setup.entry - setup.barCloseEntry) * dir) / setup.atr;
+    if (slipAtr > cfg.maxEntryChaseAtr) {
+      return `entry chased ${slipAtr.toFixed(2)} ATR past bar close (max ${cfg.maxEntryChaseAtr})`;
+    }
+  }
+  if (!getStrategy(setup.primaryStrategyId)?.counterTrend && setup.signalEntry !== undefined) {
+    const trigCap = cfg.maxEntryChaseAtr * 1.5;
+    const chaseAtr = ((setup.entry - setup.signalEntry) * dir) / setup.atr;
+    if (chaseAtr > trigCap) {
+      return `entry chased ${chaseAtr.toFixed(2)} ATR past breakout trigger ₹${setup.signalEntry.toFixed(2)} (max ${trigCap.toFixed(2)})`;
+    }
+  }
+  return null;
+}
+/** Which symbols can be traded on this side? */
 export const sideAllowed = (side: Side, tradeSide: AutoConfig['tradeSide']): boolean =>
   tradeSide === 'BOTH' || tradeSide === side;
 
@@ -432,6 +494,8 @@ export function decide(
   if (bias) blockers.push(bias);
   const stretch = stretchBlocker(setup.style, setup.side, setup.vwapStretchAtr, cfg, setup.primaryStrategyId);
   if (stretch) blockers.push(stretch);
+  const chase = chaseBlocker(setup, cfg);
+  if (chase) blockers.push(chase);
   blockers.push(...marketBlockers(setup, target, cfg));
 
   if (setup.invalidReason) blockers.push(setup.invalidReason);
@@ -488,25 +552,69 @@ export function mergeCandles(...sources: ReadonlyArray<readonly Candle[]>): Cand
 
 const BAR_MS = 5 * 60_000;
 
+/** Completed 14-day Daily ATR from prior sessions (excluding today's partial daily bar if present). */
+export function priorDailyAtr(daily: readonly Candle[], todayKey: string): number | null {
+  if (daily.length === 0) return null;
+  const last = daily[daily.length - 1]!;
+  const completed = istDateKey(new Date(last.ts)) === todayKey ? daily.slice(0, -1) : daily;
+  if (completed.length < 15) return null;
+  const a = latest(atr(completed, 14));
+  return a !== null && a > 0 ? a : null;
+}
+
+export interface TargetRestateOptions {
+  readonly dailyAtr?: number | null;
+  readonly dayOpen?: number | null;
+  readonly maxDailyAtrMultiple?: number;
+}
+
 /**
  * The setup with its lead's target restated at `r` times the risk, for a
- * trend strategy. Counter-trend targets (VWAP, the far OI wall) are levels,
- * not multiples, and stay as the strategy set them.
+ * trend strategy, optionally capped at `dayOpen ± maxDailyAtrMultiple × DailyATR`.
+ * Counter-trend targets (VWAP, the far OI wall) are levels, not multiples, and
+ * stay as the strategy set them.
  */
-export function restateTarget(s: HybridSetup, r: number): HybridSetup {
-  if (!(r > 0) || getStrategy(s.primaryStrategyId)?.counterTrend) return s;
+export function restateTarget(s: HybridSetup, r: number, opts?: TargetRestateOptions): HybridSetup {
+  if (getStrategy(s.primaryStrategyId)?.counterTrend) return s;
   const lead = s.votes.find((v) => v.strategyId === s.primaryStrategyId);
   if (!lead?.signal) return s;
   const risk = Math.abs(lead.signal.entry - lead.signal.stopLoss);
   const dir = lead.signal.side === 'BUY' ? 1 : -1;
-  const target = Math.round(lead.signal.entry + dir * risk * r);
-  if (target <= 0 || target === lead.signal.target) return s;
+  let target = r > 0 ? Math.round(lead.signal.entry + dir * risk * r) : lead.signal.target;
+
+  let adrCapped = false;
+  let adrExhausted = false;
+  if (opts?.maxDailyAtrMultiple && opts.maxDailyAtrMultiple > 0 && opts.dailyAtr && opts.dailyAtr > 0 && opts.dayOpen && opts.dayOpen > 0) {
+    const capPaise = Math.round((opts.dayOpen + dir * opts.maxDailyAtrMultiple * opts.dailyAtr) * 100);
+    if (dir === 1 ? target > capPaise : target < capPaise) {
+      if (dir === 1 ? capPaise <= lead.signal.entry : capPaise >= lead.signal.entry) {
+        adrExhausted = true;
+      } else {
+        target = capPaise;
+        adrCapped = true;
+      }
+    }
+  }
+
+  if (adrExhausted) {
+    return {
+      ...s,
+      rewardRisk: 0,
+      invalidReason: `daily ADR target cap (${opts!.maxDailyAtrMultiple}× ATR) already passed before entry`,
+    };
+  }
+
+  if (target <= 0) return s;
+  const signedDist = (target - lead.signal.entry) * dir;
+  const actualRR = risk > 0 && signedDist > 0 ? Math.round((signedDist / risk) * 100) / 100 : 0;
+  if (target === lead.signal.target && !adrCapped) return s;
   const signal = { ...lead.signal, target: target as typeof lead.signal.target };
   return {
     ...s,
     target: paiseToRupees(signal.target),
-    rewardRisk: Math.round(r * 100) / 100,
+    rewardRisk: actualRR,
     votes: s.votes.map((v) => (v === lead ? { ...v, signal } : v)),
+    ...(adrCapped ? { reasons: [...s.reasons, `target capped within ${opts!.maxDailyAtrMultiple}× Daily ATR`] } : {}),
   };
 }
 
@@ -542,18 +650,21 @@ export function signalAgeMs(
   params: Params | undefined, maxBars: number, ctx: { instrumentKey: string; symbol: string },
 ): number {
   const def = getStrategy(strategyId);
-  if (!def || def.timeframe !== '5m') return 0;
+  if (!def || def.timeframe === '1d') return 0;
+  const is15m = def.timeframe === '15m';
+  const series = is15m ? completeBars15(closed) : closed;
+  const stepMs = is15m ? 3 * BAR_MS : BAR_MS;
   const profile = def.create(params);
   let bars = 0;
   while (bars < maxBars) {
-    const past = closed.slice(0, closed.length - 1 - bars);
+    const past = series.slice(0, series.length - 1 - bars);
     const last = past[past.length - 1];
     if (!last) break;
-    const s = profile.evaluate({ ...ctx, candles: past, higherTf: daily, clock: new FixedClock(new Date(last.ts + BAR_MS)) });
+    const s = profile.evaluate({ ...ctx, candles: past, higherTf: daily, clock: new FixedClock(new Date(last.ts + stepMs)) });
     if (!s || s.side !== side) break;
     bars++;
   }
-  return bars * BAR_MS;
+  return bars * stepMs;
 }
 
 /** How far the price sits from today's VWAP in 5-min ATRs, signed, from closed bars. */
@@ -631,10 +742,19 @@ export class LiveAnalyzer {
       );
 
       const setups: LiveSetup[] = [];
+      const daily = this.src.daily(t.instrumentKey);
+      const todayKey = istDateKey(this.clock.now());
+      const todayOpen = closed.find((c) => istDateKey(new Date(c.ts)) === todayKey)?.open ?? null;
+      const dAtr = priorDailyAtr(daily, todayKey);
       for (const found of [r.best.INTRADAY, r.best.SWING]) {
         if (!found) continue;
-        const restated = found.style === 'INTRADAY' ? restateTarget(found, cfg.targetR) : found;
-        const s = cfg.stopClusterGuard && restated.style === 'INTRADAY' ? guardSetupStop(restated, closed) : restated;
+        // Guard stop cluster FIRST, then compute targetR & ADR cap from final stop distance.
+        const guarded = cfg.stopClusterGuard && found.style === 'INTRADAY' ? guardSetupStop(found, closed) : found;
+        const s = guarded.style === 'INTRADAY'
+          ? restateTarget(guarded, cfg.targetR, { dailyAtr: dAtr, dayOpen: todayOpen, maxDailyAtrMultiple: cfg.maxTargetDailyAtr })
+          : guarded;
+        const def = getStrategy(s.primaryStrategyId);
+        const tfStep = def?.timeframe === '15m' ? 3 : 1;
         const key = `${t.instrumentKey}|${s.style}`;
         seen.add(key);
         const sig = `${s.side}|${s.primaryStrategyId}`;
@@ -644,8 +764,8 @@ export class LiveAnalyzer {
         // signalling, so neither a restart nor a change of lead makes it new.
         if (since === now && s.style === 'INTRADAY' && cfg.closedBarEntries && cfg.maxSetupAgeMin > 0) {
           since -= signalAgeMs(
-            s.primaryStrategyId, s.side, closed, this.src.daily(t.instrumentKey), params[s.primaryStrategyId],
-            Math.ceil(cfg.maxSetupAgeMin / 5) + 1, t,
+            s.primaryStrategyId, s.side, closed, daily, params[s.primaryStrategyId],
+            Math.ceil(cfg.maxSetupAgeMin / (5 * tfStep)) + 1, t,
           );
         }
         this.stability.set(key, { sig, since });

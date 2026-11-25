@@ -430,7 +430,7 @@ export class MarketService {
         }),
       ]);
       const edges = STRATEGY_CATALOG.map((def) => {
-        const bars = def.timeframe === '5m' ? five : daily;
+        const bars = def.timeframe !== '1d' ? five : daily;
         if (bars.length < 60) {
           // Too little history to test on (a recent listing): unknown, not zero.
           return { strategyId: def.id, name: def.name, timeframe: def.timeframe, days: 0, trades: null, winRate: null, expectancyR: null, profitFactor: null, netPnl: null };

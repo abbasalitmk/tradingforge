@@ -87,13 +87,17 @@ export class BreakoutPatternAnalyzer {
       }
     }
 
-    // 4. Momentum Acceleration (RSI)
+    // 4. Momentum Acceleration & Exhaustion (RSI)
     const rsi = signal.indicators['rsi'];
     if (rsi && rsi > 0) {
       if (isLong && rsi >= 55 && rsi <= 68) {
         patterns.push('BULLISH_MOMENTUM_ACCELERATION');
       } else if (!isLong && rsi <= 45 && rsi >= 32) {
         patterns.push('BEARISH_MOMENTUM_EXPANSION');
+      } else if (isLong && rsi > 75) {
+        flags.push('RSI_OVERBOUGHT');
+      } else if (!isLong && rsi < 25) {
+        flags.push('RSI_OVERSOLD');
       }
     }
 

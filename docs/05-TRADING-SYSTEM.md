@@ -4,14 +4,19 @@ How the engine picks stocks, finds setups, decides to enter, sizes and places
 orders, and exits. Every number here is what the code uses. Settings marked
 **(AutoPilot)** can be changed on the dashboard.
 
-> **Status (23 Nov 2026).** Sections marked **[deployed]** run on the server
+> **Status (25 Nov 2026).** Sections marked **[deployed]** run on the server
 > now. Sections marked **[ready, not deployed]** are built and tested, waiting
-> for deployment.
+> for deployment (live engine disarmed to `PAPER` for new entries while open
+> Upstox brackets remain managed).
 >
-> **Honest summary:** the safety, risk and execution side works the way a
-> professional system should. Strategy profitability is **not proven.** On 12
-> months of real data the intraday trend strategies lost about 0.17R per trade
-> after charges, in every quarter (see §9). Keep the engine in PAPER.
+> **Honest summary:** on the full 12-month real NSE benchmark (24 stocks,
+> Nov 2025 – Nov 2026), legacy 5-min trend strategies lost money after charges
+> and their `@v1` approvals are retired by migration `0007`. With full live-parity
+> filters, ADR-capped targets, cost-buffered staged trailing, and 15-min variants,
+> `PDH_PDL_CPR` (`+0.627R`, 4/4 quarters) and tuned `GAP_AND_GO` (`+0.343R`, 31 trades)
+> stay profitable even under 2× cost stress, while `ORB_SUPERTREND_15M` cuts
+> loss per trade by ~74% vs `5m` (`-0.049R` vs `-0.187R`). Keep PAPER mode on
+> during soak verification before re-arming LIVE.
 
 ---
 
@@ -49,11 +54,11 @@ Three sources are merged into one watch list:
 3. Filters:
    - **Price band:** between AutoPilot min/max price (server now: ₹100–₹500), and never above what one trade can buy (`TF_MAX_SPEND_PER_TRADE`).
    - **Day turnover ≥ ₹25 crore** (AutoPilot), so entries and exits fill easily.
-   - **Day change between 0.3% and 8%.** Below 0.3% the stock isn't moving; above 8% it's near its price band (circuit).
-   - **Holding the move.** For buys: up ≥ 0.3% on the day, price ≥ today's open, and in the upper half of the day's range. Shorts use the mirror. With direction BOTH, either qualifies.
-4. **Ranking:** `log10(turnover) × |day change %| × (0.5 + range strength)`. A liquid mid-cap that's moving beats a quiet mega-cap.
+   - **Day change between 0.4% and 5.0%** (sweet-spot score peaking ≤ 3.5%). Below 0.4% the stock isn't moving; above 5.0% late breakout chasing dominates.
+   - **Holding the move.** For buys: up ≥ 0.4% on the day, price ≥ today's open, and in the upper half of the day's range. Shorts use the mirror. With direction BOTH, either qualifies.
+4. **Ranking:** `log10(turnover) × changeScore × (0.5 + range strength)`. A liquid mover not already over-extended beats an exhausted spike.
 5. **Top 15** (AutoPilot) are kept. Current picks stay while they still qualify, so the list doesn't churn.
-6. New picks get their candles loaded and are subscribed to the live feed.
+6. New picks immediately hydrate candles, poll initial REST quotes, and subscribe to the WebSocket feed (with per-instrument ≥ 3s tick staleness REST fallback).
 
 F&O underlyings (NIFTY, BANKNIFTY) are added when the F&O desk is on (currently off).
 
@@ -65,22 +70,31 @@ Every 2 seconds each watched stock is re-analysed. **Only closed 5-minute bars
 are used** (AutoPilot: closed-bar entries, on). A signal can never come from a
 candle that's still forming, which was the PNB mistake on 23 Nov.
 
-### The 18 strategies
+### The 22 strategies
 
-**Intraday, 5-min bars: trend-following**
+**Intraday, 5-min bars: trend-following (hard prerequisites: `RVOL ≥ 1.5`, `RSI < 72 / > 28`, fresh breakouts)**
 
 | Strategy | Idea in one line | Approved for LIVE |
 |---|---|---|
-| ORB_SUPERTREND | Break of the 09:15–09:30 range, confirmed by Supertrend, EMA9/21, ADX, RVOL, VWAP | ✅ |
-| VWAP_PULLBACK | Trend day pulls back to VWAP and resumes with a rejection candle | ✅ |
-| SUPERTREND_MOMENTUM | Fresh Supertrend flip with EMA21 slope, volume and rising ADX | ✅ |
-| BB_SQUEEZE_BREAKOUT | Bollinger bands at their narrowest, then a close outside on volume | ✅ |
-| GMMA_TREND | Guppy short/long EMA ribbons separate cleanly, 15-min trend agrees | ✅ |
-| SMC_STRUCTURE | Close beyond the last swing high/low (break of structure), fair-value gap | ✅ |
-| TECHNICAL_COMPOSITE | EMA12/26 trend + OBV align, weighted by ADX, RSI, Bollinger, VWAP | ✅ |
-| GAP_AND_GO | 1.5–4% opening gap on 2× opening volume; break of the first 15-min candle | paper only |
+| ORB_SUPERTREND | Break of the 09:15–09:30 range, confirmed by Supertrend, EMA9/21, ADX, RVOL, VWAP | retired (`0007`) |
+| VWAP_PULLBACK | Trend day pulls back to VWAP and resumes with a rejection candle | retired (`0007`) |
+| SUPERTREND_MOMENTUM | Fresh Supertrend flip with EMA21 slope, volume and rising ADX | retired (`0007`) |
+| BB_SQUEEZE_BREAKOUT | Bollinger bands at their narrowest, then a close outside on volume | retired (`0007`) |
+| GMMA_TREND | Guppy short/long EMA ribbons separate cleanly, 15-min trend agrees | retired (`0007`) |
+| SMC_STRUCTURE | Close beyond the last swing high/low (break of structure), fair-value gap | retired (`0007`) |
+| TECHNICAL_COMPOSITE | EMA12/26 trend + OBV align, weighted by ADX, RSI, Bollinger, VWAP | retired (`0007`) |
+| GAP_AND_GO | 1–4.5% opening gap on 1.6× opening volume; break of the first 15-min candle | paper only |
 | EMA_CROSS_9_21 | EMA9/21 cross with 15-min EMA20/50 agreeing, ADX > 22 | paper only |
 | PDH_PDL_CPR | Narrow central pivot range day; close beyond the previous day's high/low on 1.8× volume | paper only |
+
+**Intraday, 15-min bars** (fewer false breaks, lower cost drag as % of stop)
+
+| Strategy | Idea in one line | Approved for LIVE |
+|---|---|---|
+| ORB_SUPERTREND_15M | 15-min close beyond the opening range with Supertrend, EMA9/21, ADX, RVOL ≥ 1.5, VWAP | paper only |
+| PDH_PDL_CPR_15M | Narrow-CPR 15-min breakout beyond PDH/PDL on volume | paper only |
+| EMA_CROSS_9_21_15M | 15-min EMA9/21 cross aligned with 15-min EMA20/50 trend and RVOL ≥ 1.5 | paper only |
+| SMC_STRUCTURE_15M | 15-min Break of Structure + Fair Value Gap with RVOL ≥ 1.5 | paper only |
 
 **Intraday, 5-min bars: counter-trend (fade a move)**
 
@@ -138,8 +152,9 @@ and the dashboard shows exactly which one blocked a setup.
 ### Timing **[deployed]**
 | Rule | Value |
 |---|---|
-| Entry windows | **09:45:00–11:30:00** and **13:30:00–14:45:00** IST |
-| Blocked | 09:15–09:44 (opening volatility), 11:30–13:30 (midday chop), after 14:45 |
+| Entry windows | **09:30:00–11:30:00** and **13:30:00–14:45:00** IST |
+| Blocked | 09:15–09:29 (opening volatility), 11:30–13:30 (midday chop), after 14:45 |
+| Why 09:30, not 09:45 | Over 12 months, entries at 09:30–09:45 averaged −0.08R and 09:45–10:30 −0.23R (the worst slot); starting at 09:30 improved the rule set from −0.20R to −0.18R per trade |
 | Setup must hold unchanged | 6 seconds (AutoPilot) |
 | Setup freshness | Entered only within **10 min** of first signalling (AutoPilot). A setup that waited behind a full position cap or the midday block is stale. On first sight, its age is measured from earlier bars. |
 | Re-entry cooldown | **5 min** after a position in the same stock closes (AutoPilot) |
@@ -163,8 +178,10 @@ and the dashboard shows exactly which one blocked a setup.
 | Quality | ≥ 70 |
 | Reward:risk (strategy levels) | ≥ 1.5 |
 | Reward:risk after all charges | ≥ 1.0 (server setting; default 1.25) |
-| Minimum intraday stop | **0.5% of price** (AutoPilot) **[ready, not deployed]**. Tighter stops lose the edge to charges. |
-| Strategy enabled / approved | In LIVE the lead must have an APPROVED version. Strategies losing over 20+ of their own trades are paused. |
+| Minimum intraday stop | **0.65% of price** (AutoPilot) **[ready, not deployed]**. Stops below cost-viability lose edge to charges. |
+| Cost-to-risk ceiling | Round-trip charges + slippage ≤ **20%** of planned 1R risk (AutoPilot) **[ready, not deployed]** |
+| Entry chase cap | Blocks live entries drifted > **0.5 ATR** above signal bar close (`barCloseEntry`) or > **0.75 ATR** above `signal.entry` **[ready, not deployed]** |
+| Strategy enabled / approved | In LIVE the lead must have an APPROVED version (rejected validations blocked even if previously tagged APPROVED). Strategies losing over 20+ of their own trades are paused. |
 
 ### Portfolio limits **[deployed]**
 | Rule | Value (server) |
@@ -177,12 +194,12 @@ and the dashboard shows exactly which one blocked a setup.
 
 ---
 
-## 6. AI review **[deployed]**
+## 6. AI review **[deployed + hardened]**
 
 Runs **after** a setup has passed every rule, on that one setup only.
-- **Three built-in rule checks:** geometry and timing, candle/breakout pattern, and an estimated win-rate score.
+- **Three built-in rule checks:** geometry and timing, candle/breakout pattern (including extreme RSI exhaustion > 75 / < 25), and an estimated win-rate score.
 - **Language models:** Gemini and Groq (qwen), with 1.5 seconds each. A model that fails or times out doesn't vote.
-- **Verdict:** any REJECT blocks the trade; 2+ CAUTION or no CONFIRM halves the size; otherwise full size.
+- **Verdict:** any REJECT, **≥ 2 CAUTION votes**, or **CAUTION paired with structural exhaustion / thin volume** blocks the trade; single CAUTION or no CONFIRM halves the size; otherwise full size.
 - AI never picks stocks or adds trades.
 
 ---
@@ -204,8 +221,9 @@ Runs **after** a setup has passed every rule, on that one setup only.
 8. **Order rate limit:** 8 per second, under SEBI's 10/sec retail-algo threshold. Place, modify and cancel share one budget.
 
 **[ready, not deployed]**
-- **Stop-hunt guard:** if a stop sits on a stop cluster (previous-day high/low, opening range, equal highs/lows, round number), it moves just beyond the sweep zone, at most 0.6 ATR.
-- **3R targets:** trend targets restated at 3× the risk (AutoPilot).
+- **Stop-hunt guard before target restatement:** `guardSetupStop()` adjusts stops off local liquidity clusters (PDH/PDL, opening range, equal highs/lows, round levels; max 0.6 ATR) **before** `restateTarget()` computes final risk & target geometry.
+- **2.5R ADR-capped targets:** trend targets target **2.5×** guarded risk (AutoPilot) and are capped at **1.5×** prior-session daily ATR (`maxTargetDailyAtr`); intraday targets already past realistic remaining ADR are invalidated.
+- **Cost-buffered staged trailing stop (`trader.ts`):** at **+1.2R** move virtual stop to **+0.35R** (covering brokerage + STT + slippage); from **+1.6R** trail at **1.25 × ATR**, preserving original `stopLoss` for 1R risk accounting.
 
 ---
 
@@ -282,13 +300,31 @@ Double Momentum (−0.13R, 0/4 quarters) and MACD signal-candle breakout
 
 **Conclusion:** over a full year, the 5-minute intraday trend strategies
 **lose money after charges in every quarter**, even with every filter on. The
-two-month result above was a favourable stretch, not the norm. Only
-PDH_PDL_CPR shows a consistent edge, and 103 trades is still a small sample.
+two-month result above was a favourable stretch, not the norm.
+
+### Results after live-parity + ADR + cost-buffered trailing upgrades (24 NSE stocks, 24 Nov 2025 – 23 Nov 2026)
+
+Using the live-parity backtester (`entrySessionsOnly`, `htfBias`, NIFTY direction + relative strength, `minStopPct`, `maxTargetDailyAtr: 1.5`, `targetR: 2.5`, `maxChargePctOfRisk: 20`, `INTRADAY_STAGED_TRAIL` `{ breakevenR: 1.2, breakevenLockR: 0.35, trailFromR: 1.6, trailAtr: 1.25 }`):
+
+| Strategy | TF | Trades | WR% | Full R | OOS R | PF | Quarters + | Cost ×2 R |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **PDH_PDL_CPR** (default + NIFTY) | 5m | 17 | 70.6% | **+0.627R** | **+1.156R** | 3.72 | **4/4** | **+0.131R** |
+| **GAP_AND_GO** (1–4.5%, 1.6× + NIFTY) | 5m | 31 | 71.0% | **+0.343R** | **+0.298R** | 2.32 | 2/4 (Q1: 0 trades) | **+0.212R** |
+| **GAP_AND_GO** (1–4.5%, 1.6×, no NIFTY) | 5m | 60 | 58.3% | +0.149R | +0.076R | 1.50 | 2/4 | +0.020R |
+| ORB_SUPERTREND_15M | 15m | 268 | 44.8% | −0.049R | −0.054R | 0.90 | 1/4 | −0.266R |
+| ORB_SUPERTREND | 5m | 136 | 41.2% | −0.187R | −0.133R | 0.75 | 1/4 | −0.456R |
+| TECHNICAL_COMPOSITE | 5m | 64 | 43.8% | −0.040R | −0.014R | 1.01 | 2/4 | −0.316R |
+| PDH_PDL_CPR_15M | 15m | 117 | 47.0% | −0.022R | −0.177R | 0.99 | 3/4 | −0.236R |
+| BB_SQUEEZE_BREAKOUT | 5m | 22 | 36.4% | −0.352R | −0.046R | 0.58 | 1/4 | −0.730R |
+| SMC_STRUCTURE_15M | 15m | 121 | 33.9% | −0.235R | −0.122R | 0.45 | 0/4 | −0.420R |
+| EMA_CROSS_9_21_15M | 15m | 38 | 28.9% | −0.257R | −0.212R | 0.49 | 0/4 | −0.412R |
+| FAILED_BREAKOUT_TRAP | 5m | 439 | 40.5% | −0.215R | −0.174R | 0.68 | 0/4 | −0.448R |
+| VWAP_PULLBACK | 5m | 459 | 38.1% | −0.262R | −0.177R | 0.57 | 0/4 | −0.538R |
 
 ### Recommendation
-1. **Do not trade these intraday strategies with real money.** Keep the engine in PAPER.
-2. Keep PDH_PDL_CPR under observation in paper; validate and approve it only if paper results agree.
-3. Research higher timeframes next (15-min/hourly intraday setups and daily swing trades), where charges are a much smaller share of each trade. Test them over 12+ months, quarter by quarter, before any live use.
+1. **Retire legacy 5-min `@v1` trend versions** (migration `0007_retire_failing_intraday_v1.sql`) and keep the engine in **PAPER** during soak validation.
+2. **Focus paper validation on `PDH_PDL_CPR` (`5m` + NIFTY alignment)** and **`GAP_AND_GO` (`1.0–4.5%`, `1.6×` opening RVOL)**: both stayed positive in-sample, out-of-sample, and under **2× cost stress** (`PDH_PDL_CPR` passed `4/4` quarters; tuned `GAP_AND_GO` passed 5/6 gates with `18/18` parameter stability and missed only `WALK_FORWARD` because Q1 had zero qualifying days).
+3. **Continue expanding 24-stock live-parity `ResearchLab` sweeps** with `15m` and swing strategies; only promote to LIVE if a candidate clears all 6 validation gates and paper execution matches backtest slippage.
 4. Add capital only after a strategy is positive after charges in most quarters **and** in paper trading. More capital doesn't create an edge: charges are mostly a percentage of each trade.
 
 ---

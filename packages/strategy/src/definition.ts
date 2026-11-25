@@ -21,7 +21,7 @@ export interface StrategyDefinition {
   readonly name: string;
   readonly style: 'INTRADAY' | 'SWING';
   /** Candle interval the strategy reads. */
-  readonly timeframe: '5m' | '1d';
+  readonly timeframe: '5m' | '15m' | '1d';
   readonly description: string;
   /**
    * Fades a move rather than joining one (mean reversion, failed breakouts,

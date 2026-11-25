@@ -35,6 +35,7 @@ import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
 import {
   LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments, sideAllowed,
+  staleInstruments,
   type AutoConfig, type DecisionContext, type StrategyRecord, type LiveAnalysis, type LiveSetup, type Target,
 } from './live.ts';
 import { MarketScanner } from './scan.ts';
@@ -229,8 +230,9 @@ const autoPicks = new Map<string, { instrumentKey: string; symbol: string; name:
 const autoUniverse = { refreshedAt: null as number | null, attemptedAt: 0, scanned: 0, error: null as string | null, busy: false };
 const AUTO_UNIVERSE_REFRESH_MS = 5 * 60_000;
 
-/** Last traded price for every instrument we hear about — equities, futures, options, indices. */
+/** Last traded price and last tick timestamp per instrument across WS and REST polling. */
 const lastLtp = new Map<string, number>();
+const lastTickByKey = new Map<string, number>();
 const ltpOf = (key: string): number | null => lastLtp.get(key) ?? null;
 
 const aggregator5m = new CandleAggregator(5);
@@ -479,10 +481,12 @@ const feed = new MarketFeed(async () => {
 }, clock);
 
 function applyTick(t: Tick): void {
+  const nowMs = clock.ms();
   state.ticks++;
-  state.lastTickMs = clock.ms();
-  feed.recordTick(clock.ms());
+  state.lastTickMs = nowMs;
+  feed.recordTick(nowMs);
   lastLtp.set(t.instrumentKey, t.ltp);
+  lastTickByKey.set(t.instrumentKey, nowMs);
   // Always: paper positions keep settling while the dashboard is in LIVE.
   paperBroker.onTick(t);
 
@@ -697,14 +701,33 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     style, qty, buyPrice: long ? entryRs : exitRs, sellPrice: long ? exitRs : entryRs,
   }).totalCharges;
   const costAtTarget = roundTrip(targetRs);
+  const costAtStop = roundTrip(stopRs);
+  const riskRupees = Math.abs(entryRs - stopRs) * qty;
+  if (state.auto.maxCostPctOfRisk > 0 && riskRupees > 0) {
+    const costPct = (costAtStop / riskRupees) * 100;
+    if (costPct > state.auto.maxCostPctOfRisk) {
+      return {
+        ok: false,
+        reason: `charges ₹${costAtStop.toFixed(2)} are ${costPct.toFixed(1)}% of 1R risk ₹${riskRupees.toFixed(2)} (max ${state.auto.maxCostPctOfRisk}%) — stop too tight`,
+      };
+    }
+  }
   const netReward = Math.abs(targetRs - entryRs) * qty - costAtTarget;
-  const netRisk = Math.abs(entryRs - stopRs) * qty + roundTrip(stopRs);
+  const netRisk = riskRupees + costAtStop;
   const netRR = netRisk > 0 ? netReward / netRisk : 0;
   if (netRR < state.auto.minNetRewardRisk) {
     return { ok: false, reason: `R:R after ₹${costAtTarget.toFixed(2)} round-trip charges is ${netRR.toFixed(2)} (min ${state.auto.minNetRewardRisk}) — charges eat the edge at ${qty} shares` };
   }
 
   if (lastLtp.get(key) === undefined) await primePrice(key);
+  const stagedTrail = signal.style === 'INTRADAY' && state.auto.stagedTrail && signal.atr > 0
+    ? {
+        breakevenR: 1.2,
+        breakevenLockR: 0.35,
+        trailFromR: 1.6,
+        trailGapPaise: rupeesToPaise(signal.atr * 1.25),
+      }
+    : null;
   const r = await trader.open({
     segment: 'EQ',
     style: signal.style,
@@ -717,9 +740,9 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     entry: signal.entry,
     stopLoss: signal.stopLoss,
     target: signal.target,
-    // Trail at the initial risk distance: the stop starts where the strategy put
-    // it and only ever moves to lock in gains (held at the exchange in the GTT).
+    // Keep native exchange GTT trailing optional; stagedTrail runs cost-buffered BE + 1.25 ATR trail in manage().
     trailingGap: state.auto.trailStop ? (Math.abs(signal.entry - signal.stopLoss) as Paise) : null,
+    stagedTrail,
     costPaise: (signal.entry * qty) as Paise,
     timeStopMin: null,
     strategyId: meta.strategyId,
@@ -727,7 +750,7 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     quality: meta.quality,
   });
   return r.ok
-    ? { ok: true, detail: `${qty} × ₹${entryRs.toFixed(2)} · net R:R ${netRR.toFixed(2)} after ~₹${costAtTarget.toFixed(2)} charges${state.auto.trailStop ? ' · trailing stop' : ''}` }
+    ? { ok: true, detail: `${qty} × ₹${entryRs.toFixed(2)} · net R:R ${netRR.toFixed(2)} after ~₹${costAtTarget.toFixed(2)} charges${stagedTrail ? ' · staged trail' : state.auto.trailStop ? ' · trailing stop' : ''}` }
     : { ok: false, reason: r.reason };
 }
 
@@ -895,7 +918,7 @@ function optionWallsFor(key: string): OptionWalls | null {
 
 const candleSource = {
   intraday: (key: string): Candle[] =>
-    mergeCandles(historyCache.get(key) ?? [], intradayCandlesCache.get(key) ?? []).slice(-400),
+    mergeCandles(historyCache.get(key) ?? [], intradayCandlesCache.get(key) ?? []).slice(-600),
   partial: (key: string): Candle | null => aggregator5m.peek(key),
   daily: (key: string): Candle[] => dailyCandlesCache.get(key) ?? [],
   ltp: ltpOf,
@@ -923,11 +946,36 @@ const scanner = new MarketScanner({
   params: () => registry.activeParams(),
 });
 
+const RESEARCH_UNIVERSE_SYMBOLS = [
+  'RELIANCE', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'ITC', 'LT', 'TATAMOTORS',
+  'AXISBANK', 'TATASTEEL', 'BAJFINANCE', 'BHARTIARTL',
+  'PNB', 'BANKBARODA', 'CANBK', 'UNIONBANK', 'FEDERALBNK', 'TATAPOWER',
+  'GAIL', 'BHEL', 'IOC', 'ONGC', 'COALINDIA', 'ASHOKLEY',
+];
+
+const researchAiProviders = [
+  ...(cfg.GEMINI_API_KEY ? [{ apiKey: cfg.GEMINI_API_KEY, model: cfg.GEMINI_MODEL, baseUrl: cfg.GEMINI_BASE_URL }] : []),
+  ...(cfg.GROQ_API_KEY ? [{ apiKey: cfg.GROQ_API_KEY, model: cfg.GROQ_MODEL, baseUrl: cfg.GROQ_BASE_URL }] : []),
+];
+
 const lab = new ResearchLab({
   client, clock, registry,
-  ai: cfg.GROQ_API_KEY ? { apiKey: cfg.GROQ_API_KEY, model: cfg.GROQ_MODEL, baseUrl: cfg.GROQ_BASE_URL } : null,
-  // Liquid, long-history names: research needs continuous data, so no futures.
-  symbols: () => DEFAULT_UNIVERSE.slice(0, 6).map((u) => ({ instrumentKey: u.instrumentKey, symbol: u.symbol })),
+  ai: researchAiProviders,
+  // Mixed large + ₹100–₹1,000 liquid mid-cap NSE universe matching live autoUniverse exposure.
+  symbols: () => {
+    const picked: Array<{ instrumentKey: string; symbol: string }> = [];
+    const seen = new Set<string>();
+    for (const sym of RESEARCH_UNIVERSE_SYMBOLS) {
+      const hit = DEFAULT_UNIVERSE.find((u) => u.symbol === sym) ?? equities.find((e) => e.symbol === sym);
+      if (hit && !seen.has(hit.instrumentKey)) {
+        seen.add(hit.instrumentKey);
+        picked.push({ instrumentKey: hit.instrumentKey, symbol: hit.symbol });
+      }
+    }
+    return picked.length >= 6
+      ? picked
+      : DEFAULT_UNIVERSE.map((u) => ({ instrumentKey: u.instrumentKey, symbol: u.symbol }));
+  },
 });
 
 interface AutoLogEntry {
@@ -1156,12 +1204,14 @@ async function refreshAutoUniverse(): Promise<void> {
       Object.assign(watchlist.get(q.instrumentKey)!, {
         ltp: q.ltp, open: q.open, high: q.high, low: q.low, close: q.prevClose, volume: q.volume,
         changePct: q.prevClose > 0 ? ((q.ltp - q.prevClose) / q.prevClose) * 100 : 0,
+        lastUpdated: clock.ms(),
       });
       lastLtp.set(q.instrumentKey, q.ltp);
       fresh.push(q.instrumentKey);
     }
-    if (fresh.length > 0) feed.subscribe(fresh, 'full');
+    if (fresh.length > 0 && feed.isConnected) feed.subscribe(fresh, 'full');
     for (const key of fresh) await loadCandles(key);
+    if (fresh.length > 0) void pollQuotesOnce(fresh);
 
     Object.assign(autoUniverse, { refreshedAt: clock.ms(), scanned: quotes.length, error: null });
     console.log(`[universe] ${picks.length} picks from ${quotes.length} quotes (+${fresh.length} new): ${picks.map((q) => q.symbol).join(', ')}`);
@@ -1367,14 +1417,8 @@ let pollingInProgress = false;
 /** Upstox's full-quote endpoint takes up to 500 instruments per call. */
 const QUOTE_BATCH = 500;
 
-/**
- * REST fallback while the WebSocket is not ticking: one full-quote poll of
- * everything the engine prices — the watchlist, focus and single-stock target,
- * F&O underlyings and every open position.
- */
-async function pollQuotesOnce(): Promise<void> {
-  if (pollingInProgress) return;
-  const keys = [...new Set([
+function trackedFeedKeys(): string[] {
+  return [...new Set([
     MARKET_KEY,
     ...watchlist.keys(),
     ...(state.fnoEnabled ? fnoDesk.feedKeys() : []),
@@ -1382,6 +1426,15 @@ async function pollQuotesOnce(): Promise<void> {
     ...(state.singleTarget?.instrumentKey ? [state.singleTarget.instrumentKey] : []),
     ...trader.live().map((p) => p.instrumentKey),
   ])];
+}
+
+/**
+ * REST fallback while the WebSocket is not ticking (or for any newly auto-picked /
+ * held instrument not receiving ticks): full-quote poll of stale or all tracked keys.
+ */
+async function pollQuotesOnce(onlyKeys?: readonly string[]): Promise<void> {
+  if (pollingInProgress) return;
+  const keys = onlyKeys && onlyKeys.length > 0 ? [...new Set(onlyKeys)] : trackedFeedKeys();
   if (keys.length === 0) return;
 
   pollingInProgress = true;
@@ -1424,17 +1477,21 @@ function startLoops(): void {
   void refreshStrategyRecords().catch((e) => console.error('[records]', e));
   setInterval(() => void refreshStrategyRecords().catch((e) => console.error('[records]', e)), 60_000);
 
-  // Resilient market feed poller: if the WebSocket feed has not ticked recently
-  // (e.g. during connection, backoff, or when waiting for user OAuth login),
-  // poll REST quotes (/v2/market-quote/quotes) using the long-lived analytics token.
-  // This keeps watchlist prices fresh, ensures staleness stays < 2500ms, and prevents
-  // the FEED_STALE breaker from tripping.
+  // Resilient market feed poller: triggers whenever the WebSocket is disconnected,
+  // globally stale (>= 2500ms), OR any individual watched/held/auto-picked symbol
+  // has not ticked for >= 3000ms (e.g. partial WS stream ignoring dynamic picks).
   setInterval(() => {
     const mins = istMinutes(clock.now());
     if (mins < SESSION.OPEN - 15 || mins > SESSION.CLOSE + 15) return;
-    const staleness = state.lastTickMs === null ? Infinity : clock.ms() - state.lastTickMs;
-    if (staleness >= 2500) {
+    const now = clock.ms();
+    const staleness = state.lastTickMs === null ? Infinity : now - state.lastTickMs;
+    if (!feed.isConnected || staleness >= 2500) {
       void pollQuotesOnce();
+      return;
+    }
+    const stale = staleInstruments(trackedFeedKeys(), lastTickByKey, now, 3000);
+    if (stale.length > 0) {
+      void pollQuotesOnce(stale);
     }
   }, 2_000);
   setInterval(() => {
@@ -1768,6 +1825,7 @@ function positionView(p: ManagedPosition): Record<string, unknown> {
     entry: paiseToRupees(p.entry),
     avgEntry: p.avgEntry !== null ? paiseToRupees(p.avgEntry) : null,
     stopLoss: paiseToRupees(p.stopLoss),
+    ...(p.virtualStopPaise ? { trailingStop: paiseToRupees(p.virtualStopPaise) } : {}),
     target: paiseToRupees(p.target),
     ltp,
     pnlRupees: paiseToRupees(pnl),
@@ -1956,7 +2014,7 @@ const server = createServer(async (req, res) => {
         })),
       },
       strategies: STRATEGY_CATALOG.map((d) => ({
-        id: d.id, name: d.name, style: d.style, approved: registry.approved(d.id)?.id ?? null,
+        id: d.id, name: d.name, style: d.style, timeframe: d.timeframe, approved: registry.approved(d.id)?.id ?? null,
         record: strategyRecords.get(d.id) ?? null,
         verdict: registry.activeVerdict(d.id),
       })),
@@ -1986,7 +2044,7 @@ const server = createServer(async (req, res) => {
         versions: registry.list(d.id),
       })),
       jobs: lab.jobs,
-      aiAvailable: cfg.GROQ_API_KEY !== undefined,
+      aiAvailable: lab.hasAi,
     });
   }
 

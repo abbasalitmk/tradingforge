@@ -136,3 +136,22 @@ export const PDH_PDL_CPR: StrategyDefinition = {
     return tagged('PDH_PDL_CPR', new PdhCprProfile(clampParams(PDH_PDL_CPR, params) as unknown as PdhCprParams));
   },
 };
+
+export const PDH_PDL_CPR_15M: StrategyDefinition = {
+  id: 'PDH_PDL_CPR_15M',
+  name: 'PDH/PDL Narrow-CPR Breakout (15m)',
+  style: 'INTRADAY',
+  timeframe: '15m',
+  description: '15-minute narrow-CPR PDH/PDL breakout on >=1.5x volume with wider ATR stops to lower transaction cost drag.',
+  defaults: {
+    ...DEFAULT_PDH_CPR,
+    minVolumeRatio: 1.5,
+    minStopAtr: 0.75,
+    maxStopAtr: 2.5,
+    targetRR: 2,
+  } as unknown as StrategyDefinition['defaults'],
+  bounds: PDH_PDL_CPR.bounds,
+  create(params) {
+    return tagged('PDH_PDL_CPR_15M', new PdhCprProfile(clampParams(PDH_PDL_CPR_15M, params) as unknown as PdhCprParams));
+  },
+};

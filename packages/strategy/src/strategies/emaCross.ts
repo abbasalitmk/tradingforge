@@ -1,5 +1,5 @@
 import type { Signal, Side, TradingStyle } from '@tradeforger/core';
-import { closes, latest, ema, atr, adx, relativeVolume } from '@tradeforger/indicators';
+import { closes, latest, ema, atr, adx, relativeVolume, rsi } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -13,6 +13,7 @@ export interface EmaCrossParams {
   readonly emaSlow: number;
   /** 5-minute ADX the cross needs — a cross in a flat market is a coin flip. */
   readonly minAdx: number;
+  readonly minRelativeVolume: number;
   /** Bars back for the swing the stop sits beyond. */
   readonly swingBars: number;
   readonly stopBufferAtr: number;
@@ -27,6 +28,7 @@ export const DEFAULT_EMA_CROSS: EmaCrossParams = {
   emaFast: 9,
   emaSlow: 21,
   minAdx: 22,
+  minRelativeVolume: 1.2,
   swingBars: 5,
   stopBufferAtr: 0.1,
   minStopAtr: 0.5,
@@ -79,10 +81,13 @@ export class EmaCrossProfile implements StrategyProfile {
     if (adxNow === null || adxNow <= p.minAdx) return null;
     const atrNow = latest(atr(candles, p.atrPeriod));
     if (atrNow === null || atrNow <= 0) return null;
+    const rvol = latest(relativeVolume(candles, 20));
+    if (p.minRelativeVolume > 0 && (rvol === null || rvol < p.minRelativeVolume)) return null;
+    const rsiNow = latest(rsi(c, 14));
+    if (rsiNow === null || (long ? rsiNow >= 72 : rsiNow <= 28)) return null;
 
     const price = last.close;
     const vwNow = sessionVwap(session)[session.length - 1]!;
-    const rvol = latest(relativeVolume(candles, 20));
     const recent = candles.slice(-p.swingBars);
     const swing = long ? Math.min(...recent.map((b) => b.low)) : Math.max(...recent.map((b) => b.high));
 
@@ -91,7 +96,7 @@ export class EmaCrossProfile implements StrategyProfile {
       { name: 'mtf15', passed: true, weight: 3, detail: `15-min EMA20 ${long ? '>' : '<'} EMA50` },
       { name: 'adx', passed: true, weight: 2, detail: `ADX ${fmt(adxNow, 1)} > ${p.minAdx}` },
       { name: 'vwapSide', passed: (price - vwNow) * dir > 0, weight: 1, detail: `${long ? 'Above' : 'Below'} session VWAP` },
-      { name: 'volume', passed: rvol !== null && rvol >= 1.2, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
+      { name: 'volume', passed: true, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
       { name: 'closeStrong', passed: closeLocation(last, side) >= 0.6, weight: 1, detail: 'Cross bar closed near its extreme' },
     ];
     const confidence = scoreConfluence(checks);
@@ -104,7 +109,7 @@ export class EmaCrossProfile implements StrategyProfile {
 
     return buildSignal({
       ctx, style: this.style, side, geometry, atr: atrNow, confidence, checks,
-      indicators: { atr: atrNow, emaFast: f1, emaSlow: s1, ema20_15m: e20, ema50_15m: e50, adx: adxNow, vwap: vwNow, swing },
+      indicators: { atr: atrNow, emaFast: f1, emaSlow: s1, ema20_15m: e20, ema50_15m: e50, adx: adxNow, vwap: vwNow, swing, rvol: rvol ?? 0, rsi: rsiNow },
     });
   }
 }
@@ -118,6 +123,7 @@ export const EMA_CROSS: StrategyDefinition = {
   defaults: DEFAULT_EMA_CROSS as unknown as StrategyDefinition['defaults'],
   bounds: {
     minAdx: { min: 15, max: 35, step: 1 },
+    minRelativeVolume: { min: 0.8, max: 2.5, step: 0.1 },
     swingBars: { min: 3, max: 12, step: 1 },
     stopBufferAtr: { min: 0, max: 1, step: 0.1 },
     minStopAtr: { min: 0.25, max: 1.5, step: 0.25 },
@@ -127,5 +133,24 @@ export const EMA_CROSS: StrategyDefinition = {
   },
   create(params) {
     return tagged('EMA_CROSS_9_21', new EmaCrossProfile(clampParams(EMA_CROSS, params) as unknown as EmaCrossParams));
+  },
+};
+
+export const EMA_CROSS_9_21_15M: StrategyDefinition = {
+  id: 'EMA_CROSS_9_21_15M',
+  name: '9/21 EMA Crossover (15m)',
+  style: 'INTRADAY',
+  timeframe: '15m',
+  description: '15-minute EMA9/21 crossover aligned with 15-min EMA20/50 trend, ADX > 22, >=1.2x RVOL and fresh RSI room.',
+  defaults: {
+    ...DEFAULT_EMA_CROSS,
+    swingBars: 3,
+    minStopAtr: 0.75,
+    maxStopAtr: 2.5,
+    targetRR: 2,
+  } as unknown as StrategyDefinition['defaults'],
+  bounds: EMA_CROSS.bounds,
+  create(params) {
+    return tagged('EMA_CROSS_9_21_15M', new EmaCrossProfile(clampParams(EMA_CROSS_9_21_15M, params) as unknown as EmaCrossParams));
   },
 };

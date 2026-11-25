@@ -4,7 +4,7 @@ import { IntradayProfile, DEFAULT_INTRADAY, trailStop } from './intraday.ts';
 import { scoreConfluence } from './profile.ts';
 
 /**
- * Synthesise a session: flat opening range, then a breakout with rising volume.
+ * Synthesise a session: flat opening range, then a fresh breakout with rising volume.
  * 09:15 IST = 03:45 UTC.
  */
 function session(opts: {
@@ -12,26 +12,28 @@ function session(opts: {
   breakoutFrom?: number;
   direction?: 1 | -1;
   volumeMultiple?: number;
+  stepPct?: number;
 }): Candle[] {
-  const { bars, breakoutFrom = 12, direction = 1, volumeMultiple = 3 } = opts;
+  const { bars, breakoutFrom = Math.max(12, bars - 3), direction = 1, volumeMultiple = 3, stepPct = 0.0025 } = opts;
   const base = new Date('2026-09-14T03:45:00Z').getTime();
   const out: Candle[] = [];
   let price = 100;
 
   for (let i = 0; i < bars; i++) {
     const breaking = i >= breakoutFrom;
-    if (breaking) price += direction * 0.9;
-    else price += (i % 2 ? 0.05 : -0.05);
+    if (breaking) {
+      price += direction * (100 * stepPct);
+    } else {
+      // Two-way consolidation inside [99.4, 100.6] keeps RSI ~50 and ATR realistic before breakout.
+      price = 100 + Math.sin(i * 0.9) * 0.35;
+    }
 
-    // Volume spikes only on the LAST few bars. Elevating it across the whole
-    // breakout would lift the 20-bar trailing average with it and read as
-    // RVOL 1.0 — a spike detector measures deviation, not absolute level.
-    const nearEnd = i >= bars - 3;
+    const nearEnd = i >= breakoutFrom;
     out.push({
       ts: base + i * 5 * 60_000,
-      open: price - 0.1,
-      high: price + (breaking ? 0.5 : 0.15),
-      low: price - (breaking ? 0.1 : 0.15),
+      open: price - direction * 0.08,
+      high: price + (breaking ? (direction === 1 ? 0.4 : 0.15) : 0.25),
+      low: price - (breaking ? (direction === -1 ? 0.4 : 0.15) : 0.25),
       close: price,
       volume: nearEnd ? 1000 * volumeMultiple : 1000,
     });
@@ -93,14 +95,23 @@ describe('opening range gating', () => {
 });
 
 describe('confluence requirements', () => {
-  it('scores a volume-confirmed breakout above an unconfirmed one', () => {
-    const p = new IntradayProfile({ ...DEFAULT_INTRADAY, minConfidence: 10 });
-    const weak = p.evaluate(ctx(session({ bars: 60, volumeMultiple: 1 })))!;
-    const strong = p.evaluate(ctx(session({ bars: 60, volumeMultiple: 4 })))!;
-    // Volume carries weight 3 of 18, so confirmation is worth ~17 points.
-    expect(strong.confidence).toBeGreaterThan(weak.confidence);
+  it('blocks stale breakouts, overbought RSI chases, and low-RVOL pokes as hard gates', () => {
+    const p = new IntradayProfile();
+    // Stale: 10+ bars past breakout (> freshBars = 5)
+    expect(p.evaluate(ctx(session({ bars: 60, breakoutFrom: 48, stepPct: 0.0015 })))).toBeNull();
+    // Low RVOL: volumeMultiple = 1 < 1.5
+    expect(p.evaluate(ctx(session({ bars: 60, volumeMultiple: 1 })))).toBeNull();
+    // Extreme exhaustion: rapid vertical climb pushes RSI > 72
+    expect(p.evaluate(ctx(session({ bars: 60, breakoutFrom: 56, stepPct: 0.015 })))).toBeNull();
+  });
+
+  it('scores a higher-confidence breakout when indicators line up', () => {
+    const base = new IntradayProfile({ ...DEFAULT_INTRADAY, minRelativeVolume: 0, minConfidence: 10 });
+    const withRvol = new IntradayProfile({ ...DEFAULT_INTRADAY, minRelativeVolume: 1.5, minConfidence: 10 });
+    expect(base.evaluate(ctx(session({ bars: 60, volumeMultiple: 1 })))).not.toBeNull();
+    expect(withRvol.evaluate(ctx(session({ bars: 60, volumeMultiple: 1 })))).toBeNull();
+    const strong = withRvol.evaluate(ctx(session({ bars: 60, volumeMultiple: 4 })))!;
     expect(strong.reasons.some((r) => r.startsWith('RVOL'))).toBe(true);
-    expect(weak.reasons.some((r) => r.startsWith('RVOL'))).toBe(false);
   });
 
   it('a higher confidence threshold produces fewer signals', () => {

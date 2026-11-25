@@ -1,5 +1,5 @@
-import { istMinutes, type Candle, type Side, type Signal, type TradingStyle } from '@tradeforger/core';
-import { atr, closes, ema, latest, relativeVolume } from '@tradeforger/indicators';
+import { istDateKey, istMinutes, type Candle, type Side, type Signal, type TradingStyle } from '@tradeforger/core';
+import { atr, closes, ema, latest, relativeVolume, rsi } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -31,7 +31,7 @@ export const DEFAULT_GMMA: GmmaParams = {
   minStopAtr: 0.75,
   maxStopAtr: 2.5,
   targetRR: 2,
-  minRelativeVolume: 1.2,
+  minRelativeVolume: 1.5,
   minConfidence: 60,
 };
 
@@ -43,7 +43,7 @@ export function resample15(candles: readonly Candle[]): Candle[] {
   for (const c of candles) {
     const d = new Date(c.ts);
     const slot = Math.floor((istMinutes(d) - (9 * 60 + 15)) / 15);
-    const key = `${Math.floor(c.ts / 86_400_000)}:${slot}`;
+    const key = `${istDateKey(d)}:${slot}`;
     if (key !== curKey || cur === null) {
       if (cur) out.push(cur);
       cur = { ...c };
@@ -137,7 +137,13 @@ export class GmmaProfile implements StrategyProfile {
     const e15f = latest(ema(c15, 5));
     const e15s = latest(ema(c15, 20));
     const rvol = latest(relativeVolume(candles, 20));
+    const rsiNow = latest(rsi(c, 14));
     const price = last.close;
+
+    // Without a fresh separation, strong RVOL or RSI room, this is a late/thin chase.
+    if (!fresh) return null;
+    if (p.minRelativeVolume > 0 && (rvol === null || rvol < p.minRelativeVolume)) return null;
+    if (rsiNow === null || (side === 'BUY' ? rsiNow >= 72 : rsiNow <= 28)) return null;
 
     const checks: Confluence[] = [
       { name: 'separated', passed: true, weight: 3, detail: `GMMA ribbons separated ${side === 'BUY' ? 'bullish' : 'bearish'} (${fmt(Math.abs(sepNow) / atrNow, 1)} ATR gap)` },
@@ -150,11 +156,9 @@ export class GmmaProfile implements StrategyProfile {
         passed: side === 'BUY' ? price >= Math.max(...now.short) : price <= Math.min(...now.short),
         detail: `Price ${side === 'BUY' ? 'above' : 'below'} the trader ribbon`,
       },
-      { name: 'volume', passed: rvol !== null && rvol >= p.minRelativeVolume, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
+      { name: 'volume', passed: true, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
       { name: 'closeStrong', passed: closeLocation(last, side) >= 0.6, weight: 1, detail: 'Trigger bar closed near its extreme' },
     ];
-    // Without a fresh separation this is a late entry into an old move.
-    if (!fresh) return null;
     const confidence = scoreConfluence(checks);
     if (confidence < p.minConfidence) return null;
 
@@ -166,7 +170,7 @@ export class GmmaProfile implements StrategyProfile {
 
     return buildSignal({
       ctx, style: this.style, side, geometry, atr: atrNow, confidence, checks,
-      indicators: { atr: atrNow, separation: sepNow, longRibbon: longNow, ema15Fast: e15f ?? 0, ema15Slow: e15s ?? 0, rvol: rvol ?? 0 },
+      indicators: { atr: atrNow, separation: sepNow, longRibbon: longNow, ema15Fast: e15f ?? 0, ema15Slow: e15s ?? 0, rvol: rvol ?? 0, rsi: rsiNow },
     });
   }
 }

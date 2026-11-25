@@ -1,8 +1,11 @@
 import {
-  type Candle, type Signal, FixedClock, SESSION, paiseToRupees,
+  type Candle, type Signal, FixedClock, SESSION, paiseToRupees, istDateKey, istMinutes, entrySession,
 } from '@tradeforger/core';
-import type { Params, StrategyDefinition, StrategyProfile } from '@tradeforger/strategy';
-import { atr } from '@tradeforger/indicators';
+import {
+  type Params, type StrategyDefinition, type StrategyProfile,
+  completeBars15, trendBias15, marketDirection, dayChangePct, guardSignalStop,
+} from '@tradeforger/strategy';
+import { atr, vwap } from '@tradeforger/indicators';
 import {
   type CostModel, EQUITY_INTRADAY, EQUITY_DELIVERY, roundTripCost,
 } from './costs.ts';
@@ -28,21 +31,44 @@ export interface BacktestConfig {
   slippageBps: number;
   /** Swing only: exit 'TIME' at the close of the Nth bar held. Default 20. */
   maxHoldBars?: number;
-  /** Bars handed to the strategy per evaluation. Default 300 (5m) / 260 (1d),
+  /** Bars handed to the strategy per evaluation. Default 300 (5m) / 200 (15m) / 260 (1d),
    *  never fewer than the profile's warmupBars. */
   lookbackBars?: number;
   /** Move the stop as the trade works. Off when absent. */
   trail?: TrailConfig;
+  /** Override raw strategy target on trend strategies (`targetR * risk`). */
+  targetR?: number;
+  /** Cap intraday target at `dayOpen ± maxTargetDailyAtr * DailyATR(14)` using completed prior sessions. */
+  maxTargetDailyAtr?: number;
+  /** Reject capped/re-stated setups whose final R:R drops below this (default 1.5 when ADR-capped). */
+  minRewardRisk?: number;
+  /** Minimum stop distance as % of entry (intraday live-parity rule). */
+  minStopPct?: number;
+  /** Reject trend signals stretched further than this many ATRs from session VWAP. */
+  maxVwapStretchAtr?: number;
+  /** Require intraday trend signals to align with 15-min bias (`trendBias15`). */
+  htfBias?: boolean;
+  /** Move stop out of local liquidity cluster before restating target. */
+  stopClusterGuard?: boolean;
+  /** Skip entries whose round-trip costs at stop exceed this % of 1R risk. */
+  maxChargePctOfRisk?: number;
+  /** Restrict intraday entries to live ENTRY_SESSIONS (09:30–11:30 & 13:30–14:45 IST). */
+  entrySessionsOnly?: boolean;
+  /** Optional index 5m series for NIFTY direction + relative-strength live parity. */
+  marketSeries?: readonly Candle[];
 }
 
 /**
  * Staged stop management, on CLOSING prices so a bar's own wick never moves
  * the stop it is then tested against: once the best close since entry is
- * `breakevenR` in profit the stop goes to entry; from `trailFromR` it trails
+ * `breakevenR` in profit the stop goes to `entry + breakevenLockR * risk`
+ * (covering round-trip costs when > 0); from `trailFromR` it trails
  * that best close by `trailAtr` × ATR(14). The stop only ever tightens.
  */
 export interface TrailConfig {
   readonly breakevenR: number;
+  /** Multiple of initial R locked when breakeven triggers (default 0 = entry price). */
+  readonly breakevenLockR?: number;
   readonly trailFromR: number;
   readonly trailAtr: number;
 }
@@ -96,12 +122,19 @@ export interface TradeRecord {
 const IST_OFFSET_MS = 330 * 60_000;
 const DAY_MS = 86_400_000;
 const FIVE_MIN_MS = 300_000;
+const FIFTEEN_MIN_MS = 900_000;
 const DAILY_CLOSE_MS = SESSION.CLOSE * 60_000; // 15:30 IST after IST midnight
 
 export const DEFAULT_LOOKBACK: Readonly<Record<StrategyDefinition['timeframe'], number>> = {
   '5m': 300,
+  '15m': 200,
   '1d': 260,
 };
+
+/** Resample 5m bars to complete 15m bars when running a `'15m'` strategy (no-op if already 15m+). */
+export function candlesForTimeframe(candles: readonly Candle[], timeframe: StrategyDefinition['timeframe']): readonly Candle[] {
+  return timeframe === '15m' ? completeBars15(candles) : candles;
+}
 
 /** Per-bar calendar facts, computed once per candle array. */
 interface BarMeta {
@@ -123,12 +156,15 @@ export function istMidnight(ts: number): number {
 /**
  * When a bar's data is final.
  * - 5m: open + 5 minutes.
+ * - 15m: open + 15 minutes.
  * - 1d: 15:30 IST on the bar's IST date. Upstox stamps daily candles at IST
  *   midnight; using the calendar close rather than `ts + 6h15m` is correct for
  *   both midnight-stamped and 09:15-stamped daily bars.
  */
 export function barCloseTs(ts: number, timeframe: StrategyDefinition['timeframe']): number {
-  return timeframe === '5m' ? ts + FIVE_MIN_MS : istMidnight(ts) + DAILY_CLOSE_MS;
+  if (timeframe === '5m') return ts + FIVE_MIN_MS;
+  if (timeframe === '15m') return ts + FIFTEEN_MIN_MS;
+  return istMidnight(ts) + DAILY_CLOSE_MS;
 }
 
 function barMeta(candles: readonly Candle[], timeframe: StrategyDefinition['timeframe']): BarMeta {
@@ -205,7 +241,9 @@ export function prepareBacktest(
   data: Dataset,
   baseCfg: BacktestConfig = defaultBacktestFor(def),
 ): PreparedBacktest {
-  const candles = data.candles;
+  const simCandles = candlesForTimeframe(data.candles, def.timeframe);
+  const simData: Dataset = simCandles === data.candles ? data : { ...data, candles: simCandles };
+  const candles = simData.candles;
   const meta = barMeta(candles, def.timeframe);
   const profile: StrategyProfile = def.create(params);
   const lookback = Math.max(
@@ -224,8 +262,8 @@ export function prepareBacktest(
     if (i + 1 >= profile.warmupBars) {
       clock.set(new Date(meta.closeTs[i]!));
       s = profile.evaluate({
-        instrumentKey: data.instrumentKey,
-        symbol: data.symbol,
+        instrumentKey: simData.instrumentKey,
+        symbol: simData.symbol,
         candles: candles.slice(Math.max(0, i + 1 - lookback), i + 1),
         higherTf: [],
         clock,
@@ -237,12 +275,12 @@ export function prepareBacktest(
 
   return {
     def,
-    data,
+    data: simData,
     run(window: BacktestWindow = {}, cfg: BacktestConfig = baseCfg): TradeRecord[] {
       const from = window.fromTs === undefined ? 0 : lowerBound(candles, window.fromTs);
       const to = window.toTs === undefined ? candles.length : lowerBound(candles, window.toTs);
       if (to - from < 1) return [];
-      return simulate(def, data, meta, signalAt, cfg, from, to);
+      return simulate(def, simData, data.candles, meta, signalAt, cfg, from, to);
     },
   };
 }
@@ -287,9 +325,58 @@ function lowerBound(candles: readonly Candle[], t: number): number {
   return lo;
 }
 
+/** Precompute prior completed daily ATR(14) and each session's day open, mapped by bar index (no lookahead, O(N)). */
+function intradaySessionStats(candles: readonly Candle[]): { dayOpen: Float64Array; priorAtr14: Float64Array } {
+  const n = candles.length;
+  const dayOpen = new Float64Array(n);
+  const priorAtr14 = new Float64Array(n);
+  let curDay = '';
+  let dOpen = 0, dHigh = -Infinity, dLow = Infinity, dClose = 0;
+  let prevDayClose: number | null = null;
+  let dayCount = 0;
+  let trSum = 0;
+  let atr14 = 0;
+  let curPriorAtr = 0;
+
+  for (let i = 0; i < n; i++) {
+    const c = candles[i]!;
+    const dk = istDateKey(new Date(c.ts));
+    if (dk !== curDay) {
+      if (curDay !== '') {
+        // Complete the prior day cleanly in O(1) using Wilder RMA over 14 days.
+        const tr = prevDayClose === null
+          ? dHigh - dLow
+          : Math.max(dHigh - dLow, Math.abs(dHigh - prevDayClose), Math.abs(dLow - prevDayClose));
+        dayCount++;
+        if (dayCount <= 14) {
+          trSum += tr;
+          if (dayCount === 14) atr14 = trSum / 14;
+        } else {
+          atr14 = (atr14 * 13 + tr) / 14;
+        }
+        prevDayClose = dClose;
+        curPriorAtr = atr14;
+      }
+      curDay = dk;
+      dOpen = c.open;
+      dHigh = c.high;
+      dLow = c.low;
+      dClose = c.close;
+    } else {
+      if (c.high > dHigh) dHigh = c.high;
+      if (c.low < dLow) dLow = c.low;
+      dClose = c.close;
+    }
+    dayOpen[i] = dOpen;
+    priorAtr14[i] = curPriorAtr;
+  }
+  return { dayOpen, priorAtr14 };
+}
+
 function simulate(
   def: StrategyDefinition,
   data: Dataset,
+  raw5mCandles: readonly Candle[],
   meta: BarMeta,
   signalAt: (i: number) => Signal | null,
   cfg: BacktestConfig,
@@ -297,11 +384,20 @@ function simulate(
   to: number,
 ): TradeRecord[] {
   const candles = data.candles;
-  const intraday = def.timeframe === '5m';
+  const intraday = def.timeframe !== '1d';
   const slip = cfg.slippageBps / 10_000;
   const maxHold = Math.max(1, cfg.maxHoldBars ?? 20);
   const trades: TradeRecord[] = [];
-  const atrSeries = cfg.trail ? atr(candles, 14) : null;
+  const atrSeries = (cfg.trail || (intraday && (cfg.maxVwapStretchAtr ?? 0) > 0)) ? atr(candles, 14) : null;
+  const vwSeries = intraday && (cfg.maxVwapStretchAtr ?? 0) > 0 ? vwap(candles) : null;
+  const dailyStats = intraday && (cfg.maxTargetDailyAtr ?? 0) > 0 ? intradaySessionStats(candles) : null;
+  const need5mContext = intraday && (cfg.htfBias || cfg.marketSeries);
+  const fiveMinByClose = need5mContext
+    ? new Map(raw5mCandles.map((c, idx) => [c.ts + FIVE_MIN_MS, idx]))
+    : null;
+  const mktByClose = cfg.marketSeries
+    ? new Map(cfg.marketSeries.map((c, idx) => [c.ts + FIVE_MIN_MS, idx]))
+    : null;
 
   /** Market-type fill: always worse for the trader. */
   const against = (price: number, action: 'BUY' | 'SELL'): number =>
@@ -338,7 +434,7 @@ function simulate(
   const isLastBarOfSession = (j: number): boolean =>
     j + 1 < candles.length && meta.day[j + 1] !== meta.day[j];
 
-  const tryEnter = (sig: Signal, e: number): OpenPosition | null => {
+  const tryEnter = (rawSig: Signal, e: number): OpenPosition | null => {
     const bar = candles[e]!;
     if (intraday) {
       // Never carry an intraday signal into the next session, and never open
@@ -346,9 +442,78 @@ function simulate(
       if (meta.day[e] !== meta.day[e - 1]) return null;
       if (meta.mins[e]! >= SESSION.SQUARE_OFF) return null;
     }
+
+    const sigIdx = e - 1;
+    if (intraday && cfg.entrySessionsOnly && !entrySession(new Date(meta.closeTs[sigIdx]!))) {
+      return null;
+    }
+    // Live parity rules checked at signal close (bar sigIdx), before next-bar open fill.
+    const ctxSlice = intraday && (cfg.stopClusterGuard || cfg.htfBias)
+      ? candles.slice(Math.max(0, sigIdx - 299), sigIdx + 1)
+      : null;
+
+    if (intraday && cfg.htfBias && !def.counterTrend) {
+      const fiveEnd = def.timeframe === '15m' && fiveMinByClose ? fiveMinByClose.get(meta.closeTs[sigIdx]!) : undefined;
+      const fiveSlice = fiveEnd !== undefined ? raw5mCandles.slice(Math.max(0, fiveEnd - 299), fiveEnd + 1) : ctxSlice!;
+      const bias = trendBias15(fiveSlice);
+      if (bias.side && bias.side !== rawSig.side) return null;
+      const read = bias.vwapSide ?? bias.emaSide;
+      if (read !== rawSig.side) return null;
+    }
+
+    if (intraday && !def.counterTrend && cfg.maxVwapStretchAtr && cfg.maxVwapStretchAtr > 0) {
+      const a = atrSeries?.[sigIdx];
+      const vw = vwSeries?.[sigIdx];
+      if (a && a > 0 && vw != null) {
+        const stretch = (candles[sigIdx]!.close - vw) / a;
+        const along = rawSig.side === 'BUY' ? stretch : -stretch;
+        if (along > cfg.maxVwapStretchAtr) return null;
+      }
+    }
+
+    if (intraday && !def.counterTrend && cfg.marketSeries && mktByClose) {
+      const closeT = meta.closeTs[sigIdx]!;
+      const mIdx = mktByClose.get(closeT);
+      const fiveEnd = fiveMinByClose?.get(closeT);
+      if (mIdx !== undefined && mIdx >= 100) {
+        const mSlice = cfg.marketSeries.slice(Math.max(0, mIdx - 299), mIdx + 1);
+        const mSide = marketDirection(mSlice);
+        if (mSide !== rawSig.side) return null;
+        const fiveSlice = fiveEnd !== undefined ? raw5mCandles.slice(Math.max(0, fiveEnd - 150), fiveEnd + 1) : candles.slice(Math.max(0, sigIdx - 150), sigIdx + 1);
+        const ownCh = dayChangePct(fiveSlice);
+        const mCh = dayChangePct(mSlice);
+        if (ownCh !== null && mCh !== null) {
+          const rs = ownCh - mCh;
+          if ((rawSig.side === 'BUY' ? rs : -rs) <= 0) return null;
+        }
+      }
+    }
+
+    const sig = intraday && cfg.stopClusterGuard && ctxSlice
+      ? guardSignalStop(rawSig, ctxSlice)
+      : rawSig;
+
     const long = sig.side === 'BUY';
+    const dir = long ? 1 : -1;
     const stop = paiseToRupees(sig.stopLoss);
-    const target = paiseToRupees(sig.target);
+    let target = paiseToRupees(sig.target);
+    if (intraday && !def.counterTrend && cfg.targetR && cfg.targetR > 0) {
+      const sigEntryRs = paiseToRupees(sig.entry);
+      const sigRisk = Math.abs(sigEntryRs - stop);
+      if (sigRisk > 0) target = sigEntryRs + dir * sigRisk * cfg.targetR;
+    }
+
+    if (intraday && cfg.maxTargetDailyAtr && cfg.maxTargetDailyAtr > 0 && dailyStats) {
+      const dAtr = dailyStats.priorAtr14[sigIdx]!;
+      const dOpen = dailyStats.dayOpen[sigIdx]!;
+      if (dAtr > 0 && dOpen > 0) {
+        const adrCap = dOpen + dir * cfg.maxTargetDailyAtr * dAtr;
+        if (long ? target > adrCap : target < adrCap) {
+          target = adrCap;
+        }
+      }
+    }
+
     if (long ? !(stop < target) : !(stop > target)) return null;
 
     const fill = against(bar.open, sig.side);
@@ -356,10 +521,21 @@ function simulate(
     if (long ? fill >= target : fill <= target) return null;
 
     const risk = Math.abs(fill - stop);
+    if (intraday && cfg.minStopPct && cfg.minStopPct > 0 && (risk / fill) * 100 < cfg.minStopPct) return null;
+
+    const finalRR = Math.abs(target - fill) / risk;
+    const minRR = cfg.minRewardRisk ?? (cfg.maxTargetDailyAtr ? 1.5 : 0);
+    if (minRR > 0 && finalRR < minRR) return null;
+
     const byRisk = (cfg.capital * cfg.riskPct) / 100 / risk;
     const byValue = (cfg.capital * cfg.maxPositionPct) / 100 / fill;
     const qty = Math.floor(Math.min(byRisk, byValue) + 1e-9);
     if (!(qty >= 1)) return null;
+
+    if (cfg.maxChargePctOfRisk && cfg.maxChargePctOfRisk > 0) {
+      const estStopCost = roundTripCost(cfg.costs, sig.side, qty, fill, stop);
+      if (estStopCost / (risk * qty) * 100 > cfg.maxChargePctOfRisk) return null;
+    }
     return { side: sig.side, entryIdx: e, entryPrice: fill, stop, target, best: fill, risk, qty, mae: 0, mfe: 0 };
   };
 
@@ -401,7 +577,10 @@ function simulate(
       p.best = long ? Math.max(p.best, bar.close) : Math.min(p.best, bar.close);
       const bestR = toR(p.best);
       const tighter = (s: number): void => { if (long ? s > p.stop : s < p.stop) p.stop = s; };
-      if (bestR >= cfg.trail.breakevenR) tighter(p.entryPrice);
+      if (bestR >= cfg.trail.breakevenR) {
+        const lock = (cfg.trail.breakevenLockR ?? 0) * p.risk;
+        tighter(long ? p.entryPrice + lock : p.entryPrice - lock);
+      }
       const a = atrSeries?.[j];
       if (bestR >= cfg.trail.trailFromR && a != null) tighter(long ? p.best - cfg.trail.trailAtr * a : p.best + cfg.trail.trailAtr * a);
     }

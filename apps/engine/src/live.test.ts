@@ -3,7 +3,8 @@ import { FixedClock, type Paise, type SignalId } from '@tradeforger/core';
 import { getStrategy } from '@tradeforger/strategy';
 import { intraday, closeOf } from '../../../packages/strategy/src/fixtures.ts';
 import {
-  decide, canLead, signalAgeMs, guardSetupStop, restateTarget, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  decide, canLead, signalAgeMs, guardSetupStop, restateTarget, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket,
+  staleInstruments, chaseBlocker, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
@@ -339,5 +340,37 @@ describe('session discipline', () => {
     expect(decide(setup(), banked, on, { ...paper, open }).blockers.join()).toContain('per sector');
     expect(decide(setup(), { ...banked, sector: 'Power' }, on, { ...paper, open }).blockers).toEqual([]);
     expect(decide(setup(), equity, on, { ...paper, open }).blockers).toEqual([]);
+  });
+
+  it('blocks entries when live LTP has chased > maxEntryChaseAtr beyond bar close or trigger', () => {
+    const chasedBar = setup({ entry: 102, barCloseEntry: 100.5, atr: 2 }); // 0.75 ATR > 0.5 ATR
+    expect(decide(chasedBar, equity, on, paper).blockers.join()).toContain('chased 0.75 ATR past bar close');
+
+    const chasedTrig = setup({ entry: 103, barCloseEntry: 102.5, signalEntry: 101, atr: 2 }); // 1.0 ATR > 0.75 ATR
+    expect(decide(chasedTrig, equity, on, paper).blockers.join()).toContain('chased 1.00 ATR past breakout trigger');
+
+    const okEntry = setup({ entry: 101, barCloseEntry: 100.5, signalEntry: 100, atr: 2 }); // 0.25 bar / 0.50 trig
+    expect(decide(okEntry, equity, on, paper).blockers).toEqual([]);
+  });
+
+  it('caps trend target inside maxDailyAtrMultiple and flags exhausted daily room', () => {
+    const signal = { id: 'sig' as SignalId, instrumentKey: 'K', symbol: 'S', style: 'INTRADAY' as const, side: 'BUY' as const,
+      entry: 11_000 as Paise, stopLoss: 10_800 as Paise, target: 11_400 as Paise, atr: 1, confidence: 80, reasons: [], indicators: {}, generatedAt: 0 };
+    const vote = { strategyId: 'ORB_SUPERTREND', name: 'ORB_SUPERTREND', style: 'INTRADAY' as const, side: 'BUY' as const, confidence: 80, signal, reasons: [] };
+    const capped = restateTarget(setup({ entry: 110, stopLoss: 108, target: 114, votes: [vote] }), 3, {
+      dayOpen: 100, dailyAtr: 10, maxDailyAtrMultiple: 1.5, // max 115 instead of 116 (3R)
+    });
+    expect(capped.target).toBe(115);
+    expect(capped.rewardRisk).toBe(2.5);
+
+    const exhausted = restateTarget(setup({ entry: 110, stopLoss: 108, target: 114, votes: [vote] }), 3, {
+      dayOpen: 100, dailyAtr: 5, maxDailyAtrMultiple: 1.5, // max 107.5 <= entry 110!
+    });
+    expect(exhausted.invalidReason).toContain('ADR target cap');
+  });
+
+  it('identifies stale watched or auto-picked instruments independently of global feed health', () => {
+    const ticks = new Map([['A', 99_500], ['B', 90_000]]);
+    expect(staleInstruments(['A', 'B', 'C'], ticks, 100_000, 3000)).toEqual(['B', 'C']);
   });
 });

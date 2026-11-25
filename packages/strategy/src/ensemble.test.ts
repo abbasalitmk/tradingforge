@@ -151,6 +151,16 @@ describe('screener', () => {
       expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY', maxPrice: 505 })).toEqual([]);
       expect(pickUniverse(quotes, { size: 1, minTurnoverCr: 1, side: 'BOTH' })).toHaveLength(1);
     });
+
+    it('caps vertical movers (>5%) and ranks early 1–3.5% expansion ahead of stretched +4.5% movers', () => {
+      const mixed = [
+        day('STRETCHED', 512, 495, 513, 494), // +4.49%
+        day('SWEETSPOT', 503, 492, 504, 491), // +2.65%
+        day('OVEREXT', 520, 495, 521, 494),   // +6.12%: excluded (> 5%)
+      ];
+      const ranked = pickUniverse(mixed, { size: 10, minTurnoverCr: 1, side: 'BUY' }).map((x) => x.symbol);
+      expect(ranked).toEqual(['SWEETSPOT', 'STRETCHED']);
+    });
   });
 
   // A real quote's LTP is the last traded price — the candles' last close here.

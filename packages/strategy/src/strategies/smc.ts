@@ -1,5 +1,5 @@
 import type { Candle, Signal, Side, TradingStyle } from '@tradeforger/core';
-import { latest, atr } from '@tradeforger/indicators';
+import { closes, latest, atr, rsi } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -12,6 +12,7 @@ export interface SmcParams {
   /** How far back a fair-value gap still counts as fresh. */
   readonly fvgLookback: number;
   readonly volumePeriod: number;
+  readonly minRelativeVolume: number;
   readonly atrPeriod: number;
   readonly minStopAtr: number;
   /** Widest stop allowed, in ATRs; a setup whose structure needs more is skipped, not tightened. */
@@ -26,6 +27,7 @@ export const DEFAULT_SMC: SmcParams = {
   swingLength: 5,
   fvgLookback: 12,
   volumePeriod: 20,
+  minRelativeVolume: 1.2,
   atrPeriod: 14,
   minStopAtr: 0.5,
   stopAtrMultiple: 3.5,
@@ -125,6 +127,9 @@ export class SmcProfile implements StrategyProfile {
 
     const atrNow = latest(atr(c, p.atrPeriod));
     if (atrNow === null || atrNow <= 0) return null;
+    if (p.minRelativeVolume > 0 && volRatio < p.minRelativeVolume) return null;
+    const rsiNow = latest(rsi(closes(c), 14));
+    if (rsiNow === null || (long ? rsiNow >= 72 : rsiNow <= 28)) return null;
     const level = long ? sh.price : sl.price;
     const price = last.close;
 
@@ -146,7 +151,7 @@ export class SmcProfile implements StrategyProfile {
         detail: `${long ? 'Above' : 'Below'} session VWAP ${fmt(vwapNow)}`,
       },
       {
-        name: 'volume', passed: volRatio >= 1.2, weight: 1,
+        name: 'volume', passed: true, weight: 1,
         detail: `Break on ${volRatio.toFixed(2)}x average volume`,
       },
       {
@@ -181,6 +186,8 @@ export class SmcProfile implements StrategyProfile {
         stopExtreme: extreme,
         vwap: vwapNow,
         volumeRatio: volRatio,
+        rvol: volRatio,
+        rsi: rsiNow,
         choch: withStructure ? 0 : 1,
         fvg: fvg ? 1 : 0,
       },
@@ -199,6 +206,7 @@ export const SMC_STRUCTURE: StrategyDefinition = {
     swingLength: { min: 3, max: 12, step: 1 },
     fvgLookback: { min: 4, max: 30, step: 2 },
     volumePeriod: { min: 10, max: 40, step: 5 },
+    minRelativeVolume: { min: 0.8, max: 2.5, step: 0.1 },
     atrPeriod: { min: 7, max: 28, step: 1 },
     minStopAtr: { min: 0.25, max: 1.5, step: 0.25 },
     stopAtrMultiple: { min: 1, max: 4, step: 0.25 },
@@ -208,5 +216,25 @@ export const SMC_STRUCTURE: StrategyDefinition = {
   },
   create(params) {
     return tagged('SMC_STRUCTURE', new SmcProfile(clampParams(SMC_STRUCTURE, params) as unknown as SmcParams));
+  },
+};
+
+export const SMC_STRUCTURE_15M: StrategyDefinition = {
+  id: 'SMC_STRUCTURE_15M',
+  name: 'Smart Money Structure (15m)',
+  style: 'INTRADAY',
+  timeframe: '15m',
+  description: '15-minute market structure break (BOS/ChoCH + FVG) with >=1.2x volume and wider ATR stop geometry.',
+  defaults: {
+    ...DEFAULT_SMC,
+    swingLength: 3,
+    fvgLookback: 6,
+    minStopAtr: 0.75,
+    stopAtrMultiple: 3,
+    targetRR: 2,
+  } as unknown as StrategyDefinition['defaults'],
+  bounds: SMC_STRUCTURE.bounds,
+  create(params) {
+    return tagged('SMC_STRUCTURE_15M', new SmcProfile(clampParams(SMC_STRUCTURE_15M, params) as unknown as SmcParams));
   },
 };

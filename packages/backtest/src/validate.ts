@@ -4,7 +4,7 @@ import {
 import { scaleCosts } from './costs.ts';
 import {
   type BacktestConfig, type BacktestWindow, type Dataset, type PreparedBacktest,
-  type TradeRecord, defaultBacktestFor, istMidnight, prepareBacktest,
+  type TradeRecord, type TrailConfig, candlesForTimeframe, defaultBacktestFor, istMidnight, prepareBacktest,
 } from './engine.ts';
 import { type Metrics, computeMetrics } from './metrics.ts';
 import { regimeBreakdown, type RegimeSlice } from './regime.ts';
@@ -50,6 +50,32 @@ export const DEFAULT_VALIDATION: ValidationConfig = {
   minStableFraction: 0.6,
   costStressMultiplier: 2,
 };
+
+/** Recommended staged trail matching live execution: cost-buffered breakeven + 1.25 ATR trail. */
+export const INTRADAY_STAGED_TRAIL: TrailConfig = {
+  breakevenR: 1.2,
+  breakevenLockR: 0.35,
+  trailFromR: 1.6,
+  trailAtr: 1.25,
+};
+
+/** Live-parity intraday backtest defaults for Strategy Lab validation. */
+export function liveParityBacktestFor(def: Pick<StrategyDefinition, 'style' | 'timeframe'>): BacktestConfig {
+  const base = defaultBacktestFor(def);
+  if (def.style === 'SWING') return base;
+  return {
+    ...base,
+    entrySessionsOnly: true,
+    htfBias: true,
+    minStopPct: def.timeframe === '15m' ? 0.6 : 0.5,
+    maxVwapStretchAtr: 5,
+    stopClusterGuard: true,
+    targetR: 2.5,
+    maxTargetDailyAtr: 1.5,
+    minRewardRisk: 1.5,
+    trail: INTRADAY_STAGED_TRAIL,
+  };
+}
 
 export type CheckName =
   | 'MIN_TRADES' | 'IN_SAMPLE' | 'OUT_OF_SAMPLE'
@@ -189,13 +215,16 @@ export function validateStrategy(
 ): ValidationReport {
   const t0 = performance.now();
   const resolved = clampParams(def, params);
-  const prepared = datasets.map((d) => prepareBacktest(def, resolved, d, bt));
-  const range = timeRange(datasets);
+  const simDatasets = def.timeframe === '15m'
+    ? datasets.map((d) => ({ ...d, candles: candlesForTimeframe(d.candles, '15m') }))
+    : datasets;
+  const prepared = simDatasets.map((d) => prepareBacktest(def, resolved, d, bt));
+  const range = timeRange(simDatasets);
   const m = (trades: TradeRecord[]): Metrics => computeMetrics(trades, bt.capital);
 
   const fullTrades = runAll(prepared, {}, bt);
   const full = m(fullTrades);
-  const regimes = regimeBreakdown(fullTrades, datasets, bt.capital);
+  const regimes = regimeBreakdown(fullTrades, simDatasets, bt.capital);
 
   const split = range ? boundaryAt(range, cfg.inSampleFraction) : 0;
   const inSample = m(range ? runAll(prepared, { toTs: split }, bt) : []);
@@ -220,7 +249,7 @@ export function validateStrategy(
 
   const sensitivity: SensitivityPoint[] = perturbations(def, resolved, cfg.sensitivityPct)
     .map(({ param, value, params: p }) => {
-      const metrics = m(pool(datasets.map((d) => prepareBacktest(def, p, d, bt).run({}, bt))));
+      const metrics = m(pool(simDatasets.map((d) => prepareBacktest(def, p, d, bt).run({}, bt))));
       return {
         param, value,
         expectancyR: metrics.expectancyR,

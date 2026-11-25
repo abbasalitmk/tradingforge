@@ -16,6 +16,13 @@ export interface ContractInfo {
   readonly lots: number;
 }
 
+export interface StagedTrailRule {
+  readonly breakevenR: number;
+  readonly breakevenLockR: number;
+  readonly trailFromR: number;
+  readonly trailGapPaise: Paise;
+}
+
 /** Everything needed to open a position. Risk and AI gates have already passed. */
 export interface TradeIntent {
   readonly segment: Segment;
@@ -30,6 +37,7 @@ export interface TradeIntent {
   readonly stopLoss: Paise;
   readonly target: Paise;
   readonly trailingGap: Paise | null;
+  readonly stagedTrail?: StagedTrailRule | null;
   /** Capital this position locks up — premium for options, margin for futures. */
   readonly costPaise: Paise;
   /** Exit a flat-or-losing position after this many minutes (theta guard). */
@@ -53,6 +61,9 @@ export interface ManagedPosition extends PositionRecord {
   readonly costPaise: Paise;
   readonly timeStopMin: number | null;
   readonly trailingGap: Paise | null;
+  readonly stagedTrail?: StagedTrailRule | null;
+  /** Ratcheted stop level tracked by staged trailing (initial `stopLoss` stays intact as 1R reference). */
+  virtualStopPaise?: Paise | null;
   readonly contract?: ContractInfo;
   readonly underlyingSymbol?: string;
   readonly strategyId?: string;
@@ -258,6 +269,8 @@ export class Trader {
         costPaise: intent.costPaise,
         timeStopMin: intent.timeStopMin,
         trailingGap: intent.trailingGap,
+        ...(intent.stagedTrail ? { stagedTrail: intent.stagedTrail } : {}),
+        virtualStopPaise: null,
         ...(intent.contract ? { contract: intent.contract } : {}),
         ...(intent.underlyingSymbol ? { underlyingSymbol: intent.underlyingSymbol } : {}),
         ...(intent.strategyId ? { strategyId: intent.strategyId } : {}),
@@ -529,6 +542,36 @@ export class Trader {
       if (eod) {
         await this.exit(p.id, 'EOD_SQUARE_OFF');
         continue;
+      }
+
+      // Cost-buffered breakeven & staged ATR trailing: waits for real follow-through
+      // before tightening, keeping the exchange GTT as the fixed initial stop net.
+      if (p.stagedTrail && ltp !== null && ltp > 0 && p.filledQuantity > 0) {
+        const entry = p.avgEntry ?? p.entry;
+        const initialRisk = Math.abs(p.entry - p.stopLoss);
+        if (initialRisk > 0) {
+          const long = p.side === 'BUY';
+          const dir = long ? 1 : -1;
+          const bestR = p.mfePaise / initialRisk;
+          const bestPx = entry + dir * p.mfePaise;
+          let candidate = p.virtualStopPaise ?? p.stopLoss;
+          if (bestR >= p.stagedTrail.breakevenR) {
+            const lockStop = Math.round(entry + dir * initialRisk * p.stagedTrail.breakevenLockR) as Paise;
+            candidate = (long ? Math.max(candidate, lockStop) : Math.min(candidate, lockStop)) as Paise;
+          }
+          if (bestR >= p.stagedTrail.trailFromR && p.stagedTrail.trailGapPaise > 0) {
+            const atrStop = Math.round(bestPx - dir * p.stagedTrail.trailGapPaise) as Paise;
+            candidate = (long ? Math.max(candidate, atrStop) : Math.min(candidate, atrStop)) as Paise;
+          }
+          if (long ? candidate > p.stopLoss : candidate < p.stopLoss) {
+            p.virtualStopPaise = candidate;
+          }
+          const ltpPx = rupeesToPaise(ltp);
+          if (p.virtualStopPaise != null && (long ? ltpPx <= p.virtualStopPaise : ltpPx >= p.virtualStopPaise)) {
+            await this.exit(p.id, 'TRAILING_STOP');
+            continue;
+          }
+        }
       }
       const pnl = this.unrealised(p, ltp);
       // A backstop for a stop that failed — a gap through it, a bracket the

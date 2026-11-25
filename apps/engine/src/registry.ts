@@ -77,10 +77,14 @@ export class StrategyRegistry {
    * catalog defaults. Null when those parameters were never validated.
    */
   activeVerdict(strategyId: string): { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null {
-    const oos = (v: StrategyVersion): number | null =>
-      (v.validation as { outOfSample?: { expectancyR?: number } } | null)?.outOfSample?.expectancyR ?? null;
+    const valOf = (v: StrategyVersion) => v.validation as { status?: string; outOfSample?: { expectancyR?: number } } | null;
+    const oos = (v: StrategyVersion): number | null => valOf(v)?.outOfSample?.expectancyR ?? null;
     const approved = this.approved(strategyId);
-    if (approved) return { status: 'APPROVED', oosExpectancyR: oos(approved) };
+    if (approved) {
+      // Never hide a REJECTED validation report behind APPROVED status.
+      const reportStatus = valOf(approved)?.status;
+      return { status: reportStatus === 'REJECTED' ? 'REJECTED' : 'APPROVED', oosExpectancyR: oos(approved) };
+    }
     const def = getStrategy(strategyId);
     if (!def) return null;
     const key = (p: Params): string => JSON.stringify(Object.entries(clampParams(def, p)).sort(([a], [b]) => a.localeCompare(b)));

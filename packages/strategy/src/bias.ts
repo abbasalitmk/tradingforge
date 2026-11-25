@@ -26,6 +26,13 @@ const SESSION_OPEN_MIN = 9 * 60 + 15;
 
 /** A 15-minute bar is complete once its third 5-minute bar has closed. */
 export function completeBars15(closed5m: readonly Candle[]): Candle[] {
+  if (closed5m.length >= 2) {
+    const recent = closed5m.slice(-6);
+    let minStep = Infinity;
+    for (let i = 1; i < recent.length; i++) minStep = Math.min(minStep, recent[i]!.ts - recent[i - 1]!.ts);
+    // Already 15m+ bars (e.g. direct 15m feed or backtest resample) — do not drop the final completed bar.
+    if (minStep >= 15 * 60_000) return [...closed5m];
+  }
   const bars = resample15(closed5m);
   const last = closed5m[closed5m.length - 1];
   if (last && (istMinutes(new Date(last.ts)) - SESSION_OPEN_MIN) % 15 !== 10) bars.pop();

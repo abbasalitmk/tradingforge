@@ -1,6 +1,8 @@
 import type { Candle, Clock } from '@tradeforger/core';
 import { atr, latest, relativeVolume } from '@tradeforger/indicators';
 import { analyzeHybrid, type HybridOptions, type HybridSetup } from './ensemble.ts';
+import { getStrategy } from './catalog.ts';
+import { completeBars15 } from './bias.ts';
 
 /** What the coarse stage knows about a stock: one quote, no candles. */
 export interface QuoteLite {
@@ -86,49 +88,53 @@ export function prefilter(quotes: readonly QuoteLite[], f: ScanFilters, maxCandi
 export const rangePosition = (q: QuoteLite): number =>
   q.high > q.low ? (q.ltp - q.low) / (q.high - q.low) : 0.5;
 
-/** A day move smaller than this is not a mover; one larger is close to an exchange price band. */
-export const PICK_CHANGE_PCT = { min: 0.3, max: 8 } as const;
+/** A day move smaller than this is not a mover; above max is already over-extended for fresh trend entries. */
+export const PICK_CHANGE_PCT = { min: 0.4, max: 5.0 } as const;
 
 export interface UniversePickOptions {
   readonly size: number;
   readonly minTurnoverCr: number;
   readonly minPrice?: number;
   readonly maxPrice?: number;
+  readonly minChangePct?: number;
+  readonly maxChangePct?: number;
   /** The direction traded. BUY keeps stocks a long can work on, SELL ones a short can. */
   readonly side: 'BUY' | 'SELL' | 'BOTH';
 }
 
 /** Up on the day, above the open, upper half of the range — or the mirror for a short. */
-const holdsMove = (q: QuoteLite, side: 'BUY' | 'SELL'): boolean => {
+const holdsMove = (q: QuoteLite, side: 'BUY' | 'SELL', minCh: number = PICK_CHANGE_PCT.min): boolean => {
   const ch = changePct(q);
   return side === 'BUY'
-    ? ch >= PICK_CHANGE_PCT.min && q.ltp >= q.open && rangePosition(q) >= 0.5
-    : -ch >= PICK_CHANGE_PCT.min && q.ltp <= q.open && rangePosition(q) <= 0.5;
+    ? ch >= minCh && q.ltp >= q.open && rangePosition(q) >= 0.5
+    : -ch >= minCh && q.ltp <= q.open && rangePosition(q) <= 0.5;
 };
 
 /**
  * The intraday universe for autonomous mode: the day's liquid movers, from
  * one batch-quote pass over the market — no candles.
  *
- * Buying only, a stock falling on the day can produce only setups the engine
- * will skip, so the list keeps stocks up on the day, trading above their open
- * and in the upper half of the day's range: where long breakout, VWAP and
- * trend setups form. Short only is the mirror; BOTH takes either. Ranked by
- * log turnover × day change, weighted toward the end of the range the move is
- * holding, so a liquid mid-cap that is moving beats a sleepy mega-cap.
+ * Caps extreme vertical extensions (> 5%) and peaks scoring in the 1.0%–3.5%
+ * healthy expansion band so breakout strategies receive fresh setups rather
+ * than exhausted +6%–+8% stocks with no remaining ADR room.
  */
 export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOptions): QuoteLite[] {
+  const minCh = o.minChangePct ?? PICK_CHANGE_PCT.min;
+  const maxCh = o.maxChangePct ?? PICK_CHANGE_PCT.max;
   const passed = quotes.filter((q) => {
     if (!(q.ltp > 0)) return false;
     if (o.minPrice !== undefined && o.minPrice > 0 && q.ltp < o.minPrice) return false;
     if (o.maxPrice !== undefined && o.maxPrice > 0 && q.ltp > o.maxPrice) return false;
     if (turnoverCr(q) < o.minTurnoverCr) return false;
-    if (Math.abs(changePct(q)) > PICK_CHANGE_PCT.max) return false;
-    return o.side === 'BOTH' ? holdsMove(q, 'BUY') || holdsMove(q, 'SELL') : holdsMove(q, o.side);
+    if (Math.abs(changePct(q)) > maxCh) return false;
+    return o.side === 'BOTH' ? holdsMove(q, 'BUY', minCh) || holdsMove(q, 'SELL', minCh) : holdsMove(q, o.side, minCh);
   });
   const score = (q: QuoteLite): number => {
+    const absCh = Math.abs(changePct(q));
     const strength = changePct(q) >= 0 ? rangePosition(q) : 1 - rangePosition(q);
-    return Math.log10(1 + turnoverCr(q) * CRORE) * Math.abs(changePct(q)) * (0.5 + strength);
+    // Sweet spot for fresh intraday expansion is 0.5–3.5%; steeply penalize stretched +4–5% names.
+    const moveWeight = absCh <= 3.5 ? absCh : Math.max(0.25, 3.5 - (absCh - 3.5) * 1.5);
+    return Math.log10(1 + turnoverCr(q) * CRORE) * moveWeight * (0.5 + strength);
   };
   return passed.sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, o.size));
 }
@@ -158,7 +164,12 @@ export function screen(
       if (f.minQuality !== undefined && setup.quality < f.minQuality) continue;
       if (f.minRewardRisk !== undefined && setup.rewardRisk < f.minRewardRisk) continue;
 
-      const bars = setup.style === 'SWING' ? c.daily : c.intraday;
+      const tf = getStrategy(setup.primaryStrategyId)?.timeframe;
+      const bars = setup.style === 'SWING'
+        ? c.daily
+        : tf === '15m'
+          ? completeBars15(c.intraday)
+          : c.intraday;
       const a = latest(atr(bars, 14));
       const price = bars[bars.length - 1]?.close ?? c.ltp;
       const atrPct = a !== null && price > 0 ? (a / price) * 100 : 0;

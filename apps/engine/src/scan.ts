@@ -153,7 +153,7 @@ export class MarketScanner {
       let edge: SymbolEdge | null = null;
       if (def) {
         let bars: readonly Candle[] = candidates.find((c) => c.instrumentKey === r.setup.instrumentKey)?.daily ?? [];
-        if (def.timeframe === '5m') {
+        if (def.timeframe !== '1d') {
           // Upstox caps 5-min history at 30 days per request; backfill chunks it.
           const h = await backfill(this.client, r.setup.instrumentKey, 'minutes', 5, monthAgo, yesterday);
           bars = h.ok ? h.value : [];
