@@ -6,10 +6,11 @@ to enter, sizes, exits and protects capital. Numbers are the code's, and the
 Research history and backtest tables live in [05-TRADING-SYSTEM.md](05-TRADING-SYSTEM.md).
 
 > **Status, 27 Nov 2026.** The server runs in **PAPER** with **AutoPilot on**
-> (it stays on across restarts). LIVE is armed only from the dashboard. In LIVE,
-> only human-APPROVED strategies may lead a trade — today that is one intraday
-> strategy, `PDH_PDL_CPR`. AutoPilot trades **every strategy that has not failed
-> validation** (12 intraday, §5); the 7 failed ones stay blocked. **Over 20 months of data no intraday rule set is profitable
+> (it stays on across restarts). LIVE is armed only from the dashboard.
+> **PAPER trades every strategy, failed ones included.** **LIVE trades the
+> approved strategies (today `PDH_PDL_CPR`) plus the top 3 of the paper ranking**
+> — each needs 30+ paper trades averaging ≥ +0.10R first (§5). Until a strategy
+> earns that in paper, LIVE trades only `PDH_PDL_CPR`. **Over 20 months of data no intraday rule set is profitable
 > after charges** (§11); paper trading is collecting forward results.
 
 ---
@@ -158,7 +159,7 @@ and they compete with the three best strategies for the 5 daily entries. To trad
 only the best three again, set AutoPilot → strategies to `GAP_AND_GO`,
 `PDH_PDL_CPR`, `PDH_PDL_CPR_15M`.
 
-**Failed (7)** — failed validation; blocked in every mode:
+**Failed (7)** — failed validation. Since 27 Nov they trade in PAPER again (Skip failed strategies off) so the paper ranking can judge them; they reach LIVE only through it:
 | Strategy | Result | Why it failed |
 |---|---|---|
 | `VWAP_PULLBACK` | out-of-sample −0.62R | failed Strategy Lab validation (walk-forward, out-of-sample, cost stress) |
@@ -239,8 +240,8 @@ every rule blocking each setup. Production values:
 | Rule | Value |
 |---|---|
 | **Enabled strategies** | **all** (AutoPilot's list is empty = every strategy), re-enabled 27 Nov 2026 at the owner's request. The 7 failed ones stay blocked by "Skip failed strategies". The best three 20-month records are `GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M`; the rest lost 0.2–0.5R a trade (§3.4) |
-| LIVE | the lead must have a human-**APPROVED** version |
-| Failed validation | blocked in every mode (Skip failed strategies: on) |
+| **LIVE** | the lead must have a human-**APPROVED** version **or be in the top 3 of the paper ranking** — strategies ranked by their own last 50 paper trades after charges, each needing **30+ paper trades averaging ≥ +0.10R**. Re-ranked every minute; a strategy that drops out of the top or below the bar stops trading LIVE. Settings: AutoPilot → LIVE from paper ranking, top N, min trades, min average. The ranking is on the AutoPilot page |
+| Failed validation | **traded in PAPER** (Skip failed strategies: off), so every strategy builds a paper record; in LIVE a failed strategy needs a paper-ranking place like any other |
 | Losing strategy | paused after **20+** of its own trades in this mode with negative expectancy (Pause losing strategies: on) |
 
 ### Portfolio limits

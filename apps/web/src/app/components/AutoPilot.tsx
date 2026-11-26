@@ -55,7 +55,13 @@ interface AutoConfig {
   retestEntry: boolean;
   retestAtr: number;
   retestBars: number;
+  liveFromPaper: boolean;
+  liveTopStrategies: number;
+  liveMinPaperTrades: number;
+  liveMinPaperExpectancyR: number;
 }
+
+interface PaperRank { strategyId: string; trades: number; expectancyR: number; qualified: boolean; live: boolean }
 
 interface AutoUniverseView {
   enabled: boolean;
@@ -115,6 +121,7 @@ interface LiveAnalysisResponse {
   priceSource?: 'WEBSOCKET' | 'REST_POLL' | 'NONE';
   feedIssue?: string | null;
   breakers?: Array<{ id: string; detail: string }>;
+  paperRanking?: PaperRank[];
   fno?: {
     deskEnabled: boolean;
     instrument: 'OPTIONS' | 'FUTURES';
@@ -140,7 +147,8 @@ type Draft = Pick<AutoConfig,
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
   | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'marketAboveOpen' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
-  | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR' | 'retestEntry' | 'retestAtr' | 'retestBars'>;
+  | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR' | 'retestEntry' | 'retestAtr' | 'retestBars'
+  | 'liveFromPaper' | 'liveTopStrategies' | 'liveMinPaperTrades' | 'liveMinPaperExpectancyR'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -167,6 +175,10 @@ const draftOf = (a: AutoConfig): Draft => ({
   retestEntry: a.retestEntry ?? false,
   retestAtr: a.retestAtr ?? 0.25,
   retestBars: a.retestBars ?? 3,
+  liveFromPaper: a.liveFromPaper ?? true,
+  liveTopStrategies: a.liveTopStrategies ?? 3,
+  liveMinPaperTrades: a.liveMinPaperTrades ?? 30,
+  liveMinPaperExpectancyR: a.liveMinPaperExpectancyR ?? 0.1,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -282,6 +294,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       retestEntry: draft.retestEntry,
       retestAtr: draft.retestAtr,
       retestBars: draft.retestBars,
+      liveFromPaper: draft.liveFromPaper,
+      liveTopStrategies: draft.liveTopStrategies,
+      liveMinPaperTrades: draft.liveMinPaperTrades,
+      liveMinPaperExpectancyR: draft.liveMinPaperExpectancyR,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -448,6 +464,9 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['stallMinR', 'No-follow-through min move (R)', 0, 1.5, 0.05, 'favourable move a trade needs by then to be kept'],
             ['retestAtr', 'Retest depth (× ATR)', 0.05, 2, 0.05, 'how far back toward the breakout the resting entry sits'],
             ['retestBars', 'Retest wait (bars)', 1, 12, 1, 'strategy-timeframe bars before an unfilled retest order is cancelled'],
+            ['liveTopStrategies', 'LIVE: top paper strategies', 1, 24, 1, 'how many of the best paper strategies may trade LIVE'],
+            ['liveMinPaperTrades', 'LIVE: min paper trades', 5, 500, 1, 'paper trades a strategy needs before it can trade LIVE'],
+            ['liveMinPaperExpectancyR', 'LIVE: min paper avg (R)', 0, 2, 0.05, 'average paper result after charges needed for LIVE'],
           ] as const).map(([key, label, min, max, step, hint]) => (
             <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>
               {label}
@@ -473,6 +492,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           <Chip on={draft.stagedTrail} onClick={() => setDraft({ ...draft, stagedTrail: !draft.stagedTrail })}
             title="Locks +0.35R once +1.2R MFE is hit (covering charges), then trails 1.25 ATR from +1.6R MFE without noisy bar-0 exits">
             Staged profit trail {draft.stagedTrail ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.liveFromPaper} onClick={() => setDraft({ ...draft, liveFromPaper: !draft.liveFromPaper })}
+            title="Let the top paper strategies (by their own recent paper results) trade LIVE, besides approved ones, once they have enough paper trades at a good enough average">
+            LIVE from paper ranking {draft.liveFromPaper ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.retestEntry} onClick={() => setDraft({ ...draft, retestEntry: !draft.retestEntry })}
             title="Instead of buying at market when a breakout bar closes, rest the entry a little back toward the breakout and fill only if price returns within the set bars">
@@ -691,6 +714,34 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           )}
         </Panel>
       </div>
+
+      <Panel
+        title="Paper ranking → LIVE"
+        subtitle={live.auto.liveFromPaper
+          ? `Strategies ranked by their last 50 paper trades. The top ${live.auto.liveTopStrategies} with ${live.auto.liveMinPaperTrades}+ trades averaging ≥ ${live.auto.liveMinPaperExpectancyR}R trade LIVE (approved ones always may).`
+          : 'LIVE from paper ranking is off — only approved strategies trade LIVE.'}
+      >
+        {(live.paperRanking ?? []).length === 0
+          ? <Note>No closed paper trades yet — the ranking fills in as AutoPilot trades in paper.</Note>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead><tr><th style={th}>#</th><th style={th}>Strategy</th><th style={th}>Paper trades</th><th style={th}>Avg R</th><th style={th}>LIVE</th></tr></thead>
+                <tbody>
+                  {(live.paperRanking ?? []).map((r, i) => (
+                    <tr key={r.strategyId} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '6px 10px' }}>{i + 1}</td>
+                      <td style={{ padding: '6px 10px', fontWeight: 600 }}>{r.strategyId}</td>
+                      <td style={{ padding: '6px 10px' }}>{r.trades}</td>
+                      <td style={{ padding: '6px 10px', color: r.expectancyR >= 0 ? 'var(--ok)' : 'var(--danger)' }}>{r.expectancyR >= 0 ? '+' : ''}{r.expectancyR.toFixed(2)}R</td>
+                      <td style={{ padding: '6px 10px' }}>{r.live ? <Pill color="var(--ok)">LIVE</Pill> : r.qualified ? 'qualified' : `needs ${Math.max(0, live.auto.liveMinPaperTrades - r.trades)} more trades${r.expectancyR < live.auto.liveMinPaperExpectancyR ? ` & ≥ ${live.auto.liveMinPaperExpectancyR}R` : ''}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </Panel>
 
       <StrategyLab
         mode={live.mode}

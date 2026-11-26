@@ -214,6 +214,17 @@ export const AutoConfigSchema = z.object({
   retestEntry: z.boolean().default(false),
   retestAtr: z.number().min(0.05).max(2).default(0.25),
   retestBars: z.number().int().min(1).max(12).default(3),
+  /**
+   * LIVE from the paper ranking: besides human-APPROVED strategies, the top
+   * `liveTopStrategies` by their own recent PAPER results may lead LIVE
+   * entries — once they have `liveMinPaperTrades` paper trades averaging at
+   * least `liveMinPaperExpectancyR` after charges. A strategy that slips out
+   * of the top or below the bar stops trading LIVE at the next refresh.
+   */
+  liveFromPaper: z.boolean().default(true),
+  liveTopStrategies: z.number().int().min(1).max(24).default(3),
+  liveMinPaperTrades: z.number().int().min(5).max(500).default(30),
+  liveMinPaperExpectancyR: z.number().min(0).max(2).default(0.1),
 });
 export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
@@ -268,7 +279,41 @@ export const DEFAULT_AUTO: AutoConfig = {
   retestEntry: false,
   retestAtr: 0.25,
   retestBars: 3,
+  liveFromPaper: true,
+  liveTopStrategies: 3,
+  liveMinPaperTrades: 30,
+  liveMinPaperExpectancyR: 0.1,
 };
+
+export interface PaperRank {
+  readonly strategyId: string;
+  readonly trades: number;
+  readonly expectancyR: number;
+  /** Enough paper trades at a good enough average to be considered for LIVE. */
+  readonly qualified: boolean;
+  /** Qualified and inside the top `liveTopStrategies`: may lead LIVE entries. */
+  readonly live: boolean;
+}
+
+/**
+ * Strategies ranked by their own recent PAPER results, best first. The top
+ * qualified ones may trade LIVE (see `liveFromPaper`); ties go to the one
+ * with more trades on record.
+ */
+export function paperLiveRanking(
+  records: ReadonlyMap<string, StrategyRecord>,
+  cfg: Pick<AutoConfig, 'liveTopStrategies' | 'liveMinPaperTrades' | 'liveMinPaperExpectancyR'>,
+): PaperRank[] {
+  const ranked = [...records].map(([strategyId, r]) => ({ strategyId, ...r }))
+    .sort((a, b) => b.expectancyR - a.expectancyR || b.trades - a.trades);
+  let liveSlots = cfg.liveTopStrategies;
+  return ranked.map((r) => {
+    const qualified = r.trades >= cfg.liveMinPaperTrades && r.expectancyR >= cfg.liveMinPaperExpectancyR;
+    const live = qualified && liveSlots > 0;
+    if (live) liveSlots--;
+    return { ...r, qualified, live };
+  });
+}
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
 export const MIN_TRADES_TO_JUDGE = 20;
@@ -347,6 +392,8 @@ export interface DecisionContext {
   readonly mode: Mode;
   /** Strategy has a human-APPROVED registry version. */
   readonly approved: (strategyId: string) => boolean;
+  /** Strategy is in the top of the paper ranking and may lead LIVE entries (`liveFromPaper`). */
+  readonly paperLive?: (strategyId: string) => boolean;
   readonly entriesToday: number;
   /** The entry session now (null outside both), and the entries already made in each. */
   readonly session?: EntrySession | null;
@@ -498,8 +545,10 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
   }
   // Paper is where unproven strategies earn their record; real money only
   // follows a strategy a human approved after it passed validation.
-  if (ctx.mode === 'LIVE' && !ctx.approved(strategyId)) {
-    blockers.push(`${strategyId} has no APPROVED version (required in LIVE)`);
+  if (ctx.mode === 'LIVE' && !ctx.approved(strategyId) && !(cfg.liveFromPaper && ctx.paperLive?.(strategyId))) {
+    blockers.push(cfg.liveFromPaper
+      ? `${strategyId} has no APPROVED version (required in LIVE) and is not in the top ${cfg.liveTopStrategies} paper strategies (needs ${cfg.liveMinPaperTrades}+ paper trades at ≥ ${cfg.liveMinPaperExpectancyR}R)`
+      : `${strategyId} has no APPROVED version (required in LIVE)`);
   }
   const verdict = ctx.verdict?.(strategyId) ?? null;
   if (cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {

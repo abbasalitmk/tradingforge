@@ -35,7 +35,7 @@ import { StrategyRegistry } from './registry.ts';
 import { TradeMemory } from './memory.ts';
 import {
   LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments, sideAllowed,
-  staleInstruments,
+  staleInstruments, paperLiveRanking,
   type AutoConfig, type DecisionContext, type StrategyRecord, type LiveAnalysis, type LiveSetup, type Target,
 } from './live.ts';
 import { MarketScanner } from './scan.ts';
@@ -1286,20 +1286,26 @@ async function refreshAutoUniverse(): Promise<void> {
 
 /** Each strategy's own recent record in the current mode (LIVE vs simulated), refreshed every minute. */
 let strategyRecords = new Map<string, StrategyRecord>();
+/** Each strategy's PAPER record whatever the mode: the ranking LIVE eligibility is drawn from. */
+let paperRecords = new Map<string, StrategyRecord>();
 /** Rolling window per strategy: recent behaviour matters more than last quarter's. */
 const RECORD_WINDOW = 50;
 
 async function refreshStrategyRecords(): Promise<void> {
-  const live = currentMode() === 'LIVE';
-  const trades = (await memory.recent(1000))
-    .filter((t) => (t.mode === 'LIVE') === live && t.strategyId && t.rMultiple !== null && !isOperatorExit(t.exitReason));
-  const by = new Map<string, number[]>();
-  for (const t of trades) {
-    const list = by.get(t.strategyId!) ?? [];
-    if (list.length < RECORD_WINDOW) list.push(t.rMultiple!); // newest first
-    by.set(t.strategyId!, list);
-  }
-  strategyRecords = new Map([...by].map(([id, rs]) => [id, { trades: rs.length, expectancyR: rs.reduce((a, r) => a + r, 0) / rs.length }]));
+  const all = (await memory.recent(1000))
+    .filter((t) => t.strategyId && t.rMultiple !== null && !isOperatorExit(t.exitReason));
+  const recordsOf = (live: boolean): Map<string, StrategyRecord> => {
+    const by = new Map<string, number[]>();
+    for (const t of all) {
+      if ((t.mode === 'LIVE') !== live) continue;
+      const list = by.get(t.strategyId!) ?? [];
+      if (list.length < RECORD_WINDOW) list.push(t.rMultiple!); // newest first
+      by.set(t.strategyId!, list);
+    }
+    return new Map([...by].map(([id, rs]) => [id, { trades: rs.length, expectancyR: rs.reduce((a, r) => a + r, 0) / rs.length }]));
+  };
+  strategyRecords = recordsOf(currentMode() === 'LIVE');
+  paperRecords = recordsOf(false);
 }
 
 /** Everything `decide()` needs to know about the account right now. */
@@ -1314,9 +1320,11 @@ function decisionContext(): DecisionContext {
   }
   const now = clock.ms();
   const cooldownMs = state.auto.reentryCooldownMin * 60_000;
+  const paperLive = new Set(paperLiveRanking(paperRecords, state.auto).filter((r) => r.live).map((r) => r.strategyId));
   return {
     mode: currentMode(),
     approved: (id) => registry.approved(id) !== null,
+    paperLive: (id) => paperLive.has(id),
     entriesToday: entryTally().count,
     session: entrySession(clock.now()),
     entriesBySession: entryTally().bySession,
@@ -2087,6 +2095,8 @@ const server = createServer(async (req, res) => {
         record: strategyRecords.get(d.id) ?? null,
         verdict: registry.activeVerdict(d.id),
       })),
+      // Paper results ranked best first; `live` marks the ones allowed to trade LIVE from it.
+      paperRanking: paperLiveRanking(paperRecords, state.auto),
     });
   }
 

@@ -4,7 +4,7 @@ import { getStrategy } from '@tradeforger/strategy';
 import { intraday, closeOf } from '../../../packages/strategy/src/fixtures.ts';
 import {
   decide, canLead, signalAgeMs, guardSetupStop, restateTarget, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket,
-  staleInstruments, chaseBlocker, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  staleInstruments, chaseBlocker, paperLiveRanking, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
 
 const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
@@ -126,6 +126,29 @@ describe('autonomous entry decision', () => {
     expect(canLead(withStop(0.5), equity, on, paper, upBias)).toBe(false);
     expect(canLead(withStop(1.2), equity, on, paper, upBias)).toBe(true);
     expect(canLead(withStop(0.5), equity, { ...on, minStopPct: 0 }, paper, upBias)).toBe(true);
+  });
+
+  it('ranks strategies by paper results and lets only the qualified top N trade LIVE', () => {
+    const records = new Map([
+      ['A', { trades: 40, expectancyR: 0.30 }],
+      ['B', { trades: 35, expectancyR: 0.12 }],
+      ['C', { trades: 10, expectancyR: 0.90 }], // too few trades
+      ['D', { trades: 60, expectancyR: 0.05 }], // below the bar
+      ['E', { trades: 31, expectancyR: 0.20 }],
+    ]);
+    const rank = paperLiveRanking(records, { liveTopStrategies: 2, liveMinPaperTrades: 30, liveMinPaperExpectancyR: 0.1 });
+    expect(rank.map((r) => r.strategyId)).toEqual(['C', 'A', 'E', 'B', 'D']);
+    expect(rank.filter((r) => r.live).map((r) => r.strategyId)).toEqual(['A', 'E']);
+    expect(rank.find((r) => r.strategyId === 'B')!.qualified).toBe(true);
+    expect(rank.find((r) => r.strategyId === 'C')!.live).toBe(false);
+  });
+
+  it('in LIVE, a paper-ranked strategy may lead without approval; others still need it', () => {
+    const live = { ...paper, mode: 'LIVE' as const, paperLive: (id: string) => id === 'GAP_AND_GO' };
+    expect(decide(setup({ primaryStrategyId: 'GAP_AND_GO' }), equity, on, live).blockers).toEqual([]);
+    expect(decide(setup({ primaryStrategyId: 'GMMA_TREND' }), equity, on, live).blockers.join()).toMatch(/not in the top 3 paper strategies/);
+    expect(decide(setup({ primaryStrategyId: 'GAP_AND_GO' }), equity, { ...on, liveFromPaper: false }, live).blockers.join())
+      .toMatch(/has no APPROVED version \(required in LIVE\)$/);
   });
 
   it('rejects out-of-range user settings', () => {

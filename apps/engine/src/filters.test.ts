@@ -16,7 +16,7 @@ const PRODUCTION = AutoConfigSchema.parse({
   reentryCooldownMin: 5, closedBarEntries: true, htfBias: true, htfBiasStrict: false, maxVwapStretchAtr: 5, maxSetupAgeMin: 10,
   minStopPct: 0.65, stopClusterGuard: true, marketFilter: true, marketAboveOpen: true, relativeStrength: true, targetR: 2.5, maxTargetDailyAtr: 1.5,
   minRoomDailyAtr: 0.5, maxEntryChaseAtr: 0.5, stagedTrail: true, maxCostPctOfRisk: 20, maxOpenPositions: 5, maxPerStrategy: 2,
-  maxSameSide: 3, trailStop: false, pauseLosingStrategies: true, skipFailedStrategies: true, tradeSide: 'BUY', autoUniverse: true,
+  maxSameSide: 3, trailStop: false, pauseLosingStrategies: true, skipFailedStrategies: false, tradeSide: 'BUY', autoUniverse: true,
   autoUniverseSize: 15, maxLeverage: 3, autoUniverseMinTurnoverCr: 25, maxSpreadPct: 0.15, stallExit: false, stallBars: 4, stallMinR: 0.25,
 });
 
@@ -41,6 +41,13 @@ const blockers = (s: Partial<Setup> = {}, c: Partial<DecisionContext> = {}, cfg:
 describe('production AutoPilot filters', () => {
   it('lets a clean setup through', () => {
     expect(blockers()).toEqual([]);
+  });
+
+  it('trades a failed strategy in PAPER (skip failed is off) but not in LIVE unless paper-ranked', () => {
+    const failed = { verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.2 }) };
+    expect(blockers({}, failed)).toEqual([]);
+    expect(blockers({}, { ...failed, mode: 'LIVE' }).join()).toMatch(/not in the top 3 paper strategies/);
+    expect(blockers({}, { ...failed, mode: 'LIVE', paperLive: () => true })).toEqual([]);
   });
 
   const cases: Array<[string, () => string[], RegExp]> = [
@@ -69,7 +76,7 @@ describe('production AutoPilot filters', () => {
     ['strategy outside an enabled list', () => blockers({ primaryStrategyId: 'GMMA_TREND' }, {}, { strategies: ['GAP_AND_GO'] }), /GMMA_TREND not enabled/],
     ['3 longs open', () => blockers({}, { open: { total: 3, byStrategy: {}, bySide: { BUY: 3, SELL: 0 }, bySector: {} } }), /3 long positions open \(max 3\)/],
     ['2 in the same sector', () => blockers({}, { open: { total: 2, byStrategy: {}, bySide: { BUY: 2, SELL: 0 }, bySector: { Banks: 2 } } }), /2 open in Banks \(max 2 per sector\)/],
-    ['failed validation', () => blockers({}, { verdict: () => ({ status: 'REJECTED', oosExpectancyR: -0.2 }) }), /failed validation/],
+    ['failed validation, when skipping failed', () => blockers({}, { verdict: () => ({ status: 'REJECTED', oosExpectancyR: -0.2 }) }, { skipFailedStrategies: true }), /failed validation/],
     ['losing record paused', () => blockers({}, { record: () => ({ trades: 25, expectancyR: -0.1 }) }), /paused: -0\.10R expectancy over its last 25 paper trades/],
     ['LIVE needs an approved strategy', () => blockers({}, { mode: 'LIVE' }), /has no APPROVED version \(required in LIVE\)/],
   ];
