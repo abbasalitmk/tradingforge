@@ -175,6 +175,13 @@ export const fullQuote = z.object({
   ohlc: z.object({
     open: z.number().nullable(), high: z.number().nullable(), low: z.number().nullable(), close: z.number().nullable(),
   }).partial().nullable().optional(),
+  lower_circuit_limit: z.number().nullable().optional(),
+  upper_circuit_limit: z.number().nullable().optional(),
+  /** Five levels a side; the first is the best price (0 when that side is empty). */
+  depth: z.object({
+    buy: z.array(z.object({ price: z.number().nullable().optional() }).passthrough()).optional(),
+    sell: z.array(z.object({ price: z.number().nullable().optional() }).passthrough()).optional(),
+  }).partial().nullable().optional(),
 }).passthrough();
 export const fullQuoteResponse = envelope(z.record(z.string(), fullQuote));
 /** The envelope alone, so each instrument can be validated on its own. */

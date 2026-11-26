@@ -335,6 +335,29 @@ describe('exits outside the bracket', () => {
     expect(r.ok && r.position.exitReason).toBe('TIME_STOP');
   });
 
+  it('cuts a trade with no follow-through, but not one that moved and came back', async () => {
+    const stall = { afterMin: 20, minMfeR: 0.25 }; // risk 30 → needs +7.5 within 20 min
+    const s = setup();
+    s.tick(100);
+    const stuck = await s.trader.open(intent({ stall }));
+    await s.settle();
+    await s.trader.manage(() => 104);
+    s.clock.advance(21 * 60_000);
+    s.tick(99);
+    await s.trader.manage(() => 99);
+    await s.settle();
+    expect(stuck.ok && stuck.position.exitReason).toBe('NO_FOLLOW_THROUGH');
+
+    const t = setup();
+    t.tick(100);
+    const moved = await t.trader.open(intent({ stall }));
+    await t.settle();
+    await t.trader.manage(() => 110);
+    t.clock.advance(21 * 60_000);
+    await t.trader.manage(() => 99);
+    expect(moved.ok && moved.position.state).toBe('MANAGING');
+  });
+
   it('kill switch flattens every open position through the broker', async () => {
     const s = setup();
     s.tick(100);

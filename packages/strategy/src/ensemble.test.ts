@@ -161,6 +161,27 @@ describe('screener', () => {
       const ranked = pickUniverse(mixed, { size: 10, minTurnoverCr: 1, side: 'BUY' }).map((x) => x.symbol);
       expect(ranked).toEqual(['SWEETSPOT', 'STRETCHED']);
     });
+
+    it('skips wide spreads, surveillance price bands and stocks pinned near a circuit', () => {
+      const base = day('OK', 508, 495, 509, 494);
+      const quotes: QuoteLite[] = [
+        { ...base, bid: 507.95, ask: 508.05, upperCircuit: 588, lowerCircuit: 392 }, // prev close 490, 20% band
+        { ...base, symbol: 'WIDE', bid: 506, ask: 509 },
+        { ...base, symbol: 'BAND5', upperCircuit: 514.5, lowerCircuit: 465.5 },
+        { ...day('PINNED', 535, 500, 536, 499), upperCircuit: 539, lowerCircuit: 441 }, // 10% band, 0.7% below it
+        { ...base, symbol: 'ONESIDED', bid: 0, ask: 508.1 },
+      ];
+      expect(pickUniverse(quotes, { size: 10, minTurnoverCr: 1, side: 'BUY', maxSpreadPct: 0.15, maxChangePct: 12 }).map((x) => x.symbol))
+        .toEqual(['OK', 'ONESIDED']);
+    });
+
+    it('scales the turnover floor down in early morning so mid/small-cap movers qualify by 09:25', () => {
+      // ₹6 Cr turnover (ltp=500, vol=120,000): below ₹25 Cr full-day floor,
+      // passes at 09:25 IST (20% of 25 = 5 Cr), rejected at 13:20 IST (100% = 25 Cr).
+      const midcap = [day('MIDCAP', 508, 495, 509, 494, 120_000)];
+      expect(pickUniverse(midcap, { size: 10, minTurnoverCr: 25, side: 'BUY', sessionMinutes: 565 }).map((x) => x.symbol)).toEqual(['MIDCAP']);
+      expect(pickUniverse(midcap, { size: 10, minTurnoverCr: 25, side: 'BUY', sessionMinutes: 800 })).toEqual([]);
+    });
   });
 
   // A real quote's LTP is the last traded price — the candles' last close here.

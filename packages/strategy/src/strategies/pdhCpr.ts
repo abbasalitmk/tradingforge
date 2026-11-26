@@ -10,7 +10,11 @@ import {
 
 export interface PdhCprParams {
   readonly atrPeriod: number;
-  /** Central pivot range width as % of the pivot: below this the day is coiled. */
+  /**
+   * Central pivot range width as % of the pivot: below this the day is coiled.
+   * |TC − BC| is at most a third of yesterday's range, so 0.9% only bound
+   * after a 2.7%+ day; floor traders call a CPR under ~0.3% narrow.
+   */
   readonly maxCprWidthPct: number;
   /** Breakout bar volume versus the average of the bars before it. */
   readonly minVolumeRatio: number;
@@ -24,7 +28,7 @@ export interface PdhCprParams {
 
 export const DEFAULT_PDH_CPR: PdhCprParams = {
   atrPeriod: 14,
-  maxCprWidthPct: 0.9,
+  maxCprWidthPct: 0.3,
   minVolumeRatio: 1.3,
   volumePeriod: 20,
   stopBufferAtr: 0.3,
@@ -121,10 +125,10 @@ export const PDH_PDL_CPR: StrategyDefinition = {
   name: 'PDH/PDL Narrow-CPR Breakout',
   style: 'INTRADAY',
   timeframe: '5m',
-  description: 'On a narrow central-pivot-range day (<=0.9%), the first 5-min close beyond the previous day high or low on 1.3x volume; 1.0+ ATR structural stop.',
+  description: 'On a narrow central-pivot-range day (<=0.3%), the first 5-min close beyond the previous day high or low on 1.3x volume; 1.0+ ATR structural stop.',
   defaults: DEFAULT_PDH_CPR as unknown as StrategyDefinition['defaults'],
   bounds: {
-    maxCprWidthPct: { min: 0.3, max: 1.5, step: 0.1 },
+    maxCprWidthPct: { min: 0.15, max: 1.5, step: 0.05 },
     minVolumeRatio: { min: 1.1, max: 2.5, step: 0.1 },
     stopBufferAtr: { min: 0.1, max: 1, step: 0.1 },
     minStopAtr: { min: 0.5, max: 1.75, step: 0.25 },

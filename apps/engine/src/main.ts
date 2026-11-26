@@ -25,7 +25,7 @@ import {
   DEFAULT_OPTION_PLAN, DEFAULT_STRIKE_PARAMS, fetchMasterRows, parseMaster, parseEquities, FnoDesk,
   type FnoPlan, type FnoPlanView, type DerivativeContract, type EquityInstrument,
 } from '@tradeforger/fno';
-import { STRATEGY_CATALOG, pickUniverse, sectorOf, type ScanFilters, type QuoteLite, type OptionWalls } from '@tradeforger/strategy';
+import { STRATEGY_CATALOG, getStrategy, pickUniverse, sectorOf, type ScanFilters, type QuoteLite, type OptionWalls } from '@tradeforger/strategy';
 import { loadConfig, LIVE_CONFIRMATION, MAX_RISK_PCT, type EngineConfig } from './config.ts';
 import { preflight } from './preflight.ts';
 import { Trader, isOperatorExit, type ManagedPosition } from './trader.ts';
@@ -607,7 +607,9 @@ const noteExit = (p: ManagedPosition): void => {
 function onPositionClosed(p: ManagedPosition): void {
   noteExit(p);
   // The strategy's record must include this trade before its next entry is judged.
-  void memory.record(p, currentMode()).then(() => refreshStrategyRecords()).catch(() => undefined);
+  // Filed under the broker that held it, not the dashboard's mode at exit: a
+  // paper position closed while LIVE is armed is still a paper trade.
+  void memory.record(p, p.broker === 'UPSTOX' ? 'LIVE' : 'PAPER').then(() => refreshStrategyRecords()).catch(() => undefined);
   void audit(sql, {
     kind: 'POSITION_CLOSED',
     actor: 'engine',
@@ -751,6 +753,9 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     stagedTrail,
     costPaise: (signal.entry * qty) as Paise,
     timeStopMin: null,
+    stall: signal.style === 'INTRADAY' && state.auto.stallExit
+      ? { afterMin: state.auto.stallBars * (getStrategy(meta.strategyId)?.timeframe === '15m' ? 15 : 5), minMfeR: state.auto.stallMinR }
+      : null,
     strategyId: meta.strategyId,
     ...(meta.strategyVersion ? { strategyVersion: meta.strategyVersion } : {}),
     quality: meta.quality,
@@ -953,10 +958,13 @@ const scanner = new MarketScanner({
 });
 
 const RESEARCH_UNIVERSE_SYMBOLS = [
-  'RELIANCE', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'ITC', 'LT', 'TATAMOTORS',
+  // Large-cap anchors + PSUs (replaces delisted TATAMOTORS ticker with TMPV)
+  'RELIANCE', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'ITC', 'LT', 'TMPV',
   'AXISBANK', 'TATASTEEL', 'BAJFINANCE', 'BHARTIARTL',
-  'PNB', 'BANKBARODA', 'CANBK', 'UNIONBANK', 'FEDERALBNK', 'TATAPOWER',
-  'GAIL', 'BHEL', 'IOC', 'ONGC', 'COALINDIA', 'ASHOKLEY',
+  'PNB', 'BANKBARODA', 'FEDERALBNK', 'TATAPOWER', 'BHEL', 'ASHOKLEY',
+  // Liquid NSE mid & small caps matching live autoUniverse exposure
+  'ANGELONE', 'CAMS', 'ABSLAMC', 'IIFLCAPS', 'ZENSARTECH', 'TRITURBINE',
+  'NATIONALUM', 'HINDCOPPER', 'MCX', 'CDSL', 'LAURUSLABS', 'RAIN',
 ];
 
 const researchAiProviders = [
@@ -1143,6 +1151,28 @@ function dropAutoPick(key: string): void {
   if (!needed) feed.unsubscribe([key]);
 }
 
+let masterAttemptAt = 0;
+const MASTER_RETRY_MS = 5 * 60_000;
+
+/**
+ * One download serves the scan universe, the focus lookup and the F&O desk.
+ * Retried by the universe refresh (at most every 5 min) until it succeeds.
+ */
+async function loadMaster(): Promise<boolean> {
+  if (clock.ms() - masterAttemptAt < MASTER_RETRY_MS) return false;
+  masterAttemptAt = clock.ms();
+  try {
+    const rows = await fetchMasterRows();
+    equities = parseEquities(rows);
+    masterContracts = parseMaster(rows);
+    console.log(`[master] ${equities.length} NSE equities, ${masterContracts.length} F&O contracts`);
+    return equities.length > 0;
+  } catch (e) {
+    console.error('[master] instrument master failed to load — scanner and focus lookup unavailable:', e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
 /**
  * Re-pick the day's movers from every NSE EQ-series stock: one batch-quote
  * pass (~5 calls), `pickUniverse`, then candles only for stocks new to the
@@ -1156,7 +1186,8 @@ async function refreshAutoUniverse(): Promise<void> {
     return;
   }
   if (autoUniverse.busy) return;
-  if (equities.length === 0) {
+  // A failed boot download must not leave the whole day on the 11 default large caps.
+  if (equities.length === 0 && !(await loadMaster())) {
     autoUniverse.error = 'instrument master not loaded';
     return;
   }
@@ -1182,6 +1213,10 @@ async function refreshAutoUniverse(): Promise<void> {
           // The quote's ohlc.close is the LTP intraday; net_change is vs the previous close.
           prevClose: q.last_price - (q.net_change ?? 0),
           volume: q.volume ?? 0,
+          bid: q.depth?.buy?.[0]?.price ?? 0,
+          ask: q.depth?.sell?.[0]?.price ?? 0,
+          ...(q.upper_circuit_limit ? { upperCircuit: q.upper_circuit_limit } : {}),
+          ...(q.lower_circuit_limit ? { lowerCircuit: q.lower_circuit_limit } : {}),
         });
       }
     }
@@ -1195,6 +1230,8 @@ async function refreshAutoUniverse(): Promise<void> {
       minPrice: state.auto.minPrice,
       maxPrice: state.auto.maxPrice > 0 && state.auto.maxPrice < 500000 ? Math.min(state.auto.maxPrice, affordable) : affordable,
       side: state.auto.tradeSide,
+      sessionMinutes: istMinutes(clock.now()),
+      maxSpreadPct: state.auto.maxSpreadPct,
     });
     const stay = ranked.filter((q) => autoPicks.has(q.instrumentKey)).slice(0, size);
     const picks = [...stay, ...ranked.filter((q) => !autoPicks.has(q.instrumentKey)).slice(0, size - stay.length)];
@@ -2588,15 +2625,7 @@ async function main(): Promise<void> {
     onClosed: onPositionClosed,
   });
 
-  // One download serves the scan universe, the focus lookup and the F&O desk.
-  try {
-    const rows = await fetchMasterRows();
-    equities = parseEquities(rows);
-    masterContracts = parseMaster(rows);
-    console.log(`[master] ${equities.length} NSE equities, ${masterContracts.length} F&O contracts`);
-  } catch (e) {
-    console.error('[master] instrument master failed to load — scanner and focus lookup unavailable:', e instanceof Error ? e.message : e);
-  }
+  await loadMaster();
   try {
     await registry.load();
     console.log(`[registry] ${registry.list().length} strategy versions; approved: ${STRATEGY_CATALOG.filter((d) => registry.approved(d.id)).map((d) => d.id).join(', ') || 'none'}`);

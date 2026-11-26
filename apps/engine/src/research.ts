@@ -29,6 +29,8 @@ export interface AiConfig {
 }
 
 const DAY = 86_400_000;
+const DATASET_CACHE_TTL_MS = 6 * 3_600_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const proposalSchema = z.object({
   hypothesis: z.string().min(10).max(600),
@@ -65,6 +67,8 @@ export class ResearchLab {
   private readonly registry: StrategyRegistry;
   private readonly aiProviders: readonly AiConfig[];
   private readonly symbols: () => Array<{ instrumentKey: string; symbol: string }>;
+  private readonly symbolCache = new Map<string, { at: number; candles: Candle[] }>();
+  private readonly marketCache = new Map<string, { at: number; data: Candle[] }>();
   private seq = 0;
 
   constructor(opts: {
@@ -105,22 +109,47 @@ export class ResearchLab {
     job.finishedAt = this.clock.ms();
   }
 
-  /** Historical candles for the research universe. Fails rather than validating on a gap. */
+  private async backfillWithRetry(
+    instrumentKey: string, unit: 'minutes' | 'days', interval: number, from: string, to: string,
+  ) {
+    let r = await backfill(this.client, instrumentKey, unit, interval, from, to);
+    for (const waitMs of [25_000, 35_000]) {
+      if (r.ok || !/429|rate/i.test(r.error.message)) break;
+      await sleep(waitMs);
+      r = await backfill(this.client, instrumentKey, unit, interval, from, to);
+    }
+    return r;
+  }
+
+  /** Historical candles for the research universe. Caches per symbol & waits out Upstox 429 windows cleanly. */
   async datasets(def: StrategyDefinition, days: number): Promise<Dataset[]> {
     const to = istDateKey(new Date(this.clock.ms() - DAY));
     const from = istDateKey(new Date(this.clock.ms() - days * DAY));
+    const syms = this.symbols();
+    const bucket = def.timeframe === '1d' ? '1d' : '5m';
+    const unit: 'minutes' | 'days' = def.timeframe === '1d' ? 'days' : 'minutes';
+    const interval = def.timeframe === '1d' ? 1 : 5;
+    const now = this.clock.ms();
+
     const out: Dataset[] = [];
-    for (const s of this.symbols()) {
-      const r = def.timeframe === '1d'
-        ? await backfill(this.client, s.instrumentKey, 'days', 1, from, to)
-        : await backfill(this.client, s.instrumentKey, 'minutes', 5, from, to);
+    for (const s of syms) {
+      const symKey = `${bucket}:${from}:${to}:${s.instrumentKey}`;
+      const hit = this.symbolCache.get(symKey);
+      if (hit && now - hit.at < DATASET_CACHE_TTL_MS) {
+        if (hit.candles.length > 0) out.push({ symbol: s.symbol, instrumentKey: s.instrumentKey, candles: hit.candles });
+        continue;
+      }
+
+      const r = await this.backfillWithRetry(s.instrumentKey, unit, interval, from, to);
       if (!r.ok) {
         // One symbol's gap should not stop a run, but an expired token or a ban
         // fails every symbol: say so rather than validate on whatever is left.
         console.warn(`[research] ${def.id}: no ${def.timeframe} history for ${s.symbol} — ${r.error.message}`);
         continue;
       }
+      this.symbolCache.set(symKey, { at: this.clock.ms(), candles: r.value });
       if (r.value.length > 0) out.push({ symbol: s.symbol, instrumentKey: s.instrumentKey, candles: r.value });
+      await sleep(300);
     }
     if (out.length === 0) throw new Error('no historical data for any research symbol');
     return out;
@@ -130,11 +159,16 @@ export class ResearchLab {
   async marketHistory(days: number): Promise<Candle[]> {
     const to = istDateKey(new Date(this.clock.ms() - DAY));
     const from = istDateKey(new Date(this.clock.ms() - days * DAY));
-    const r = await backfill(this.client, 'NSE_INDEX|Nifty 50', 'minutes', 5, from, to);
+    const cacheKey = `${from}:${to}`;
+    const hit = this.marketCache.get(cacheKey);
+    if (hit && this.clock.ms() - hit.at < DATASET_CACHE_TTL_MS) return hit.data;
+
+    const r = await this.backfillWithRetry('NSE_INDEX|Nifty 50', 'minutes', 5, from, to);
     if (!r.ok) {
       console.warn(`[research] Nifty 50 market history unavailable — ${r.error.message}`);
       return [];
     }
+    this.marketCache.set(cacheKey, { at: this.clock.ms(), data: r.value });
     return r.value;
   }
 

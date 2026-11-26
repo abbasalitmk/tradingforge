@@ -146,7 +146,10 @@ export class GmmaProfile implements StrategyProfile {
     const longThen = then.long.reduce((a, b) => a + b, 0) / LONG.length;
     const sepThen = separation(then);
 
+    // Completed 15-min bars only (as completeBars15, which imports this file):
+    // a 15-min bar is done once its third 5-min bar (open at :10 past the slot) is in.
     const tf15 = resample15(candles);
+    if ((istMinutes(new Date(last.ts)) - (9 * 60 + 15)) % 15 !== 10) tf15.pop();
     const c15 = closes(tf15);
     const e15f = latest(ema(c15, 5));
     const e15s = latest(ema(c15, 20));

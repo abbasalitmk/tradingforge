@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Candle } from '@tradeforger/core';
-import { liquidityLevels, guardStop, roundStep, type LiquidityLevel } from './liquidity.ts';
+import { liquidityLevels, guardStop, roundStep, structureTarget, type LiquidityLevel } from './liquidity.ts';
 
 /** [open, high, low, close] */
 type Bar = [number, number, number, number];
@@ -54,5 +54,26 @@ describe('stop guard', () => {
     const highs: LiquidityLevel[] = [{ kind: 'PDH', price: 212, side: 'HIGH' }];
     expect(guardStop('SELL', 210.8, 211.95, highs, 1).stop).toBeCloseTo(212.3, 6);
     expect(guardStop('BUY', 210.8, 209.9, highs, 1).level).toBeNull();
+  });
+});
+
+describe('structure-aware targets', () => {
+  // Yesterday topped at 103; today trades 101–102 with an ATR around 0.5.
+  const yesterday: Bar[] = [[100, 103, 99, 101], [101, 102, 100, 101.5]];
+  const today: Bar[] = Array.from({ length: 16 }, (_, i): Bar => {
+    const o = 101 + (i % 4) * 0.25;
+    return [o, o + 0.4, o - 0.3, o + 0.2];
+  });
+  const candles = [...day('2026-01-05', yesterday), ...day('2026-01-06', today)];
+
+  it('pulls a long target in front of yesterday\'s high when it stands in the way', () => {
+    const st = structureTarget('BUY', 102, 101, 105, candles);
+    expect(st?.level.kind).toBe('PDH');
+    expect(st!.target).toBeCloseTo(102.9, 6);
+  });
+
+  it('leaves a target that nothing blocks, and ignores levels the entry is breaking', () => {
+    expect(structureTarget('BUY', 102, 101, 102.8, candles)).toBeNull();
+    expect(structureTarget('BUY', 102.9, 102, 106, candles)).toBeNull();
   });
 });

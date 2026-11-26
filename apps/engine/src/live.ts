@@ -181,6 +181,22 @@ export const AutoConfigSchema = z.object({
   maxLeverage: z.number().min(1).max(5).default(3),
   /** Day turnover floor for an auto-picked stock, ₹ crore. */
   autoUniverseMinTurnoverCr: z.number().min(1).max(5000).default(25),
+  /**
+   * Widest bid-ask spread an auto-picked stock may have, % of price (0 = off).
+   * Auto-picks also skip 2%/5%-band stocks (surveillance, illiquid) and any
+   * within 1.5% of the circuit it is heading for.
+   */
+  maxSpreadPct: z.number().min(0).max(2).default(0.15),
+  /**
+   * No-follow-through exit: close an intraday trade that is flat or losing
+   * after `stallBars` bars of its strategy's timeframe without having gone
+   * `stallMinR` of its risk in its favour. On 3 months of data (Aug–Nov 2026)
+   * it cut stop-outs from 32% to 18% of trades with expectancy unchanged
+   * (−0.204R vs −0.190R) — fewer full losses, not a better result. Off.
+   */
+  stallExit: z.boolean().default(false),
+  stallBars: z.number().int().min(1).max(24).default(4),
+  stallMinR: z.number().min(0).max(1.5).default(0.25),
 });
 export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
@@ -227,6 +243,10 @@ export const DEFAULT_AUTO: AutoConfig = {
   autoUniverseSize: 15,
   autoUniverseMinTurnoverCr: 25,
   maxLeverage: 3,
+  maxSpreadPct: 0.15,
+  stallExit: false,
+  stallBars: 4,
+  stallMinR: 0.25,
 };
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
@@ -479,11 +499,19 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
  */
 export function canLead(
   vote: StrategyVote, target: Target, cfg: AutoConfig, ctx: DecisionContext, bias: TrendBias | null = null, stretch: number | null = null,
+  closed: readonly Candle[] | null = null,
 ): boolean {
   if (!vote.side) return false;
   if (sideBlocker(vote.side, routeFor(vote.style, target, cfg).route, cfg)) return false;
   if (biasBlocker(vote.style, vote.side, bias, cfg, vote.strategyId)) return false;
   if (stretchBlocker(vote.style, vote.side, stretch, cfg, vote.strategyId)) return false;
+  // The minimum stop blocks most tight-stop votes; one that will be blocked
+  // for it must not hide a wider-stop vote that would pass. Judged on the stop
+  // the stop-cluster guard would leave, as decide() sees it.
+  if (vote.style === 'INTRADAY' && cfg.minStopPct > 0 && vote.signal) {
+    const s = cfg.stopClusterGuard && closed ? guardSignalStop(vote.signal, closed) : vote.signal;
+    if (s.entry > 0 && (Math.abs(s.entry - s.stopLoss) / s.entry) * 100 < cfg.minStopPct) return false;
+  }
   return strategyBlockers(vote.strategyId, cfg, ctx).length === 0;
 }
 
@@ -765,7 +793,7 @@ export class LiveAnalyzer {
         },
         {
           params, ...(strategies && strategies.length ? { strategies } : {}),
-          canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch),
+          canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch, closed),
         },
       );
 

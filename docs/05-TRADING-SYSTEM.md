@@ -380,12 +380,50 @@ To trade again: run **PAPER** (CANDIDATE strategies trade there) and approve a s
 
 ---
 
-## 11. Where it lives in the code
+## 11. Audit checklist review and changes (26 Nov 2026)
+
+`autonomous_intraday_trading_system_audit_checklist.md` was checked against the
+code and its ideas tested on 3 months of 5-minute data (18 Aug – 25 Nov 2026,
+40 NSE large/mid/small caps, live-parity rules), each half judged separately.
+
+### What the stop-outs say (checklist §5)
+| Baseline stop-outs | Share | Checklist reading |
+|---|---|---|
+| Never above +0.25R | **52–56%** | entries without follow-through: strategy/regime, not stops |
+| Reached +1R before the stop | 3% | targets / partial booking are not the problem |
+| Stopped, then hit the target later that day | 1–2% | stops are not too tight |
+
+### Tested
+| Change | Result | Decision |
+|---|---|---|
+| Inside bar at PDH/PDL/VWAP (15m), new | +0.19R, 28 trades, positive in both halves | **added** (`INSIDE_BAR_15M`, paper) |
+| Holy Grail pullback (15m), new | −0.03R, 65 trades | **added** (`HOLY_GRAIL_15M`, paper) |
+| 5-EMA alert candle (5m short / 15m long) | −0.10R, ~300 trades | not added |
+| Narrow CPR 0.9% → 0.3% | PDH_PDL_CPR_15M: 95 trades −0.29R → 27 trades −0.12R | **default** (migration `0010`) |
+| No-follow-through exit (4 bars, < +0.25R) | stop-outs 32% → 18%, expectancy unchanged | AutoPilot option, **off** |
+| NIFTY 15-min ADX regime gate (≥ 20 trend, < 25 fades) | worse | not used live |
+| Structure-aware targets | better one half, worse the other | not used live (`structureTarget`, backtester option) |
+| Min stop 0.6% / 0.5% + 1.2 ATR / 1.5 ATR | more trades, no better | 1% kept |
+| 2R targets | within noise | 3R kept |
+
+Strategies still allowed to lead in PAPER, together: **−0.204R → −0.052R a trade**
+(−41.5R → −11.8R total; stop-outs 32% → 24%), better in both halves
+(−0.30 → −0.12R, −0.11 → 0.00R). Still not a proven edge.
+
+### Also fixed
+- A tight-stop vote the 1% minimum blocks no longer hides a wider-stop vote that would trade (`canLead`).
+- Auto-picks skip bid-ask spreads over 0.15%, 2%/5% price-band stocks (surveillance, illiquid) and stocks within 1.5% of their circuit.
+- The instrument master retries every 5 minutes after a failed boot download (it used to leave the day on the 11 default stocks).
+- GMMA's 15-minute check used the forming bar; research datasets crashed on an undefined cache constant.
+
+---
+
+## 12. Where it lives in the code
 
 | Part | File |
 |---|---|
 | Auto-pick movers | `packages/strategy/src/screener.ts` (`pickUniverse`), `apps/engine/src/main.ts` (`refreshAutoUniverse`) |
-| Strategies | `packages/strategy/src/strategies/*.ts`, `intraday.ts`, `swing.ts`, registry in `catalog.ts` |
+| Strategies | `packages/strategy/src/strategies/*.ts` (checklist additions in `professional.ts`), `intraday.ts`, `swing.ts`, registry in `catalog.ts` |
 | Ensemble / quality | `packages/strategy/src/ensemble.ts` |
 | 15-min trend, NIFTY direction, relative strength | `packages/strategy/src/bias.ts` |
 | Stop clusters (stop-hunt guard) | `packages/strategy/src/liquidity.ts` |

@@ -160,6 +160,40 @@ export function guardStop(
 }
 
 /**
+ * The target pulled in front of the first resistance (support, for a short)
+ * standing between the entry and it: yesterday's high/low, the opening range,
+ * equal highs/lows, or today's high/low so far. Sellers sit at those levels,
+ * so a target beyond one asks the trade to break through it first. Levels
+ * within `minR` of the entry are ignored — breaking those is the trade itself.
+ * Returns null when nothing is in the way.
+ */
+export function structureTarget(
+  side: Side, entry: number, stop: number, target: number, candles: readonly Candle[],
+  o: { minR?: number; bufferR?: number } = {},
+): { target: number; level: LiquidityLevel } | null {
+  const risk = Math.abs(entry - stop);
+  const a = latest(atr(candles, 14));
+  if (!(risk > 0) || a === null || a <= 0) return null;
+  const long = side === 'BUY';
+  const dir = long ? 1 : -1;
+  const session = candles.slice(sessionStartIndex(candles));
+  const levels = liquidityLevels(candles, a, { withRound: false });
+  if (session.length > 0) {
+    levels.push(long
+      ? { kind: 'EQH', price: Math.max(...session.map((b) => b.high)), side: 'HIGH' }
+      : { kind: 'EQL', price: Math.min(...session.map((b) => b.low)), side: 'LOW' });
+  }
+  const from = entry + dir * (o.minR ?? 0.5) * risk;
+  let best: LiquidityLevel | null = null;
+  for (const lv of levels) {
+    if (lv.side !== (long ? 'HIGH' : 'LOW')) continue;
+    if ((lv.price - from) * dir <= 0 || (target - lv.price) * dir <= 0) continue;
+    if (!best || (lv.price - best.price) * dir < 0) best = lv;
+  }
+  return best ? { target: best.price - dir * (o.bufferR ?? 0.1) * risk, level: best } : null;
+}
+
+/**
  * A signal with its stop moved out of any stop cluster (see `guardStop`),
  * read from the closed 5-minute bars it was generated on. Entry and target
  * are untouched; only a stop that sat in harm's way moves, and never far.

@@ -118,6 +118,16 @@ describe('autonomous entry decision', () => {
     expect(canLead(vote('VWAP_PULLBACK', 'BUY'), equity, on, paper, null)).toBe(false);
   });
 
+  it('does not let a vote the minimum stop will block hide a wider-stop one', () => {
+    const withStop = (stopPct: number) => ({
+      strategyId: 'GAP_AND_GO', name: 'GAP_AND_GO', style: 'INTRADAY' as const, side: 'BUY' as const, confidence: 80, reasons: [],
+      signal: { entry: 10_000, stopLoss: Math.round(10_000 * (1 - stopPct / 100)), side: 'BUY' } as never,
+    });
+    expect(canLead(withStop(0.5), equity, on, paper, upBias)).toBe(false);
+    expect(canLead(withStop(1.2), equity, on, paper, upBias)).toBe(true);
+    expect(canLead(withStop(0.5), equity, { ...on, minStopPct: 0 }, paper, upBias)).toBe(true);
+  });
+
   it('rejects out-of-range user settings', () => {
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, minRewardRisk: 0.5 }).success).toBe(false);
     expect(AutoConfigSchema.safeParse({ ...DEFAULT_AUTO, confirmSeconds: 0 }).success).toBe(false);

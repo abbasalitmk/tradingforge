@@ -15,6 +15,12 @@ export interface QuoteLite {
   readonly low: number;
   readonly prevClose: number;
   readonly volume: number;
+  /** Best bid and ask from the quote's depth; absent or 0 when one side is empty (pre-open, after hours). */
+  readonly bid?: number;
+  readonly ask?: number;
+  /** Today's exchange price band. */
+  readonly upperCircuit?: number;
+  readonly lowerCircuit?: number;
 }
 
 export interface ScanFilters {
@@ -100,6 +106,52 @@ export interface UniversePickOptions {
   readonly maxChangePct?: number;
   /** The direction traded. BUY keeps stocks a long can work on, SELL ones a short can. */
   readonly side: 'BUY' | 'SELL' | 'BOTH';
+  /** IST minutes since midnight (e.g. 565 for 09:25). Scales morning turnover floor proportionally. */
+  readonly sessionMinutes?: number;
+  /** Widest bid-ask spread kept, % of price; only judged when both sides are quoted. 0 = off. */
+  readonly maxSpreadPct?: number;
+}
+
+/**
+ * A price band of 2% or 5% is what NSE gives illiquid and surveillance-listed
+ * stocks (ASM/GSM, T2T); liquid names trade on 10–20% bands or none.
+ */
+export const NARROW_BAND_PCT = 5.5;
+/** Closer than this to the circuit the move is heading for, the stock can freeze with no exit. */
+export const CIRCUIT_ROOM_PCT = 1.5;
+
+/** Bid-ask spread as % of price, or null when the book has an empty side. */
+export const spreadPct = (q: QuoteLite): number | null =>
+  q.bid && q.ask && q.bid > 0 && q.ask >= q.bid ? ((q.ask - q.bid) / ((q.ask + q.bid) / 2)) * 100 : null;
+
+/** Why a stock is not safe to trade intraday on execution grounds, or null. */
+export function executionBlocker(q: QuoteLite, side: 'BUY' | 'SELL' | 'BOTH', maxSpreadPct = 0): string | null {
+  const sp = spreadPct(q);
+  if (maxSpreadPct > 0 && sp !== null && sp > maxSpreadPct) return `spread ${sp.toFixed(2)}% > ${maxSpreadPct}%`;
+  if (q.upperCircuit && q.lowerCircuit && q.prevClose > 0) {
+    const band = ((q.upperCircuit - q.prevClose) / q.prevClose) * 100;
+    if (band > 0 && band <= NARROW_BAND_PCT) return `${band.toFixed(0)}% price band (surveillance / illiquid)`;
+    const roomUp = ((q.upperCircuit - q.ltp) / q.ltp) * 100;
+    const roomDown = ((q.ltp - q.lowerCircuit) / q.ltp) * 100;
+    if (side !== 'SELL' && roomUp < CIRCUIT_ROOM_PCT && changePct(q) > 0) return `${roomUp.toFixed(1)}% below upper circuit`;
+    if (side !== 'BUY' && roomDown < CIRCUIT_ROOM_PCT && changePct(q) < 0) return `${roomDown.toFixed(1)}% above lower circuit`;
+  }
+  return null;
+}
+
+const SESSION_OPEN_MIN = 9 * 60 + 15;
+const TURNOVER_RAMP_MIN = 180; // full-day turnover floor reached by 12:15 IST
+
+/**
+ * Early in the session (09:20–10:30 IST), cumulative day turnover for liquid
+ * mid/small-cap movers has not yet reached a full-day floor like ₹25 Cr. Scale
+ * proportionally from 20% at open up to 100% by 12:15 IST when `sessionMinutes` is known.
+ */
+function effectiveMinTurnoverCr(minTurnoverCr: number, sessionMinutes?: number): number {
+  if (sessionMinutes === undefined || sessionMinutes < SESSION_OPEN_MIN) return minTurnoverCr;
+  const elapsed = Math.max(0, sessionMinutes - SESSION_OPEN_MIN);
+  const factor = Math.min(1, Math.max(0.2, elapsed / TURNOVER_RAMP_MIN));
+  return minTurnoverCr * factor;
 }
 
 /** Up on the day, above the open, upper half of the range — or the mirror for a short. */
@@ -121,12 +173,14 @@ const holdsMove = (q: QuoteLite, side: 'BUY' | 'SELL', minCh: number = PICK_CHAN
 export function pickUniverse(quotes: readonly QuoteLite[], o: UniversePickOptions): QuoteLite[] {
   const minCh = o.minChangePct ?? PICK_CHANGE_PCT.min;
   const maxCh = o.maxChangePct ?? PICK_CHANGE_PCT.max;
+  const minTurnCr = effectiveMinTurnoverCr(o.minTurnoverCr, o.sessionMinutes);
   const passed = quotes.filter((q) => {
     if (!(q.ltp > 0)) return false;
     if (o.minPrice !== undefined && o.minPrice > 0 && q.ltp < o.minPrice) return false;
     if (o.maxPrice !== undefined && o.maxPrice > 0 && q.ltp > o.maxPrice) return false;
-    if (turnoverCr(q) < o.minTurnoverCr) return false;
+    if (turnoverCr(q) < minTurnCr) return false;
     if (Math.abs(changePct(q)) > maxCh) return false;
+    if (executionBlocker(q, o.side, o.maxSpreadPct ?? 0)) return false;
     return o.side === 'BOTH' ? holdsMove(q, 'BUY', minCh) || holdsMove(q, 'SELL', minCh) : holdsMove(q, o.side, minCh);
   });
   const score = (q: QuoteLite): number => {

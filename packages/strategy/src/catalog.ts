@@ -17,6 +17,7 @@ import { PDH_PDL_CPR, PDH_PDL_CPR_15M } from './strategies/pdhCpr.ts';
 import { BB_RSI_REVERSION } from './strategies/bbRsiReversion.ts';
 import { FAILED_BREAKOUT_TRAP } from './strategies/failedBreakout.ts';
 import { OI_WALL_REVERSAL } from './strategies/oiWall.ts';
+import { HOLY_GRAIL_15M, INSIDE_BAR_15M } from './strategies/professional.ts';
 
 // The definition contract lives in definition.ts (so strategy files can use it
 // without an import cycle); re-exported here so the catalog's API is unchanged.
@@ -26,6 +27,7 @@ export {
   VWAP_PULLBACK, SUPERTREND_MOMENTUM, BB_SQUEEZE_BREAKOUT, RSI_MEAN_REVERSION, DONCHIAN_BREAKOUT, GMMA_TREND,
   ICHIMOKU_CLOUD, SMC_STRUCTURE, SMC_STRUCTURE_15M, CANDLESTICK_PATTERNS, TECHNICAL_COMPOSITE,
   GAP_AND_GO, EMA_CROSS, EMA_CROSS_9_21_15M, PDH_PDL_CPR, PDH_PDL_CPR_15M, BB_RSI_REVERSION, FAILED_BREAKOUT_TRAP, OI_WALL_REVERSAL,
+  HOLY_GRAIL_15M, INSIDE_BAR_15M,
 };
 
 export const ORB_SUPERTREND: StrategyDefinition = {
@@ -98,6 +100,9 @@ export const STRATEGY_CATALOG: StrategyDefinition[] = [
   ORB_SUPERTREND_15M,
   EMA_CROSS_9_21_15M,
   SMC_STRUCTURE_15M,
+  // From the audit checklist: Raschke's Holy Grail and inside-bar breakouts at key levels.
+  HOLY_GRAIL_15M,
+  INSIDE_BAR_15M,
 ];
 
 export const getStrategy = (id: string): StrategyDefinition | undefined =>

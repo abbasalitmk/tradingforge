@@ -74,7 +74,7 @@ export default function MarketScanner({ catalog, onAnalyze, onWatch }: {
   /** Put the stock on the engine's live watchlist, where autonomous mode can trade it. */
   onWatch?: (symbol: string) => void;
 }) {
-  const [category, setCategory] = useState('NIFTY50');
+  const [category, setCategory] = useState('ALL');
   const [f, setF] = useState<FilterText>(EMPTY);
   const [style, setStyle] = useState<'ANY' | 'INTRADAY' | 'SWING'>('ANY');
   const [side, setSide] = useState<'ANY' | 'BUY' | 'SELL'>('ANY');
@@ -115,7 +115,7 @@ export default function MarketScanner({ catalog, onAnalyze, onWatch }: {
     >
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Category" style={{ ...inputStyle, minWidth: 200 }}>
-          {groups.length === 0 && <option value="NIFTY50">NIFTY 50</option>}
+          {groups.length === 0 && <option value="ALL">All NSE stocks</option>}
           {groups.map(([group, cats]) => (
             <optgroup key={group} label={group}>
               {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}

@@ -47,6 +47,10 @@ interface AutoConfig {
   maxEntryChaseAtr: number;
   stagedTrail: boolean;
   maxCostPctOfRisk: number;
+  maxSpreadPct: number;
+  stallExit: boolean;
+  stallBars: number;
+  stallMinR: number;
 }
 
 interface AutoUniverseView {
@@ -131,7 +135,8 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
+  | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -149,8 +154,12 @@ const draftOf = (a: AutoConfig): Draft => ({
   maxTargetDailyAtr: a.maxTargetDailyAtr ?? 1.5,
   minRoomDailyAtr: a.minRoomDailyAtr ?? 0.5,
   maxEntryChaseAtr: a.maxEntryChaseAtr ?? 0.5,
-  stagedTrail: a.stagedTrail ?? true,
+  stagedTrail: a.stagedTrail ?? false,
   maxCostPctOfRisk: a.maxCostPctOfRisk ?? 20,
+  maxSpreadPct: a.maxSpreadPct ?? 0.15,
+  stallExit: a.stallExit ?? false,
+  stallBars: a.stallBars ?? 4,
+  stallMinR: a.stallMinR ?? 0.25,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -258,6 +267,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       maxEntryChaseAtr: draft.maxEntryChaseAtr,
       stagedTrail: draft.stagedTrail,
       maxCostPctOfRisk: draft.maxCostPctOfRisk,
+      maxSpreadPct: draft.maxSpreadPct,
+      stallExit: draft.stallExit,
+      stallBars: draft.stallBars,
+      stallMinR: draft.stallMinR,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -419,6 +432,9 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
             ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
             ['autoUniverseMinTurnoverCr', 'Pick min turnover (₹ Cr)', 1, 5000, 1, 'day turnover of an auto-picked stock'],
+            ['maxSpreadPct', 'Pick max spread (%)', 0, 2, 0.05, 'bid-ask spread of an auto-picked stock; 0 = off'],
+            ['stallBars', 'No-follow-through bars', 1, 24, 1, "strategy-timeframe bars before a trade that hasn't moved is cut"],
+            ['stallMinR', 'No-follow-through min move (R)', 0, 1.5, 0.05, 'favourable move a trade needs by then to be kept'],
           ] as const).map(([key, label, min, max, step, hint]) => (
             <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>
               {label}
@@ -444,6 +460,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           <Chip on={draft.stagedTrail} onClick={() => setDraft({ ...draft, stagedTrail: !draft.stagedTrail })}
             title="Locks +0.35R once +1.2R MFE is hit (covering charges), then trails 1.25 ATR from +1.6R MFE without noisy bar-0 exits">
             Staged profit trail {draft.stagedTrail ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.stallExit} onClick={() => setDraft({ ...draft, stallExit: !draft.stallExit })}
+            title="Close an intraday trade that is flat or losing after the set bars without the set favourable move. Backtest Aug–Nov 2026: stop-outs 32% → 18% of trades, expectancy unchanged">
+            No-follow-through exit {draft.stallExit ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.trailStop} onClick={() => setDraft({ ...draft, trailStop: !draft.trailStop })}
             title="Legacy exchange-side trailing GTT from bar 0. Prefer Staged profit trail for intraday.">

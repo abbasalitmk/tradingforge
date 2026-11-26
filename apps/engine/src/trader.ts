@@ -23,6 +23,16 @@ export interface StagedTrailRule {
   readonly trailGapPaise: Paise;
 }
 
+/**
+ * No follow-through: a trade that has not gone `minMfeR` of its risk in its
+ * favour within `afterMin` minutes, and is flat or losing, is closed rather
+ * than left to drift into its stop. Most intraday stop-outs never got going.
+ */
+export interface StallRule {
+  readonly afterMin: number;
+  readonly minMfeR: number;
+}
+
 /** Everything needed to open a position. Risk and AI gates have already passed. */
 export interface TradeIntent {
   readonly segment: Segment;
@@ -42,6 +52,7 @@ export interface TradeIntent {
   readonly costPaise: Paise;
   /** Exit a flat-or-losing position after this many minutes (theta guard). */
   readonly timeStopMin: number | null;
+  readonly stall?: StallRule | null;
   readonly contract?: ContractInfo;
   readonly underlyingSymbol?: string;
   /** Catalog strategy and registry version that produced the setup. */
@@ -60,6 +71,7 @@ export interface ManagedPosition extends PositionRecord {
   readonly broker: BrokerId;
   readonly costPaise: Paise;
   readonly timeStopMin: number | null;
+  readonly stall?: StallRule | null;
   readonly trailingGap: Paise | null;
   readonly stagedTrail?: StagedTrailRule | null;
   /** Ratcheted stop level tracked by staged trailing (initial `stopLoss` stays intact as 1R reference). */
@@ -293,6 +305,7 @@ export class Trader {
         broker: this.active,
         costPaise: intent.costPaise,
         timeStopMin: intent.timeStopMin,
+        ...(intent.stall ? { stall: intent.stall } : {}),
         trailingGap: intent.trailingGap,
         ...(intent.stagedTrail ? { stagedTrail: intent.stagedTrail } : {}),
         virtualStopPaise: null,
@@ -614,6 +627,12 @@ export class Trader {
       if (p.timeStopMin !== null && p.filledAt !== null
         && now - p.filledAt >= p.timeStopMin * 60_000 && pnl <= 0) {
         await this.exit(p.id, 'TIME_STOP');
+        continue;
+      }
+      const risk = Math.abs(p.entry - p.stopLoss);
+      if (p.stall && p.filledAt !== null && risk > 0 && now - p.filledAt >= p.stall.afterMin * 60_000
+        && p.mfePaise < p.stall.minMfeR * risk && pnl <= 0) {
+        await this.exit(p.id, 'NO_FOLLOW_THROUGH');
       }
     }
   }

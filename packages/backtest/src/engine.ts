@@ -3,7 +3,7 @@ import {
 } from '@tradeforger/core';
 import {
   type Params, type StrategyDefinition, type StrategyProfile,
-  completeBars15, trendBias15, marketDirection, dayChangePct, guardSignalStop,
+  completeBars15, trendBias15, marketDirection, dayChangePct, guardSignalStop, structureTarget,
 } from '@tradeforger/strategy';
 import { atr, vwap } from '@tradeforger/indicators';
 import {
@@ -56,6 +56,18 @@ export interface BacktestConfig {
   entrySessionsOnly?: boolean;
   /** Optional index 5m series for NIFTY direction + relative-strength live parity. */
   marketSeries?: readonly Candle[];
+  /** Least room between entry and the daily-ATR target cap, in daily ATRs (live `minRoomDailyAtr`). */
+  minRoomDailyAtr?: number;
+  /** Least stop distance in ATR(14) of the signal timeframe — outside the bar-to-bar noise. */
+  minStopAtr?: number;
+  /** Trend entries need the index's 15-min ADX at least this (needs `marketSeries`). */
+  regimeMinAdx?: number;
+  /** Counter-trend entries need the index's 15-min ADX below this (needs `marketSeries`). */
+  regimeFadeMaxAdx?: number;
+  /** Pull trend targets in front of the first resistance/support in the way (`structureTarget`). */
+  structureTargets?: boolean;
+  /** Close at the bar's close once `bars` have passed with MFE under `minMfeR` and the trade not in profit. */
+  stall?: { readonly bars: number; readonly minMfeR: number };
 }
 
 /**
@@ -115,6 +127,9 @@ export interface TradeRecord {
   exitReason: ExitReason;
   /** Bars the position was exposed to, entry bar included. */
   barsHeld: number;
+  /** Stop and target as planned at entry (the stop before any trailing). */
+  initialStop?: number;
+  plannedTarget?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +408,7 @@ function simulate(
   const slip = cfg.slippageBps / 10_000;
   const maxHold = Math.max(1, cfg.maxHoldBars ?? 20);
   const trades: TradeRecord[] = [];
-  const atrSeries = (cfg.trail || (intraday && (cfg.maxVwapStretchAtr ?? 0) > 0)) ? atr(candles, 14) : null;
+  const atrSeries = (cfg.trail || (intraday && ((cfg.maxVwapStretchAtr ?? 0) > 0 || (cfg.minStopAtr ?? 0) > 0))) ? atr(candles, 14) : null;
   const vwSeries = intraday && (cfg.maxVwapStretchAtr ?? 0) > 0 ? vwap(candles) : null;
   const dailyStats = intraday && (cfg.maxTargetDailyAtr ?? 0) > 0 ? intradaySessionStats(candles) : null;
   const need5mContext = intraday && (cfg.htfBias || cfg.marketSeries);
@@ -433,6 +448,8 @@ function simulate(
       mfeR: p.mfe,
       exitReason: reason,
       barsHeld,
+      initialStop: long ? p.entryPrice - p.risk : p.entryPrice + p.risk,
+      plannedTarget: p.target,
     };
   };
 
@@ -453,7 +470,7 @@ function simulate(
       return null;
     }
     // Live parity rules checked at signal close (bar sigIdx), before next-bar open fill.
-    const ctxSlice = intraday && (cfg.stopClusterGuard || cfg.htfBias)
+    const ctxSlice = intraday && (cfg.stopClusterGuard || cfg.htfBias || cfg.structureTargets)
       ? candles.slice(Math.max(0, sigIdx - 299), sigIdx + 1)
       : null;
 
@@ -473,6 +490,17 @@ function simulate(
         const stretch = (candles[sigIdx]!.close - vw) / a;
         const along = rawSig.side === 'BUY' ? stretch : -stretch;
         if (along > cfg.maxVwapStretchAtr) return null;
+      }
+    }
+
+    if (intraday && cfg.marketSeries && mktByClose && (cfg.regimeMinAdx || cfg.regimeFadeMaxAdx)) {
+      const mIdx = mktByClose.get(meta.closeTs[sigIdx]!);
+      if (mIdx !== undefined && mIdx >= 100) {
+        const adxNow = trendBias15(cfg.marketSeries.slice(Math.max(0, mIdx - 299), mIdx + 1)).adx;
+        if (adxNow !== null) {
+          if (!def.counterTrend && cfg.regimeMinAdx && adxNow < cfg.regimeMinAdx) return null;
+          if (def.counterTrend && cfg.regimeFadeMaxAdx && adxNow >= cfg.regimeFadeMaxAdx) return null;
+        }
       }
     }
 
@@ -516,7 +544,14 @@ function simulate(
         if (long ? target > adrCap : target < adrCap) {
           target = adrCap;
         }
+        const room = ((adrCap - paiseToRupees(sig.entry)) * dir) / dAtr;
+        if (!def.counterTrend && cfg.minRoomDailyAtr && room < cfg.minRoomDailyAtr) return null;
       }
+    }
+
+    if (intraday && !def.counterTrend && cfg.structureTargets && ctxSlice) {
+      const st = structureTarget(sig.side, paiseToRupees(sig.entry), stop, target, ctxSlice);
+      if (st) target = st.target;
     }
 
     if (long ? !(stop < target) : !(stop > target)) return null;
@@ -527,6 +562,10 @@ function simulate(
 
     const risk = Math.abs(fill - stop);
     if (intraday && cfg.minStopPct && cfg.minStopPct > 0 && (risk / fill) * 100 < cfg.minStopPct) return null;
+    if (intraday && cfg.minStopAtr && cfg.minStopAtr > 0) {
+      const a = atrSeries?.[sigIdx];
+      if (a && a > 0 && risk < cfg.minStopAtr * a) return null;
+    }
 
     const finalRR = Math.abs(target - fill) / risk;
     const minRR = cfg.minRewardRisk ?? (cfg.maxTargetDailyAtr ? 1.5 : 0);
@@ -588,6 +627,10 @@ function simulate(
       }
       const a = atrSeries?.[j];
       if (bestR >= cfg.trail.trailFromR && a != null) tighter(long ? p.best - cfg.trail.trailAtr * a : p.best + cfg.trail.trailAtr * a);
+    }
+
+    if (intraday && cfg.stall && held >= cfg.stall.bars && p.mfe < cfg.stall.minMfeR && toR(bar.close) <= 0) {
+      return close(p, bar.close, 'TIME', meta.closeTs[j]!, held);
     }
 
     if (intraday) {
