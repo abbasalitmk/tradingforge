@@ -24,12 +24,12 @@ export interface PdhCprParams {
 
 export const DEFAULT_PDH_CPR: PdhCprParams = {
   atrPeriod: 14,
-  maxCprWidthPct: 0.3,
-  minVolumeRatio: 1.8,
+  maxCprWidthPct: 0.9,
+  minVolumeRatio: 1.3,
   volumePeriod: 20,
-  stopBufferAtr: 0.2,
-  minStopAtr: 0.5,
-  maxStopAtr: 2.5,
+  stopBufferAtr: 0.3,
+  minStopAtr: 1.0,
+  maxStopAtr: 3.0,
   targetRR: 2,
   minConfidence: 60,
 };
@@ -121,18 +121,37 @@ export const PDH_PDL_CPR: StrategyDefinition = {
   name: 'PDH/PDL Narrow-CPR Breakout',
   style: 'INTRADAY',
   timeframe: '5m',
-  description: 'On a narrow central-pivot-range day, the first 5-min close beyond the previous day high or low on 1.8x volume; stop back inside the level.',
+  description: 'On a narrow central-pivot-range day (<=0.9%), the first 5-min close beyond the previous day high or low on 1.3x volume; 1.0+ ATR structural stop.',
   defaults: DEFAULT_PDH_CPR as unknown as StrategyDefinition['defaults'],
   bounds: {
-    maxCprWidthPct: { min: 0.1, max: 0.6, step: 0.05 },
-    minVolumeRatio: { min: 1.2, max: 3, step: 0.1 },
-    stopBufferAtr: { min: 0, max: 1, step: 0.1 },
-    minStopAtr: { min: 0.25, max: 1.5, step: 0.25 },
+    maxCprWidthPct: { min: 0.3, max: 1.5, step: 0.1 },
+    minVolumeRatio: { min: 1.1, max: 2.5, step: 0.1 },
+    stopBufferAtr: { min: 0.1, max: 1, step: 0.1 },
+    minStopAtr: { min: 0.5, max: 1.75, step: 0.25 },
     maxStopAtr: { min: 1.5, max: 4, step: 0.25 },
-    targetRR: { min: 1.2, max: 4, step: 0.25 },
-    minConfidence: { min: 40, max: 90, step: 5 },
+    targetRR: { min: 1.5, max: 3.5, step: 0.25 },
+    minConfidence: { min: 45, max: 85, step: 5 },
   },
   create(params) {
     return tagged('PDH_PDL_CPR', new PdhCprProfile(clampParams(PDH_PDL_CPR, params) as unknown as PdhCprParams));
+  },
+};
+
+export const PDH_PDL_CPR_15M: StrategyDefinition = {
+  id: 'PDH_PDL_CPR_15M',
+  name: 'PDH/PDL Narrow-CPR Breakout (15m)',
+  style: 'INTRADAY',
+  timeframe: '15m',
+  description: '15-minute narrow-CPR PDH/PDL breakout on >=1.5x volume with wider ATR stops to lower transaction cost drag.',
+  defaults: {
+    ...DEFAULT_PDH_CPR,
+    minVolumeRatio: 1.5,
+    minStopAtr: 0.75,
+    maxStopAtr: 2.5,
+    targetRR: 2,
+  } as unknown as StrategyDefinition['defaults'],
+  bounds: PDH_PDL_CPR.bounds,
+  create(params) {
+    return tagged('PDH_PDL_CPR_15M', new PdhCprProfile(clampParams(PDH_PDL_CPR_15M, params) as unknown as PdhCprParams));
   },
 };

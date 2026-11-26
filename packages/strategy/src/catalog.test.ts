@@ -1,13 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { FixedClock, istMinutes, SESSION, type Candle, type Signal } from '@tradeforger/core';
 import { STRATEGY_CATALOG, getStrategy, clampParams, type StrategyDefinition } from './catalog.ts';
+import { completeBars15 } from './bias.ts';
 import { intraday, daily, closeOf, type Regime } from './fixtures.ts';
 
-const up = (seed: number, tf: '5m' | '1d'): Regime =>
-  tf === '5m' ? { seed, start: 1000, drift: 0.0006, vol: 0.003, volume: 20_000 } : { seed, start: 1000, drift: 0.002, vol: 0.015, volume: 1e6 };
-const down = (seed: number, tf: '5m' | '1d'): Regime => ({ ...up(seed, tf), drift: -up(seed, tf).drift });
-const bars = (def: StrategyDefinition, g: Regime): Candle[] =>
-  def.timeframe === '5m' ? intraday('2026-01-05', 8, g) : daily('2023-01-02', 400, g);
+const up = (seed: number, tf: '5m' | '15m' | '1d'): Regime =>
+  tf === '1d'
+    ? { seed, start: 1000, drift: 0.002, vol: 0.015, volume: 1e6 }
+    : tf === '15m'
+      ? { seed, start: 1000, drift: 0.00035, vol: 0.003, volume: 20_000 }
+      : { seed, start: 1000, drift: 0.0004, vol: 0.003, volume: 20_000 };
+const down = (seed: number, tf: '5m' | '15m' | '1d'): Regime => ({ ...up(seed, tf), drift: -up(seed, tf).drift });
+const bars = (def: StrategyDefinition, g: Regime): Candle[] => {
+  if (def.timeframe === '1d') return daily('2023-01-02', 400, g);
+  const b5 = intraday('2026-01-05', def.timeframe === '15m' ? 35 : 8, g);
+  return def.timeframe === '15m' ? completeBars15(b5) : b5;
+};
 
 /** Evaluate at every bar close, exactly as the backtester and live loop do. */
 function walk(def: StrategyDefinition, candles: readonly Candle[]): Array<{ i: number; at: number; s: Signal }> {
@@ -35,7 +43,7 @@ const signalsOf = (def: StrategyDefinition, dir: 'up' | 'down', seed = 1) => {
  * overnight gap, an option chain, a ranging low-ADX tape, a narrow-CPR day).
  * Their signals are tested on hand-built scenarios in playbook.test.ts.
  */
-const SCENARIO_ONLY = new Set(['GAP_AND_GO', 'OI_WALL_REVERSAL', 'BB_RSI_REVERSION', 'PDH_PDL_CPR']);
+const SCENARIO_ONLY = new Set(['GAP_AND_GO', 'OI_WALL_REVERSAL', 'BB_RSI_REVERSION', 'PDH_PDL_CPR', 'PDH_PDL_CPR_15M']);
 
 describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) => {
   it('has bounded params whose defaults sit inside the bounds', () => {
@@ -75,7 +83,7 @@ describe.each(STRATEGY_CATALOG.map((d) => [d.id, d] as const))('%s', (_id, def) 
     expect(buys('up')).toBeGreaterThan(buys('down'));
   });
 
-  if (def.timeframe === '5m') {
+  if (def.timeframe !== '1d') {
     it('only signals inside the 09:20–14:45 IST entry window', () => {
       for (const { at } of [...signalsOf(def, 'up'), ...signalsOf(def, 'down')]) {
         const m = istMinutes(new Date(at));
@@ -106,6 +114,7 @@ describe('lookahead guard', () => {
   const guarded = [
     'VWAP_PULLBACK', 'SUPERTREND_MOMENTUM', 'BB_SQUEEZE_BREAKOUT', 'GMMA_TREND', 'RSI_MEAN_REVERSION', 'DONCHIAN_BREAKOUT',
     'ICHIMOKU_CLOUD', 'SMC_STRUCTURE', 'CANDLESTICK_PATTERNS', 'TECHNICAL_COMPOSITE', 'EMA_CROSS_9_21', 'FAILED_BREAKOUT_TRAP',
+    'EMA_CROSS_9_21_15M', 'SMC_STRUCTURE_15M',
   ];
   it.each(guarded)('%s ignores bars after the clock', (id) => {
     const def = getStrategy(id)!;
@@ -124,8 +133,9 @@ describe('lookahead guard', () => {
 
 describe('session handling with multi-day warmup', () => {
   it('intraday strategies do not trade a stale bar from yesterday in the morning', () => {
-    for (const def of STRATEGY_CATALOG.filter((d) => d.timeframe === '5m')) {
-      const series = intraday('2026-01-05', 3, up(4, '5m'));
+    for (const def of STRATEGY_CATALOG.filter((d) => d.timeframe !== '1d')) {
+      const b5 = intraday('2026-01-05', 3, up(4, '5m'));
+      const series = def.timeframe === '15m' ? completeBars15(b5) : b5;
       // Clock at 10:00 IST on the next session, but no bars from it yet.
       const clock = new FixedClock(new Date(Date.parse('2026-01-08T10:00:00+05:30')));
       expect(def.create().evaluate({ instrumentKey: 'K', symbol: 'S', candles: series, higherTf: [], clock })).toBeNull();

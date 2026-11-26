@@ -75,6 +75,6 @@ export function daily(start: string, bars: number, g: Regime, cycle = 25): Candl
   return series(weekdays(start, bars), g, cycle);
 }
 
-/** Close time of a bar: +5 min intraday, 15:30 IST for daily. */
-export const closeOf = (c: Candle, tf: '5m' | '1d'): number =>
-  tf === '5m' ? c.ts + 300_000 : Math.floor((c.ts + IST) / DAY) * DAY - IST + 930 * 60_000;
+/** Close time of a bar: +5 min / +15 min intraday, 15:30 IST for daily. */
+export const closeOf = (c: Candle, tf: '5m' | '15m' | '1d'): number =>
+  tf === '5m' ? c.ts + 300_000 : tf === '15m' ? c.ts + 900_000 : Math.floor((c.ts + IST) / DAY) * DAY - IST + 930 * 60_000;

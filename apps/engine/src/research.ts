@@ -62,19 +62,24 @@ export class ResearchLab {
   private readonly client: UpstoxClient;
   private readonly clock: Clock;
   private readonly registry: StrategyRegistry;
-  private readonly ai: AiConfig | null;
+  private readonly aiProviders: readonly AiConfig[];
   private readonly symbols: () => Array<{ instrumentKey: string; symbol: string }>;
   private seq = 0;
 
   constructor(opts: {
-    client: UpstoxClient; clock: Clock; registry: StrategyRegistry; ai: AiConfig | null;
+    client: UpstoxClient; clock: Clock; registry: StrategyRegistry;
+    ai: AiConfig | readonly AiConfig[] | null;
     symbols: () => Array<{ instrumentKey: string; symbol: string }>;
   }) {
     this.client = opts.client;
     this.clock = opts.clock;
     this.registry = opts.registry;
-    this.ai = opts.ai;
+    this.aiProviders = opts.ai ? (Array.isArray(opts.ai) ? opts.ai : [opts.ai]) : [];
     this.symbols = opts.symbols;
+  }
+
+  get hasAi(): boolean {
+    return this.aiProviders.length > 0;
   }
 
   get busy(): boolean {
@@ -108,7 +113,7 @@ export class ResearchLab {
       const r = def.timeframe === '1d'
         ? await backfill(this.client, s.instrumentKey, 'days', 1, from, to)
         : await backfill(this.client, s.instrumentKey, 'minutes', 5, from, to);
-      if (!r.ok) throw r.error;
+      if (!r.ok) continue;
       if (r.value.length > 0) out.push({ symbol: s.symbol, instrumentKey: s.instrumentKey, candles: r.value });
     }
     if (out.length === 0) throw new Error('no historical data for any research symbol');
@@ -150,7 +155,7 @@ export class ResearchLab {
   }
 
   propose(strategyId: string): ResearchJob {
-    if (!this.ai) throw new Error('no AI provider configured (GROQ_API_KEY)');
+    if (this.aiProviders.length === 0) throw new Error('no AI provider configured (GEMINI_API_KEY / GROQ_API_KEY)');
     const def = getStrategy(strategyId);
     if (!def) throw new Error(`unknown strategy ${strategyId}`);
     const job = this.newJob('PROPOSE', strategyId, null);
@@ -180,45 +185,50 @@ export class ResearchLab {
   }
 
   private async ask(def: StrategyDefinition, base: StrategyVersion): Promise<z.infer<typeof proposalSchema>> {
-    const ai = this.ai!;
     const report = base.validation as Partial<ValidationReport>;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
-    try {
-      const res = await fetch(`${ai.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${ai.apiKey}` },
-        body: JSON.stringify({
-          model: ai.model,
-          temperature: 0.2,
-          max_tokens: 500,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: RESEARCH_PROMPT },
-            {
-              role: 'user',
-              content: JSON.stringify({
-                strategy: { id: def.id, description: def.description, style: def.style, timeframe: def.timeframe },
-                current_params: base.params,
-                bounds: def.bounds,
-                checks: report.checks,
-                full: report.full, in_sample: report.inSample, out_of_sample: report.outOfSample,
-                folds: report.folds, sensitivity: report.sensitivity, cost_stress: report.costStress,
-                regimes: report.regimes, weaknesses: report.weaknesses,
-              }),
-            },
-          ],
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`research agent HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = body.choices?.[0]?.message?.content ?? '';
-      const parsed = proposalSchema.safeParse(JSON.parse(text));
-      if (!parsed.success) throw new Error(`research agent returned an invalid proposal: ${parsed.error.message}`);
-      return parsed.data;
-    } finally {
-      clearTimeout(timer);
+    const errors: string[] = [];
+    for (const ai of this.aiProviders) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
+      try {
+        const res = await fetch(`${ai.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${ai.apiKey}` },
+          body: JSON.stringify({
+            model: ai.model,
+            temperature: 0.2,
+            max_tokens: 500,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: RESEARCH_PROMPT },
+              {
+                role: 'user',
+                content: JSON.stringify({
+                  strategy: { id: def.id, description: def.description, style: def.style, timeframe: def.timeframe },
+                  current_params: base.params,
+                  bounds: def.bounds,
+                  checks: report.checks,
+                  full: report.full, in_sample: report.inSample, out_of_sample: report.outOfSample,
+                  folds: report.folds, sensitivity: report.sensitivity, cost_stress: report.costStress,
+                  regimes: report.regimes, weaknesses: report.weaknesses,
+                }),
+              },
+            ],
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`${ai.model} HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+        const body = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const text = body.choices?.[0]?.message?.content ?? '';
+        const parsed = proposalSchema.safeParse(JSON.parse(text));
+        if (!parsed.success) throw new Error(`${ai.model} invalid proposal: ${parsed.error.message}`);
+        return parsed.data;
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : String(e));
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    throw new Error(`research agent failed (${errors.join('; ')})`);
   }
 }

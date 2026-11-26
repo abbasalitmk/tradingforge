@@ -148,6 +148,88 @@ describe('backtest engine', () => {
     }
   });
 
+  it('trails the stop on closes when asked, and only then', () => {
+    // Flat, then a buy at 100 (stop 90, far target) that runs to a 125 close and collapses.
+    const flat = Array.from({ length: 20 }, (_, i) => day(i, 100, 101, 99, 100));
+    const run = [[100, 106, 99, 105], [105, 111, 104, 110], [110, 126, 109, 125], [125, 126, 79, 80]] as const;
+    const bars = [...flat, ...run.map(([o, h, l, c], k) => day(20 + k, o, h, l, c))];
+    const plain = runBacktest(fixed(90, 200, 20), undefined, data(bars), noFriction);
+    expect(plain[0]).toMatchObject({ exitReason: 'STOPLOSS', exitPrice: 90 });
+    const trailed = runBacktest(fixed(90, 200, 20), undefined, data(bars), { ...noFriction, trail: { breakevenR: 1, trailFromR: 2, trailAtr: 1.5 } });
+    expect(trailed[0]!.exitReason).toBe('STOPLOSS');
+    expect(trailed[0]!.exitPrice).toBeGreaterThan(100);
+    expect(trailed[0]!.exitPrice).toBeLessThan(125);
+  });
+
+  it('locks in breakevenLockR profit when breakevenR triggers to cover charges', () => {
+    const flat = Array.from({ length: 20 }, (_, i) => day(i, 100, 101, 99, 100));
+    // Reaches 115 (+1.5R close) then drops back to 95. Entry at 100, SL 90 (1R=10), breakevenLockR=0.35 -> SL 103.5
+    const run = [[100, 116, 99, 115], [115, 116, 95, 96]] as const;
+    const bars = [...flat, ...run.map(([o, h, l, c], k) => day(20 + k, o, h, l, c))];
+    const locked = runBacktest(fixed(90, 200, 20), undefined, data(bars), {
+      ...noFriction,
+      trail: { breakevenR: 1.2, breakevenLockR: 0.35, trailFromR: 2, trailAtr: 1.5 },
+    });
+    expect(locked[0]!.exitReason).toBe('STOPLOSS');
+    expect(locked[0]!.exitPrice).toBeCloseTo(103.5, 4);
+  });
+
+  it('resamples 5m bars to 15m cleanly for 15m strategies', () => {
+    const intra = intradaySeries('2026-01-05', 20, { seed: 11, startPrice: 500, drift: 0.0005, vol: 0.002, volume: 20_000 });
+    const def = getStrategy('PDH_PDL_CPR_15M')!;
+    expect(() => runBacktest(def, undefined, data(intra))).not.toThrow();
+  });
+
+  it('skips opening/midday chop signals when entrySessionsOnly is true', () => {
+    const makeAtMinute = (targetMin: number): StrategyDefinition => ({
+      id: `TEST_MIN_${targetMin}`, name: 'min', style: 'INTRADAY', timeframe: '5m', description: 'test',
+      defaults: {}, bounds: {},
+      create() {
+        return {
+          style: 'INTRADAY', name: 'min', warmupBars: 1,
+          evaluate(ctx) {
+            const last = ctx.candles[ctx.candles.length - 1]!;
+            if (istMinutes(new Date(last.ts)) !== targetMin) return null;
+            return { ...sig(ctx, 'BUY', last.close, last.close * 0.99, last.close * 1.02), style: 'INTRADAY' };
+          },
+        };
+      },
+    });
+    const intra = intradaySeries('2026-01-05', 3, { seed: 7, startPrice: 1000, drift: 0, vol: 0.0005, volume: 20_000 });
+    const openChop = makeAtMinute(9 * 60 + 15);
+    const middayChop = makeAtMinute(12 * 60);
+    const activeWindow = makeAtMinute(14 * 60);
+    expect(runBacktest(openChop, undefined, data(intra), noFriction).length).toBeGreaterThan(0);
+    expect(runBacktest(openChop, undefined, data(intra), { ...noFriction, entrySessionsOnly: true })).toHaveLength(0);
+    expect(runBacktest(middayChop, undefined, data(intra), noFriction).length).toBeGreaterThan(0);
+    expect(runBacktest(middayChop, undefined, data(intra), { ...noFriction, entrySessionsOnly: true })).toHaveLength(0);
+    expect(runBacktest(activeWindow, undefined, data(intra), { ...noFriction, entrySessionsOnly: true }).length).toBeGreaterThan(0);
+  });
+
+  it('never holds a 15-min position past the 15:05 square-off', () => {
+    const LATE_15: StrategyDefinition = {
+      ...LATE_BUY, id: 'TEST_LATE_15', timeframe: '15m',
+      create() {
+        return {
+          style: 'INTRADAY', name: 'late15', warmupBars: 1,
+          evaluate(ctx) {
+            const last = ctx.candles[ctx.candles.length - 1]!;
+            if (istMinutes(new Date(last.ts)) !== 14 * 60 + 30) return null;
+            return { ...sig(ctx, 'BUY', last.close, last.close * 0.5, last.close * 2), style: 'INTRADAY' };
+          },
+        };
+      },
+    };
+    const bars = intradaySeries('2026-01-05', 2, { seed: 3, startPrice: 500, drift: 0, vol: 0.001 });
+    const t = runBacktest(LATE_15, undefined, data(bars), noFriction);
+    expect(t.length).toBeGreaterThan(0);
+    for (const tr of t) {
+      expect(tr.exitReason).toBe('EOD');
+      // The 15:00 bar runs to 15:15: live is flat by 15:05, so it exits at that bar's open.
+      expect(istMinutes(new Date(tr.exitTs))).toBe(15 * 60);
+    }
+  });
+
   it('exits a swing trade on time after maxHoldBars', () => {
     const flat = Array.from({ length: 30 }, (_, i) => day(i, 100, 101, 99, 100));
     const t = runBacktest(fixed(80, 200, 1), undefined, data(flat), { ...noFriction, maxHoldBars: 5 });

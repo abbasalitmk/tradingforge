@@ -158,7 +158,7 @@ export function evaluate(snap: RiskSnapshot, limits: Limits, clock: Clock): Verd
 
   const outside = entryBlockReason(now);
   if (outside) {
-    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} — ${outside}; entries 09:45–11:30 and 13:30–14:45`, allowExits: true });
+    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} — ${outside}; entries 09:30–11:30 and 13:30–14:45`, allowExits: true });
   }
 
   return {

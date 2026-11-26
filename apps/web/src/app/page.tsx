@@ -258,7 +258,7 @@ const inr = (n: number | null | undefined, d = 2): string =>
   n === null || n === undefined || !Number.isFinite(n) ? '—' : `₹${n.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 const agoSec = (ts: number, now: number): string => `${Math.max(0, Math.round((now - ts) / 1000))}s ago`;
 
-const ARM_PHRASE = 'I UNDERSTAND THIS USES REAL MONEY';
+const ARM_PHRASE = 'LIVE';
 
 const BUILDUP_COLOR: Record<Buildup, string> = {
   LONG_BUILDUP: 'var(--ok)',
@@ -744,15 +744,15 @@ export default function Dashboard() {
         return;
       }
 
-      // The engine refuses to arm without this exact phrase; asking here just saves a round trip.
+      // The engine refuses to arm without this word; asking here just saves a round trip.
       const typed = window.prompt(
         '⚠️ SWITCH TO LIVE TRADING WITH REAL MONEY?\n\n' +
         '• Real orders will be routed directly to your Upstox account.\n' +
         '• Open paper positions stay on paper; only new entries go to Upstox.\n\n' +
-        `Type exactly: ${ARM_PHRASE}`
+        `Type ${ARM_PHRASE} to confirm`
       );
       if (typed === null) return;
-      if (typed.trim() !== ARM_PHRASE) {
+      if (typed.trim().toUpperCase() !== ARM_PHRASE) {
         showToast('Live switch cancelled — confirmation phrase did not match', 'error');
         return;
       }

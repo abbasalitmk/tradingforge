@@ -1,5 +1,5 @@
 import type { Signal, Side, TradingStyle } from '@tradeforger/core';
-import { closes, ema, atr, adx, rsi, bollinger, obv, sma } from '@tradeforger/indicators';
+import { closes, ema, atr, adx, rsi, bollinger, obv, sma, relativeVolume, latest } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -15,6 +15,7 @@ export interface TechnicalCompositeParams {
   readonly bbPeriod: number;
   readonly obvMaPeriod: number;
   readonly atrPeriod: number;
+  readonly minRelativeVolume: number;
   readonly minStopAtr: number;
   readonly stopAtrMultiple: number;
   readonly targetRR: number;
@@ -30,6 +31,7 @@ export const DEFAULT_TECHNICAL_COMPOSITE: TechnicalCompositeParams = {
   bbPeriod: 20,
   obvMaPeriod: 20,
   atrPeriod: 14,
+  minRelativeVolume: 1.2,
   minStopAtr: 1,
   stopAtrMultiple: 1.5,
   targetRR: 1.8,
@@ -83,12 +85,15 @@ export class TechnicalCompositeProfile implements StrategyProfile {
     const price = f.last.close;
     const adxNow = adx(candles, 14).adx[n - 1] ?? null;
     const rsiNow = rsi(c, 14)[n - 1] ?? null;
+    const rvol = latest(relativeVolume(candles, 20));
     const bb = bollinger(c, p.bbPeriod, 2);
     const bandUp = bb.upper[n - 1] ?? null, bandLo = bb.lower[n - 1] ?? null;
     const vwapNow = sessionVwap(f.session).at(-1) ?? price;
 
     const atrNow = atr(candles, p.atrPeriod)[n - 1] ?? null;
     if (atrNow === null || atrNow <= 0) return null;
+    if (rsiNow === null || (long ? rsiNow >= p.rsiOverbought : rsiNow <= p.rsiOversold)) return null;
+    if (p.minRelativeVolume > 0 && (rvol === null || rvol < p.minRelativeVolume)) return null;
 
     const checks: Confluence[] = [
       {
@@ -104,7 +109,7 @@ export class TechnicalCompositeProfile implements StrategyProfile {
         detail: `ADX ${fmt(adxNow, 1)} ≥ ${p.adxThreshold}`,
       },
       {
-        name: 'rsiRoom', passed: rsiNow !== null && (long ? rsiNow < p.rsiOverbought : rsiNow > p.rsiOversold), weight: 2,
+        name: 'rsiRoom', passed: true, weight: 2,
         detail: `RSI ${fmt(rsiNow, 1)} not ${long ? 'overbought' : 'oversold'}`,
       },
       {
@@ -134,7 +139,8 @@ export class TechnicalCompositeProfile implements StrategyProfile {
         emaFast: fast[n - 1] ?? 0,
         emaSlow: slow[n - 1] ?? 0,
         adx: adxNow ?? 0,
-        rsi: rsiNow ?? 0,
+        rsi: rsiNow,
+        rvol: rvol ?? 0,
         obv: ob[n - 1] ?? 0,
         vwap: vwapNow,
       },
@@ -158,6 +164,7 @@ export const TECHNICAL_COMPOSITE: StrategyDefinition = {
     bbPeriod: { min: 10, max: 40, step: 2 },
     obvMaPeriod: { min: 10, max: 40, step: 5 },
     atrPeriod: { min: 7, max: 28, step: 1 },
+    minRelativeVolume: { min: 0.8, max: 2.5, step: 0.1 },
     minStopAtr: { min: 0.5, max: 2, step: 0.25 },
     stopAtrMultiple: { min: 1, max: 3, step: 0.25 },
     targetRR: { min: 1.2, max: 4, step: 0.2 },

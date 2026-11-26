@@ -1,5 +1,5 @@
-import { istMinutes, type Candle, type Side, type Signal, type TradingStyle } from '@tradeforger/core';
-import { atr, closes, ema, latest, relativeVolume } from '@tradeforger/indicators';
+import { istDateKey, istMinutes, type Candle, type Side, type Signal, type TradingStyle } from '@tradeforger/core';
+import { atr, closes, ema, latest, relativeVolume, rsi } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -31,7 +31,7 @@ export const DEFAULT_GMMA: GmmaParams = {
   minStopAtr: 0.75,
   maxStopAtr: 2.5,
   targetRR: 2,
-  minRelativeVolume: 1.2,
+  minRelativeVolume: 1.5,
   minConfidence: 60,
 };
 
@@ -43,7 +43,7 @@ export function resample15(candles: readonly Candle[]): Candle[] {
   for (const c of candles) {
     const d = new Date(c.ts);
     const slot = Math.floor((istMinutes(d) - (9 * 60 + 15)) / 15);
-    const key = `${Math.floor(c.ts / 86_400_000)}:${slot}`;
+    const key = `${istDateKey(d)}:${slot}`;
     if (key !== curKey || cur === null) {
       if (cur) out.push(cur);
       cur = { ...c };
@@ -59,14 +59,27 @@ export function resample15(candles: readonly Candle[]): Candle[] {
   return out;
 }
 
-const ribbons = (c: readonly number[], at: number): { short: number[]; long: number[] } | null => {
-  const pick = (periods: number[]): number[] | null => {
-    const vals = periods.map((p) => ema(c, p)[at] ?? null);
-    return vals.every((v) => v !== null) ? (vals as number[]) : null;
-  };
-  const short = pick(SHORT);
-  const long = pick(LONG);
-  return short && long ? { short, long } : null;
+const computeRibbonSeries = (c: readonly number[]): { short: ReadonlyArray<ReadonlyArray<number | null>>; long: ReadonlyArray<ReadonlyArray<number | null>> } => ({
+  short: SHORT.map((p) => ema(c, p)),
+  long: LONG.map((p) => ema(c, p)),
+});
+
+const ribbonAt = (
+  series: ReturnType<typeof computeRibbonSeries>, at: number,
+): { short: number[]; long: number[] } | null => {
+  const short: number[] = [];
+  for (const s of series.short) {
+    const v = s[at];
+    if (v == null) return null;
+    short.push(v);
+  }
+  const long: number[] = [];
+  for (const s of series.long) {
+    const v = s[at];
+    if (v == null) return null;
+    long.push(v);
+  }
+  return { short, long };
 };
 
 /** Signed gap between the ribbons: > 0 short fully above long, < 0 fully below, 0 tangled. */
@@ -110,8 +123,9 @@ export class GmmaProfile implements StrategyProfile {
     const c = closes(candles);
     const n = c.length;
 
-    const now = ribbons(c, n - 1);
-    const then = ribbons(c, n - 1 - p.slopeBars);
+    const series = computeRibbonSeries(c);
+    const now = ribbonAt(series, n - 1);
+    const then = ribbonAt(series, n - 1 - p.slopeBars);
     if (!now || !then) return null;
     const sepNow = separation(now);
     if (sepNow === 0) return null;
@@ -121,7 +135,7 @@ export class GmmaProfile implements StrategyProfile {
     // Fresh: within freshBars the ribbons were still tangled or opposite.
     let fresh = false;
     for (let k = 1; k <= p.freshBars; k++) {
-      const r = ribbons(c, n - 1 - k);
+      const r = ribbonAt(series, n - 1 - k);
       if (r && separation(r) * dir <= 0) { fresh = true; break; }
     }
 
@@ -137,7 +151,13 @@ export class GmmaProfile implements StrategyProfile {
     const e15f = latest(ema(c15, 5));
     const e15s = latest(ema(c15, 20));
     const rvol = latest(relativeVolume(candles, 20));
+    const rsiNow = latest(rsi(c, 14));
     const price = last.close;
+
+    // Without a fresh separation, strong RVOL or RSI room, this is a late/thin chase.
+    if (!fresh) return null;
+    if (p.minRelativeVolume > 0 && (rvol === null || rvol < p.minRelativeVolume)) return null;
+    if (rsiNow === null || (side === 'BUY' ? rsiNow >= 72 : rsiNow <= 28)) return null;
 
     const checks: Confluence[] = [
       { name: 'separated', passed: true, weight: 3, detail: `GMMA ribbons separated ${side === 'BUY' ? 'bullish' : 'bearish'} (${fmt(Math.abs(sepNow) / atrNow, 1)} ATR gap)` },
@@ -150,11 +170,9 @@ export class GmmaProfile implements StrategyProfile {
         passed: side === 'BUY' ? price >= Math.max(...now.short) : price <= Math.min(...now.short),
         detail: `Price ${side === 'BUY' ? 'above' : 'below'} the trader ribbon`,
       },
-      { name: 'volume', passed: rvol !== null && rvol >= p.minRelativeVolume, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
+      { name: 'volume', passed: true, weight: 1, detail: `RVOL ${fmt(rvol)}x` },
       { name: 'closeStrong', passed: closeLocation(last, side) >= 0.6, weight: 1, detail: 'Trigger bar closed near its extreme' },
     ];
-    // Without a fresh separation this is a late entry into an old move.
-    if (!fresh) return null;
     const confidence = scoreConfluence(checks);
     if (confidence < p.minConfidence) return null;
 
@@ -166,7 +184,7 @@ export class GmmaProfile implements StrategyProfile {
 
     return buildSignal({
       ctx, style: this.style, side, geometry, atr: atrNow, confidence, checks,
-      indicators: { atr: atrNow, separation: sepNow, longRibbon: longNow, ema15Fast: e15f ?? 0, ema15Slow: e15s ?? 0, rvol: rvol ?? 0 },
+      indicators: { atr: atrNow, separation: sepNow, longRibbon: longNow, ema15Fast: e15f ?? 0, ema15Slow: e15s ?? 0, rvol: rvol ?? 0, rsi: rsiNow },
     });
   }
 }

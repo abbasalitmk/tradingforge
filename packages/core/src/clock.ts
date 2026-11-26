@@ -93,10 +93,14 @@ const HHMMSS = (h: number, m: number, s = 0): number => (h * 60 + m) * 60 + s;
  * When autonomous entries may be placed, both ends inclusive. Strategies signal
  * 09:20–14:45 (what they were validated on); execution narrows that to the
  * morning prime and the afternoon momentum sessions, skipping the opening
- * volatility (09:15–09:44:59) and the midday chop (11:30:01–13:29:59).
+ * volatility (09:15–09:29:59) and the midday chop (11:30:01–13:29:59).
+ *
+ * The morning starts at 09:30, not the often-quoted 09:45: over 12 months of
+ * 5-minute data (19 NSE stocks), entries at 09:30–09:45 did better than any
+ * later slot, and 09:45–10:30 was the worst of the day.
  */
 export const ENTRY_SESSIONS = {
-  MORNING: { from: HHMMSS(9, 45), to: HHMMSS(11, 30), label: '09:45–11:30' },
+  MORNING: { from: HHMMSS(9, 30), to: HHMMSS(11, 30), label: '09:30–11:30' },
   AFTERNOON: { from: HHMMSS(13, 30), to: HHMMSS(14, 45), label: '13:30–14:45' },
 } as const;
 export type EntrySession = keyof typeof ENTRY_SESSIONS;
@@ -115,7 +119,7 @@ export function entryBlockReason(d: Date): string | null {
   if (entrySession(d)) return null;
   const s = istSeconds(d);
   if (s < HHMMSS(9, 15)) return 'before market open';
-  if (s < ENTRY_SESSIONS.MORNING.from) return 'opening volatility (09:15–09:44)';
+  if (s < ENTRY_SESSIONS.MORNING.from) return 'opening volatility (09:15–09:29)';
   if (s < ENTRY_SESSIONS.AFTERNOON.from) return 'midday chop (11:30–13:29)';
   return 'after the 14:45 entry cut-off';
 }

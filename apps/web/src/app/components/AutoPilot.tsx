@@ -35,6 +35,17 @@ interface AutoConfig {
   htfBias: boolean;
   htfBiasStrict: boolean;
   maxLeverage: number;
+  maxVwapStretchAtr: number;
+  maxSetupAgeMin: number;
+  minStopPct: number;
+  stopClusterGuard: boolean;
+  marketFilter: boolean;
+  relativeStrength: boolean;
+  targetR: number;
+  maxTargetDailyAtr: number;
+  maxEntryChaseAtr: number;
+  stagedTrail: boolean;
+  maxCostPctOfRisk: number;
 }
 
 interface AutoUniverseView {
@@ -102,7 +113,7 @@ interface LiveAnalysisResponse {
     underlyings: Array<{ symbol: string; expiry: string | null; lotSize: number | null; error: string | null; spot: number | null }>;
   };
   strategies: Array<{
-    id: string; name: string; style: 'INTRADAY' | 'SWING'; approved: string | null;
+    id: string; name: string; style: 'INTRADAY' | 'SWING'; timeframe?: '5m' | '15m' | '1d'; approved: string | null;
     record: { trades: number; expectancyR: number } | null;
     verdict: { status: 'APPROVED' | 'VALIDATED' | 'REJECTED'; oosExpectancyR: number | null } | null;
   }>;
@@ -119,7 +130,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -131,7 +142,13 @@ const draftOf = (a: AutoConfig): Draft => ({
   maxEntriesMorning: a.maxEntriesMorning, maxEntriesAfternoon: a.maxEntriesAfternoon,
   maxPerSector: a.maxPerSector, reentryCooldownMin: a.reentryCooldownMin,
   closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
-  maxLeverage: a.maxLeverage,
+  maxLeverage: a.maxLeverage, maxVwapStretchAtr: a.maxVwapStretchAtr, maxSetupAgeMin: a.maxSetupAgeMin,
+  minStopPct: a.minStopPct, stopClusterGuard: a.stopClusterGuard,
+  marketFilter: a.marketFilter, relativeStrength: a.relativeStrength, targetR: a.targetR,
+  maxTargetDailyAtr: a.maxTargetDailyAtr ?? 1.5,
+  maxEntryChaseAtr: a.maxEntryChaseAtr ?? 0.5,
+  stagedTrail: a.stagedTrail ?? true,
+  maxCostPctOfRisk: a.maxCostPctOfRisk ?? 20,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -227,6 +244,17 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       htfBias: draft.htfBias,
       htfBiasStrict: draft.htfBiasStrict,
       maxLeverage: draft.maxLeverage,
+      maxVwapStretchAtr: draft.maxVwapStretchAtr,
+      maxSetupAgeMin: draft.maxSetupAgeMin,
+      minStopPct: draft.minStopPct,
+      stopClusterGuard: draft.stopClusterGuard,
+      marketFilter: draft.marketFilter,
+      relativeStrength: draft.relativeStrength,
+      targetR: draft.targetR,
+      maxTargetDailyAtr: draft.maxTargetDailyAtr,
+      maxEntryChaseAtr: draft.maxEntryChaseAtr,
+      stagedTrail: draft.stagedTrail,
+      maxCostPctOfRisk: draft.maxCostPctOfRisk,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -368,14 +396,21 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['minQuality', 'Min setup quality', 40, 100, 1, '0–100 ensemble score'],
             ['minRewardRisk', 'Min reward : risk', 1, 10, 0.1, 'strategy levels, at the live price'],
             ['minNetRewardRisk', 'Min R:R after charges', 0.5, 10, 0.05, 'brokerage, STT, fees, GST, stamp'],
+            ['minStopPct', 'Min intraday stop (%)', 0, 5, 0.05, 'tighter stops lose the edge to charges; 0 = off'],
+            ['maxCostPctOfRisk', 'Max fee % of 1R risk', 0, 100, 5, 'reject if charges exceed this % of initial stop risk; 0 = off'],
+            ['targetR', 'Trend target (× risk)', 0, 6, 0.25, "winners must carry charges; 0 = strategy's own"],
+            ['maxTargetDailyAtr', 'Max daily ADR target (× ATR)', 0, 5, 0.25, 'caps intraday target within prior 14d Daily ATR from open'],
+            ['maxEntryChaseAtr', 'Max entry chase (× ATR)', 0, 5, 0.1, 'reject LTP drift past signal bar close / breakout trigger'],
             ['confirmSeconds', 'Hold before entry (s)', 2, 300, 1, 'setup must stay unchanged'],
+            ['maxSetupAgeMin', 'Max setup age (min)', 0, 120, 1, 'older signals are stale — not taken when a slot frees; 0 = off'],
             ['maxEntriesPerDay', 'Max entries per day', 0, 50, 1, '0 pauses new entries'],
-            ['maxEntriesMorning', 'Max morning entries', 0, 50, 1, '09:45–11:30 IST'],
+            ['maxEntriesMorning', 'Max morning entries', 0, 50, 1, '09:30–11:30 IST'],
             ['maxEntriesAfternoon', 'Max afternoon entries', 0, 50, 1, '13:30–14:45 IST'],
             ['maxPerSector', 'Max per sector', 1, 50, 1, 'open positions in one NSE industry'],
             ['reentryCooldownMin', 'Re-entry cooldown (min)', 0, 120, 1, 'after a position in the symbol closes'],
             ['maxOpenPositions', 'Max open positions', 1, 50, 1, 'across all strategies'],
             ['maxLeverage', 'Max intraday leverage (×)', 1, 5, 0.5, 'open MIS exposure ÷ capital; risk stays a % of capital'],
+            ['maxVwapStretchAtr', 'Max distance from VWAP (ATR)', 0, 20, 0.5, "don't chase a move already this far from VWAP; 0 = off"],
             ['maxPerStrategy', 'Max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
             ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
             ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
@@ -398,9 +433,17 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>Risk management:</span>
+          <Chip on={draft.stopClusterGuard} onClick={() => setDraft({ ...draft, stopClusterGuard: !draft.stopClusterGuard })}
+            title="Move a stop that sits on a stop cluster (previous-day high/low, opening range, equal highs/lows, round number) just beyond the sweep zone, when that is a small move">
+            Stop-hunt guard {draft.stopClusterGuard ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.stagedTrail} onClick={() => setDraft({ ...draft, stagedTrail: !draft.stagedTrail })}
+            title="Locks +0.35R once +1.2R MFE is hit (covering charges), then trails 1.25 ATR from +1.6R MFE without noisy bar-0 exits">
+            Staged profit trail {draft.stagedTrail ? 'on' : 'off'}
+          </Chip>
           <Chip on={draft.trailStop} onClick={() => setDraft({ ...draft, trailStop: !draft.trailStop })}
-            title="Stop follows the price at the initial risk distance, held at the exchange in the bracket order. Changes the exit profile the strategies were validated with.">
-            Trailing stop {draft.trailStop ? 'on' : 'off'}
+            title="Legacy exchange-side trailing GTT from bar 0. Prefer Staged profit trail for intraday.">
+            Exchange GTT trail {draft.trailStop ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.pauseLosingStrategies} onClick={() => setDraft({ ...draft, pauseLosingStrategies: !draft.pauseLosingStrategies })}
             title="A strategy whose own last 20+ recorded trades in this mode have negative expectancy after costs stops leading new entries">
@@ -429,7 +472,15 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
               {draft.htfBiasStrict ? 'Strict: full alignment' : 'VWAP side, no trend against'}
             </Chip>
           )}
-          <Note>Entries only 09:45–11:30 and 13:30–14:45 IST. Pending entries cancel at 15:00; intraday positions square off at 15:05.</Note>
+          <Chip on={draft.marketFilter} onClick={() => setDraft({ ...draft, marketFilter: !draft.marketFilter })}
+            title="Trend entries only with the NIFTY: buy when its 15-min EMAs point up and it trades above today's open; short on the mirror">
+            With the NIFTY {draft.marketFilter ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.relativeStrength} onClick={() => setDraft({ ...draft, relativeStrength: !draft.relativeStrength })}
+            title="Buy only stocks up more than the NIFTY today; short only those doing worse">
+            Relative strength {draft.relativeStrength ? 'on' : 'off'}
+          </Chip>
+          <Note>Entries only 09:30–11:30 and 13:30–14:45 IST. Pending entries cancel at 15:00; intraday positions square off at 15:05.</Note>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -457,7 +508,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             {live.strategies.map((st) => (
               <Chip key={st.id} on={draft.strategies.includes(st.id)} onClick={() => toggleStrategy(st.id)}
                 title={`${st.style}${st.approved ? ' · has an APPROVED version (eligible in LIVE)' : ' · no APPROVED version — paper only'}${st.verdict ? ` · validation ${st.verdict.status}${st.verdict.oosExpectancyR !== null ? ` (${st.verdict.oosExpectancyR.toFixed(2)}R out-of-sample)` : ''}` : ' · not validated'}`}>
-                {st.name} <span style={{ opacity: 0.7 }}>· {st.style === 'SWING' ? 'D' : '5m'}</span>{st.approved ? ' ✓' : ''}
+                {st.name} <span style={{ opacity: 0.7 }}>· {st.style === 'SWING' ? 'D' : st.timeframe ?? '5m'}</span>{st.approved ? ' ✓' : ''}
                 {st.verdict?.status === 'REJECTED' && <span style={{ color: 'var(--danger)' }}> ✗</span>}
               </Chip>
             ))}
@@ -472,7 +523,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
         right={live.setups.length > 12 ? <Chip on={showAll} onClick={() => setShowAll(!showAll)}>{showAll ? 'Top 12' : `All ${live.setups.length}`}</Chip> : undefined}
       >
         {live.setups.length === 0 ? (
-          <Note>No strategy currently sees a setup on the watched instruments. Intraday strategies fire 09:20–14:45 IST on today&apos;s bars; entries are placed 09:45–11:30 and 13:30–14:45.</Note>
+          <Note>No strategy currently sees a setup on the watched instruments. Intraday strategies fire 09:20–14:45 IST on today&apos;s bars; entries are placed 09:30–11:30 and 13:30–14:45.</Note>
         ) : narrow ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {shown.map((s) => (

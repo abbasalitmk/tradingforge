@@ -232,6 +232,21 @@ describe('exits outside the bracket', () => {
     expect(r.ok && r.position.state).toBe('CLOSED');
   });
 
+  it('lets a position reach its own stop; the per-trade backstop only catches a failed one', async () => {
+    // Planned risk 65 × ₹30 = ₹1,950, per-trade limit ₹1,000 (sized before the capital fell).
+    const clock = new FixedClock(at('10:00'));
+    const broker = new PaperBroker(clock, { ...DEFAULT_PAPER_CONFIG, latencyMs: 0, slippageBps: 0 });
+    const machine = new PositionMachine(async () => {});
+    const trader = new Trader({ clock, broker, machine, perTradeLossPaise: () => P(1_000), log: () => {} });
+    broker.onTick({ instrumentKey: KEY, ltp: 100, ts: clock.ms() });
+    const r = await trader.open(intent());
+    await new Promise((res) => setTimeout(res, 0));
+    await trader.manage(() => 75); // −₹1,625: past the limit, inside the planned risk
+    expect(r.ok && r.position.state).toBe('MANAGING');
+    await trader.manage(() => 65); // −₹2,275: past planned risk + 15% — the stop failed
+    expect(r.ok && r.position.exitReason).toBe('PER_TRADE_LOSS');
+  });
+
   it('cancels every unfilled entry at 15:00 IST, delivery included', async () => {
     const s = setup('14:58');
     s.tick(100);
@@ -284,5 +299,27 @@ describe('exits outside the bracket', () => {
     await s.trader.flattenAll();
     await s.settle();
     expect(s.trader.live()).toHaveLength(0);
+  });
+
+  it('enforces staged cost-buffered breakeven trailing stop once MFE clears breakevenR', async () => {
+    const s = setup();
+    s.tick(100);
+    const r = await s.trader.open(intent({
+      entry: P(100), stopLoss: P(90), target: P(200),
+      stagedTrail: { breakevenR: 1.2, breakevenLockR: 0.35, trailFromR: 1.6, trailGapPaise: P(5) },
+    }));
+    await s.settle();
+    // Initial MFE < 1.2R -> virtual stop stays inactive
+    await s.trader.manage(() => 110);
+    expect(r.ok && r.position.virtualStopPaise).toBeNull();
+    // MFE reaches +1.3R (>= 1.2R) -> locks +0.35R above entry (103.50)
+    await s.trader.manage(() => 113);
+    expect(r.ok && r.position.virtualStopPaise).toBe(P(103.5));
+    // Reverse back to 103.00 -> exits cleanly via TRAILING_STOP above entry
+    s.tick(103);
+    await s.trader.manage(() => 103);
+    await s.settle();
+    expect(r.ok && r.position.state).toBe('CLOSED');
+    expect(r.ok && r.position.exitReason).toBe('TRAILING_STOP');
   });
 });

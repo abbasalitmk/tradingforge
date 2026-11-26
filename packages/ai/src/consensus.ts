@@ -80,17 +80,38 @@ export class AiConsensusEngine {
     const rejects = votes.filter((v) => v.verdict === 'REJECT');
     const cautions = votes.filter((v) => v.verdict === 'CAUTION');
     const confirms = votes.filter((v) => v.verdict === 'CONFIRM');
+    const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
+
+    const rsi = signal.indicators['rsi'];
+    const rvol = signal.indicators['rvol'];
+    const isLong = signal.side === 'BUY';
+    const hardExtreme = (rsi !== undefined && rsi > 0 && (isLong ? rsi > 75 : rsi < 25))
+      || (signal.style === 'INTRADAY' && signal.indicators['rvol'] !== undefined && rvol !== undefined && rvol < 0.8);
+    const DISQUALIFIER_FLAGS = new Set([
+      'RSI_OVERBOUGHT', 'RSI_OVERSOLD', 'THIN_VOLUME', 'OVERSTRETCHED_FROM_VWAP',
+      'INSIDE_RANGE_ENTRY', 'TIGHT_STOP_NOISE_RISK',
+    ]);
+    const hasDisqualifier = hardExtreme
+      || allFlags.some((f) => DISQUALIFIER_FLAGS.has(f) || /OVERBOUGHT|OVERSOLD|THIN_VOL|STRETCH|CHASE|EXHAUST/i.test(f));
 
     let verdict: 'CONFIRM' | 'CAUTION' | 'REJECT';
     let grade: 'A+' | 'A' | 'B' | 'REJECT';
+    let cautionBlocked = false;
 
-    // Strict safety asymmetry: if ANY model finds a fatal flaw (e.g. inverted stop, severe counter-trend), reject
+    // Strict safety asymmetry: if ANY model finds a fatal flaw, or consensus CAUTION coincides with
+    // exhaustion/thin-volume/multi-model caution against chasing, block execution rather than halving size.
     if (rejects.length > 0) {
       verdict = 'REJECT';
       grade = 'REJECT';
     } else if (cautions.length >= 2 || confirms.length === 0) {
-      verdict = 'CAUTION';
-      grade = 'B';
+      if (hasDisqualifier || cautions.length >= 2) {
+        verdict = 'REJECT';
+        grade = 'REJECT';
+        cautionBlocked = true;
+      } else {
+        verdict = 'CAUTION';
+        grade = 'B';
+      }
     } else if (confirms.length === votes.length) {
       verdict = 'CONFIRM';
       grade = 'A+';
@@ -110,8 +131,9 @@ export class AiConsensusEngine {
       votes.reduce((sum, v) => sum + v.confidence, 0) / votes.length,
     );
 
-    const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
-    const rationale = `Consensus ${verdict} [Grade ${grade}] with ${confirms.length}/${votes.length} models confirming. ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`;
+    const rationale = cautionBlocked
+      ? `Consensus BLOCKED (${cautions.length} caution(s), disqualifiers: ${allFlags.join(', ') || 'momentum/volume chase'}). ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`
+      : `Consensus ${verdict} [Grade ${grade}] with ${confirms.length}/${votes.length} models confirming. ${votes.map((v) => `[${v.model}: ${v.verdict}]`).join(' ')}`;
 
     // Beginner-friendly aggregation prioritizing external LLM insights if available
     const primaryExt = externalList.find((e) => !e.fellBack && (e.beginnerSummary || e.trafficLights)) ?? externalList[0];

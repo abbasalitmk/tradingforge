@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Candle } from '@tradeforger/core';
-import { trendBias15 } from './bias.ts';
+import { trendBias15, marketDirection, dayChangePct } from './bias.ts';
 import { sectorOf } from './sectors.ts';
 
 /** `n` session days of 5-min bars (09:15–15:25 IST) stepping `drift` per bar. */
@@ -53,5 +53,21 @@ describe('sector map', () => {
     expect(sectorOf('HDFCBANK')).toBe('Financial Services');
     expect(sectorOf('infy')).toBe('Information Technology');
     expect(sectorOf('NIFTY')).toBeNull();
+  });
+});
+
+describe('market direction and relative strength', () => {
+  it('reads the index as rising only with its 15-min EMAs up and price above today\'s open', () => {
+    const up = trending(3, 0.1).map((c) => ({ ...c, volume: 0 }));
+    expect(marketDirection(up)).toBe('BUY');
+    const down = trending(3, -0.1, 200).map((c) => ({ ...c, volume: 0 }));
+    expect(marketDirection(down)).toBe('SELL');
+  });
+
+  it('measures the day change from the previous session close', () => {
+    const bars = trending(2, 0.1);
+    const prevClose = bars[74]!.close;
+    expect(dayChangePct(bars)).toBeCloseTo(((bars[149]!.close - prevClose) / prevClose) * 100, 9);
+    expect(dayChangePct(bars.slice(0, 75))).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { type Candle, type Clock, type Side, type Signal, paiseToRupees, rupeesToPaise } from '@tradeforger/core';
 import { STRATEGY_CATALOG, type Params, type StrategyDefinition } from './catalog.ts';
 import type { OptionWalls } from './profile.ts';
+import { completeBars15 } from './bias.ts';
 
 export interface StrategyVote {
   readonly strategyId: string;
@@ -20,11 +21,15 @@ export interface HybridSetup {
   readonly side: Side;
   /** Current executable entry price (LTP when re-priced to live market). */
   readonly entry: number;
-  /** Original algorithmic signal trigger price from the strategy. */
+  /** Original closed-bar signal close before live re-pricing. */
+  readonly barCloseEntry?: number;
+  /** Original algorithmic signal trigger price from the strategy (ORB high/low, PDH/PDL, etc.). */
   readonly signalEntry?: number;
   readonly stopLoss: number;
   readonly target: number;
   readonly rewardRisk: number;
+  /** Strategy ATR at signal generation, in rupees. */
+  readonly atr?: number;
   /** 0-100. See `setupQuality`. */
   readonly quality: number;
   readonly primaryStrategyId: string;
@@ -135,16 +140,20 @@ export function analyzeHybrid(
     : STRATEGY_CATALOG;
 
   const votes: StrategyVote[] = defs.map((def) => {
-    const candles = def.timeframe === '1d' ? input.daily : input.intraday;
+    const candles = def.timeframe === '1d'
+      ? input.daily
+      : def.timeframe === '15m'
+        ? completeBars15(input.intraday)
+        : input.intraday;
     let signal: Signal | null = null;
     if (candles.length > 0) {
       signal = def.create(opts.params?.[def.id]).evaluate({
         instrumentKey: input.instrumentKey,
         symbol: input.symbol,
         candles,
-        higherTf: def.timeframe === '5m' ? input.daily : [],
+        higherTf: def.timeframe !== '1d' ? input.daily : [],
         clock: input.clock,
-        ...(def.timeframe === '5m' && input.options ? { options: input.options } : {}),
+        ...(def.timeframe !== '1d' && input.options ? { options: input.options } : {}),
       });
     }
     return {
@@ -183,10 +192,12 @@ export function analyzeHybrid(
       style,
       side: ls.side,
       entry: origEntry,
+      barCloseEntry: origEntry,
       signalEntry: triggerPrice,
       stopLoss: paiseToRupees(ls.stopLoss),
       target: paiseToRupees(ls.target),
       rewardRisk: Math.round(rr(ls) * 100) / 100,
+      ...(ls.atr > 0 ? { atr: ls.atr } : {}),
       quality,
       primaryStrategyId: lead.strategyId,
       agreeing: agreeing.map((v) => v.strategyId),
@@ -221,14 +232,15 @@ export function analyzeHybrid(
  */
 export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSetup; invalid: string | null } {
   const signalEntry = s.signalEntry ?? s.entry;
-  if (!(ltp > 0) || ltp === s.entry) return { setup: { ...s, signalEntry }, invalid: null };
+  const barCloseEntry = s.barCloseEntry ?? s.entry;
+  if (!(ltp > 0) || ltp === s.entry) return { setup: { ...s, signalEntry, barCloseEntry }, invalid: null };
   const long = s.side === 'BUY';
   const fmt = (n: number) => `₹${n.toFixed(2)}`;
   if (long ? ltp <= s.stopLoss : ltp >= s.stopLoss) {
-    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
+    return { setup: { ...s, signalEntry, barCloseEntry }, invalid: `price ${fmt(ltp)} already through stop ${fmt(s.stopLoss)}` };
   }
   if (long ? ltp >= s.target : ltp <= s.target) {
-    return { setup: { ...s, signalEntry }, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
+    return { setup: { ...s, signalEntry, barCloseEntry }, invalid: `price ${fmt(ltp)} already past target ${fmt(s.target)}` };
   }
   const rewardRisk = Math.round((Math.abs(s.target - ltp) / Math.abs(ltp - s.stopLoss)) * 100) / 100;
   const entryPaise = rupeesToPaise(ltp);
@@ -241,6 +253,7 @@ export function repriceToMarket(s: HybridSetup, ltp: number): { setup: HybridSet
     setup: {
       ...s,
       entry: ltp,
+      barCloseEntry,
       signalEntry,
       rewardRisk,
       votes,

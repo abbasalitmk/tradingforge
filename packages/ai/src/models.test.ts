@@ -153,5 +153,31 @@ describe('AiConsensusEngine & Multi-Model Reviewer', () => {
     expect(consensus.consensusGrade).toBe('A+');
     expect(consensus.beginnerSummary).toBe('High probability momentum entry');
   });
+
+  it('blocks consensus when multiple models caution on RSI overbought or thin RVOL instead of trading half size', () => {
+    const engine = new AiConsensusEngine({ clock });
+    const overbought = makeSignal({
+      indicators: { atr: 10, rsi: 85.07, rvol: 0.75, orbHigh: 1335, orbLow: 1315, vwap: 1330, supertrend: 1320, ema9: 1338, ema21: 1332 },
+    });
+    const consensus = engine.evaluate(overbought);
+    expect(consensus.verdict).toBe('REJECT');
+    expect(consensus.blocked).toBe(true);
+    expect(consensus.sizeMultiplier).toBe(0);
+    expect(consensus.consensusGrade).toBe('REJECT');
+  });
+
+  it('blocks when remote LLMs also caution against overbought chasing even on modest local edge', () => {
+    const engine = new AiConsensusEngine({ clock });
+    const stretched = makeSignal({
+      indicators: { atr: 10, rsi: 76, rvol: 1.1, orbHigh: 1335, orbLow: 1315, vwap: 1330, supertrend: 1320, ema9: 1338, ema21: 1332 },
+    });
+    const extCaution = {
+      verdict: 'CAUTION' as const, confidence: 60, riskFlags: ['RSI_OVERBOUGHT'], rationale: 'Overbought chase',
+      sizeMultiplier: 0.5, blocked: false, latencyMs: 200, model: 'gemini-3.5-flash-lite', fellBack: false,
+    };
+    const consensus = engine.evaluate(stretched, [extCaution]);
+    expect(consensus.verdict).toBe('REJECT');
+    expect(consensus.blocked).toBe(true);
+  });
 });
 

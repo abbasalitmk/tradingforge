@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 
 export type TradingMode = 'PAPER' | 'LIVE';
 
-const ARM_PHRASE = 'I UNDERSTAND THIS USES REAL MONEY';
+const ARM_PHRASE = 'LIVE';
 const POLL_MS = 3_000;
 
 /**
@@ -65,10 +65,10 @@ export default function TradingModeToggle({
         '• New entries will be sent to your Upstox account.\n' +
         '• Open paper positions stay on paper.\n' +
         '• You must have completed "Login with Upstox" today.\n\n' +
-        `Type exactly: ${ARM_PHRASE}`,
+        `Type ${ARM_PHRASE} to confirm`,
       );
       if (typed === null) return;
-      if (typed.trim() !== ARM_PHRASE) {
+      if (typed.trim().toUpperCase() !== ARM_PHRASE) {
         alert('LIVE not enabled: the confirmation phrase did not match.');
         return;
       }

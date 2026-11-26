@@ -159,8 +159,8 @@ describe('divergence and maintenance block exits too', () => {
 describe('session windows', () => {
   it.each([
     ['09:16 IST — opening volatility',          '2026-09-14T03:46:00Z', true],
-    ['09:44:59 IST — still opening volatility', '2026-09-14T04:14:59Z', true],
-    ['09:45:00 IST — morning session opens',    '2026-09-14T04:15:00Z', false],
+    ['09:29:59 IST — still opening volatility', '2026-09-14T03:59:59Z', true],
+    ['09:30:00 IST — morning session opens',    '2026-09-14T04:00:00Z', false],
     ['11:30:00 IST — morning session last second', '2026-09-14T06:00:00Z', false],
     ['11:30:01 IST — midday chop',              '2026-09-14T06:00:01Z', true],
     ['13:29:59 IST — still midday chop',        '2026-09-14T07:59:59Z', true],

@@ -64,7 +64,10 @@ export class MarketFeed extends EventEmitter {
   private readonly subscriptions = new Map<string, FeedMode>();
   private reconnects = 0;
   private reconnecting = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closing = false;
+  private epoch = 0;
+  private connecting: Promise<void> | null = null;
   private readonly clock: Clock;
   private readonly getUrl: () => Promise<string>;
   private lastTickMs: number | null = null;
@@ -89,6 +92,28 @@ export class MarketFeed extends EventEmitter {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnecting = false;
+  }
+
+  private detachSocket(ws: WebSocket | null): void {
+    if (!ws) return;
+    ws.removeAllListeners();
+    // Terminating a socket still CONNECTING emits 'error' on the next tick; with
+    // no listener left, Node throws and the whole engine dies — e.g. arming
+    // LIVE or refreshing the token during a reconnect.
+    ws.on('error', () => {});
+    try {
+      ws.terminate();
+    } catch {
+      try { ws.close(); } catch { /* ignore already closed */ }
+    }
+  }
+
   private loadProto(): protobuf.Type {
     if (this.responseType) return this.responseType;
     const file = join(dirname(fileURLToPath(import.meta.url)), 'MarketDataFeedV3.proto');
@@ -103,37 +128,57 @@ export class MarketFeed extends EventEmitter {
   }
 
   async connect(): Promise<void> {
+    if (this.connecting) return this.connecting;
+    const myEpoch = ++this.epoch;
     this.closing = false;
-    const type = this.loadProto();
-    const url = await this.getUrl();
-
-    const ws = new WebSocket(url);
-    ws.binaryType = 'nodebuffer';
-    this.ws = ws;
-
-    ws.on('open', () => {
-      this.reconnects = 0;
-      this.emit('open');
-      if (this.subscriptions.size > 0) this.resubscribe();
-    });
-
-    ws.on('message', (data: Buffer) => {
-      try {
-        const decoded = type.decode(data);
-        const obj = type.toObject(decoded, { longs: String, defaults: true }) as Decoded;
-        this.handle(obj);
-      } catch (e) {
-        this.emit('error', e instanceof Error ? e : new Error(String(e)));
-      }
-    });
-
-    ws.on('close', (code: number, reason: Buffer) => {
+    this.clearReconnectTimer();
+    const run = (async () => {
+      const old = this.ws;
       this.ws = null;
-      this.emit('close', code, reason.toString());
-      if (!this.closing) void this.scheduleReconnect();
-    });
+      this.detachSocket(old);
 
-    ws.on('error', (e: Error) => this.emit('error', e));
+      const type = this.loadProto();
+      const url = await this.getUrl();
+      if (this.closing || myEpoch !== this.epoch) return;
+
+      const ws = new WebSocket(url);
+      ws.binaryType = 'nodebuffer';
+      this.ws = ws;
+
+      ws.on('open', () => {
+        if (this.ws !== ws || myEpoch !== this.epoch) return;
+        this.reconnects = 0;
+        this.emit('open');
+        if (this.subscriptions.size > 0) this.resubscribe();
+      });
+
+      ws.on('message', (data: Buffer) => {
+        if (this.ws !== ws || myEpoch !== this.epoch) return;
+        try {
+          const decoded = type.decode(data);
+          const obj = type.toObject(decoded, { longs: String, defaults: true }) as Decoded;
+          this.handle(obj);
+        } catch (e) {
+          this.emit('error', e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+
+      ws.on('close', (code: number, reason: Buffer) => {
+        if (this.ws !== ws || myEpoch !== this.epoch) return;
+        this.ws = null;
+        this.emit('close', code, reason.toString());
+        if (!this.closing) void this.scheduleReconnect();
+      });
+
+      ws.on('error', (e: Error) => {
+        if (this.ws !== ws || myEpoch !== this.epoch) return;
+        this.emit('error', e);
+      });
+    })().finally(() => {
+      if (this.connecting === run) this.connecting = null;
+    });
+    this.connecting = run;
+    return run;
   }
 
   private handle(msg: Decoded): void {
@@ -214,14 +259,20 @@ export class MarketFeed extends EventEmitter {
 
   private async scheduleReconnect(): Promise<void> {
     if (this.reconnecting || this.closing) return;
+    const myEpoch = this.epoch;
     this.reconnecting = true;
     this.reconnects += 1;
     // Cap at 30s. An unbounded backoff during market hours is worse than
     // hammering: a feed that reconnects at minute 40 has missed the session.
     const delay = Math.min(1000 * 2 ** this.reconnects, 30_000);
-    await new Promise((r) => setTimeout(r, delay));
+    await new Promise<void>((r) => {
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        r();
+      }, delay);
+    });
     this.reconnecting = false;
-    if (this.closing) return;
+    if (this.closing || myEpoch !== this.epoch) return;
     try {
       await this.connect();
     } catch (e) {
@@ -232,13 +283,17 @@ export class MarketFeed extends EventEmitter {
 
   close(): void {
     this.closing = true;
-    this.ws?.close();
+    this.epoch++;
+    this.clearReconnectTimer();
+    const old = this.ws;
     this.ws = null;
+    this.detachSocket(old);
   }
 
   async reconnect(): Promise<void> {
     this.reconnects = 0;
     this.close();
+    this.connecting = null;
     await this.connect();
   }
 

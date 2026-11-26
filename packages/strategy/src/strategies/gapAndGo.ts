@@ -29,10 +29,10 @@ export interface GapAndGoParams {
 
 export const DEFAULT_GAP_AND_GO: GapAndGoParams = {
   atrPeriod: 14,
-  minGapPct: 1.5,
-  maxGapPct: 4,
+  minGapPct: 1.0,
+  maxGapPct: 4.5,
   openingBars: 3,
-  minOpeningRvol: 2,
+  minOpeningRvol: 1.6,
   maxSessionBars: 18,
   stopBufferAtr: 0.1,
   minStopAtr: 0.5,
@@ -42,7 +42,7 @@ export const DEFAULT_GAP_AND_GO: GapAndGoParams = {
 };
 
 /**
- * Gap-and-go: a 1.5–4% opening gap on heavy opening volume, entered when a
+ * Gap-and-go: a 1–4.5% opening gap on 1.6x opening volume, entered when a
  * 5-minute bar closes beyond the first 15-minute candle in the gap's
  * direction. The heavy opening says the gap is news being acted on, not a
  * thin overnight print; the break of the first candle says the open did not
@@ -130,7 +130,7 @@ export const GAP_AND_GO: StrategyDefinition = {
   name: 'Gap and Go',
   style: 'INTRADAY',
   timeframe: '5m',
-  description: '1.5–4% opening gap on 2x opening volume; enter on a 5-min close beyond the first 15-min candle in the gap direction.',
+  description: '1–4.5% opening gap on 1.6x opening volume; enter on a 5-min close beyond the first 15-min candle in the gap direction.',
   defaults: DEFAULT_GAP_AND_GO as unknown as StrategyDefinition['defaults'],
   bounds: {
     minGapPct: { min: 0.75, max: 3, step: 0.25 },
