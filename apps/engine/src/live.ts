@@ -100,9 +100,12 @@ export const AutoConfigSchema = z.object({
   relativeStrength: z.boolean().default(true),
   /**
    * Intraday trend targets at this multiple of the risk; 0 keeps each
-   * strategy's own. Empirically capped around 2.0–2.5R on intraday NSE stocks.
+   * strategy's own. 12 months, 19 NSE stocks, with the daily-range cap below:
+   * 3R −0.131R a trade, 2.5R −0.141R, 2R −0.145R — lower targets cut the
+   * winners more than they add wins. The cap, not a lower multiple, is what
+   * keeps a target realistic for the day.
    */
-  targetR: z.number().min(0).max(6).default(2.5),
+  targetR: z.number().min(0).max(6).default(3),
   /**
    * Cap intraday targets at this multiple of prior-day 14d Daily ATR from
    * today's open (0 turns off). Prevents demanding +6% from a stock whose daily ATR is 2%.
@@ -115,9 +118,12 @@ export const AutoConfigSchema = z.object({
   maxEntryChaseAtr: z.number().min(0).max(5).default(0.5),
   /**
    * Cost-buffered breakeven & staged ATR trail once in profit (+1.2R -> +0.35R,
-   * +1.6R -> trail by 1.25 ATR) without noisy bar-0 trailing.
+   * +1.6R -> trail by 1.25 ATR). Off: over 12 months it did worse than the
+   * fixed target (−0.150R vs −0.141R a trade), live it ratchets on ticks where
+   * the test used closes, and its stop lives only in engine memory — a restart
+   * drops it while the exchange stop stays at −1R.
    */
-  stagedTrail: z.boolean().default(true),
+  stagedTrail: z.boolean().default(false),
   /**
    * Reject entries where round-trip costs at the stop exceed this % of 1R risk
    * (e.g. ₹13 cost on ₹43 risk = 30% > 20%). 0 turns off.
@@ -197,10 +203,10 @@ export const DEFAULT_AUTO: AutoConfig = {
   stopClusterGuard: true,
   marketFilter: true,
   relativeStrength: true,
-  targetR: 2.5,
+  targetR: 3,
   maxTargetDailyAtr: 1.5,
   maxEntryChaseAtr: 0.5,
-  stagedTrail: true,
+  stagedTrail: false,
   maxCostPctOfRisk: 20,
   maxOpenPositions: 5,
   maxPerStrategy: 2,

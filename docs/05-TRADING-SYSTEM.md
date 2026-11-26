@@ -9,14 +9,15 @@ orders, and exits. Every number here is what the code uses. Settings marked
 > for deployment (live engine disarmed to `PAPER` for new entries while open
 > Upstox brackets remain managed).
 >
-> **Honest summary:** on the full 12-month real NSE benchmark (24 stocks,
-> Nov 2025 – Nov 2026), legacy 5-min trend strategies lost money after charges
-> and their `@v1` approvals are retired by migration `0007`. With full live-parity
-> filters, ADR-capped targets, cost-buffered staged trailing, and 15-min variants,
-> `PDH_PDL_CPR` (`+0.627R`, 4/4 quarters) and tuned `GAP_AND_GO` (`+0.343R`, 31 trades)
-> stay profitable even under 2× cost stress, while `ORB_SUPERTREND_15M` cuts
-> loss per trade by ~74% vs `5m` (`-0.049R` vs `-0.187R`). Keep PAPER mode on
-> during soak verification before re-arming LIVE.
+> **Honest summary (26 Nov 2026):** no intraday strategy has a proven edge
+> after charges. On 12 months of real data (Nov 2025 – Nov 2026) every rule
+> set tested lost money; on a second, **unseen** year (Nov 2024 – Nov 2025) the
+> tuned `PDH_PDL_CPR v2` and `ORB_SUPERTREND_15M v2` also lost (−0.24R and
+> −0.13R a trade). The positive figures in §9 for small samples (17–60 trades)
+> were measured on the same year their settings were tuned on and did not hold
+> out of sample. Since migration `0007` no intraday strategy is APPROVED, so
+> **LIVE takes no intraday trades by design**; run in PAPER to collect forward
+> results. See §10.
 
 ---
 
@@ -222,8 +223,8 @@ Runs **after** a setup has passed every rule, on that one setup only.
 
 **[ready, not deployed]**
 - **Stop-hunt guard before target restatement:** `guardSetupStop()` adjusts stops off local liquidity clusters (PDH/PDL, opening range, equal highs/lows, round levels; max 0.6 ATR) **before** `restateTarget()` computes final risk & target geometry.
-- **2.5R ADR-capped targets:** trend targets target **2.5×** guarded risk (AutoPilot) and are capped at **1.5×** prior-session daily ATR (`maxTargetDailyAtr`); intraday targets already past realistic remaining ADR are invalidated.
-- **Cost-buffered staged trailing stop (`trader.ts`):** at **+1.2R** move virtual stop to **+0.35R** (covering brokerage + STT + slippage); from **+1.6R** trail at **1.25 × ATR**, preserving original `stopLoss` for 1R risk accounting.
+- **3R targets with a daily-range cap:** trend targets at **3×** risk (AutoPilot `targetR`), capped at today's open ± **1.5×** the prior 14-day daily ATR (`maxTargetDailyAtr`); a setup whose cap is already behind the price is invalid. 12 months: 3R + cap −0.131R a trade, 2.5R + cap −0.141R, 2R + cap −0.145R.
+- **Staged trailing stop: off** (`stagedTrail`). It did worse than the fixed target over 12 months (−0.150R vs −0.141R), ratchets on ticks live where the test used closes, and its stop is held only in engine memory, so a restart drops it.
 
 ---
 
@@ -329,7 +330,40 @@ Using the live-parity backtester (`entrySessionsOnly`, `htfBias`, NIFTY directio
 
 ---
 
-## 10. Where it lives in the code
+## 10. Why recent trades hit their stops, and why LIVE is not trading (26 Nov 2026)
+
+### Live trades, 23 and 25 Nov (bar by bar on real candles)
+| Cause | Trades |
+|---|---|
+| Stopped by a **wick** that closed back on the safe side | TATAMOTORS 09:33 (later hit its target), PNB, ICICILIFE, HDFCBANK |
+| Gave back a large open profit | ICICILIFE (+1.45R), HDFCBANK (+1.67R), MARSONS, PFOCUS (+0.65R) |
+| Chased a finished move | ICICILIFE (ran 7.8 ATR in 30 min before entry), PFOCUS (6 ATR past VWAP) |
+| No follow-through at all | PNB, UNIONBANK, SWSOLAR, ITC (never above +0.4R) |
+
+### 12 months, 2,950 backtest trades with the live rules
+- 51% of trades stopped out. Of those, **52% never got above +0.25R**: the main cause is entries with no follow-through, not stop placement.
+- 55% of stops were wicks, but only **7%** of stopped trades reached their target later that day. Close-confirmed stops lifted the win rate (35.9% → 39.0%) but not the result (−0.148R → −0.145R): **rejected**.
+- Skipping entries after a 30-minute run over 3 ATR made it worse (−0.162R): **rejected**.
+- Targets: lower multiples are worse, not better (table in §7). What keeps a target realistic is the daily-range cap, now on.
+
+### Out-of-sample check of the v2 strategies (Nov 2024 – Nov 2025, never used for tuning)
+| Strategy | Live-parity config | + NIFTY direction / relative strength |
+|---|---|---|
+| ORB_SUPERTREND_15M v2 | −0.13R, 114 trades, 1/4 quarters | +0.05R, 47 trades, 3/4 |
+| PDH_PDL_CPR v2 | −0.24R, 138 trades, 1/4 | +0.01R, 51 trades, 2/4 |
+| GAP_AND_GO | +0.06R, 39 trades, 2/4 | +0.02R, 19 trades, 2/4 |
+
+None is a proven edge. Approving any for LIVE is your decision; the evidence does not support it yet.
+
+### Why LIVE takes no intraday trades
+1. **No APPROVED intraday strategy** (migration `0007` retired the failing `@v1` approvals). `decide()` blocks every intraday setup with "has no APPROVED version (required in LIVE)". This is intended.
+2. On top of that, normal filters block many setups: NIFTY direction (gap-up-then-fade mornings), chase > 0.5 ATR past the bar close, daily-range cap already passed, price band, quality < 70.
+
+To trade again: run **PAPER** (CANDIDATE strategies trade there) and approve a strategy for LIVE only after its paper results confirm it.
+
+---
+
+## 11. Where it lives in the code
 
 | Part | File |
 |---|---|

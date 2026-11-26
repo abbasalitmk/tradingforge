@@ -70,10 +70,9 @@ export function liveParityBacktestFor(def: Pick<StrategyDefinition, 'style' | 't
     minStopPct: def.timeframe === '15m' ? 0.75 : 0.5,
     maxVwapStretchAtr: 5,
     stopClusterGuard: true,
-    targetR: 2.5,
+    targetR: 3,
     maxTargetDailyAtr: 1.5,
     minRewardRisk: 1.5,
-    trail: INTRADAY_STAGED_TRAIL,
   };
 }
 
