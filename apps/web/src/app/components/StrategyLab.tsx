@@ -59,6 +59,9 @@ const td: React.CSSProperties = { padding: '8px 10px', fontSize: 12, verticalAli
 const sub: React.CSSProperties = { fontSize: 10.5, color: 'var(--muted)', marginTop: 2 };
 const small = (color: string): React.CSSProperties => ({ ...buttonStyle, padding: '3px 9px', fontSize: 10.5, background: 'transparent', color, border: `1px solid ${color}`, boxShadow: 'none' });
 
+/** Win rate as a whole percentage, or a dash when the report does not carry it. */
+const pctOf = (r: number | null | undefined): string => (typeof r === 'number' && Number.isFinite(r) ? `${(r * 100).toFixed(0)}%` : '—');
+
 /**
  * The research loop, operable from the dashboard: validate a strategy on
  * history (walk-forward, out-of-sample, cost stress), approve the version that
@@ -102,7 +105,7 @@ export default function StrategyLab({ records, mode, onToast }: {
     const oos = v.validation?.outOfSample;
     if (!window.confirm(
       `Approve ${name} v${v.version} for LIVE autonomous trading?\n\n`
-      + (oos ? `Out-of-sample: ${oos.trades} trades · ${(oos.winRate * 100).toFixed(0)}% wins · ${oos.expectancyR.toFixed(2)}R expectancy · PF ${oos.profitFactor.toFixed(2)}\n\n` : '')
+      + (oos ? `Out-of-sample: ${oos.trades} trades · ${pctOf(oos.winRate)} wins · ${num(oos.expectancyR)}R expectancy · PF ${num(oos.profitFactor)}\n\n` : '')
       + 'Past results do not guarantee future returns. Any previously approved version of this strategy is retired.',
     )) return;
     void run(v.id, 'approve', { versionId: v.id }, `${name} v${v.version} approved`);
@@ -145,7 +148,7 @@ export default function StrategyLab({ records, mode, onToast }: {
                   {shown && <Pill color={STATUS_COLOR[shown.status]}>v{shown.version} {shown.status}</Pill>}
                 </div>
                 <div style={sub}>
-                  {oos ? `OOS ${oos.expectancyR >= 0 ? '+' : ''}${num(oos.expectancyR)}R · ${oos.trades} trades · ${(oos.winRate * 100).toFixed(0)}% · PF ${num(oos.profitFactor)}` : 'not validated'}
+                  {oos ? `OOS ${oos.expectancyR >= 0 ? '+' : ''}${num(oos.expectancyR)}R · ${oos.trades} trades · ${pctOf(oos.winRate)} · PF ${num(oos.profitFactor)}` : 'not validated'}
                   {rec ? ` · ${mode === 'LIVE' ? 'live' : 'paper'} ${rec.expectancyR >= 0 ? '+' : ''}${num(rec.expectancyR)}R (${rec.trades})` : ''}
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
@@ -182,7 +185,9 @@ export default function StrategyLab({ records, mode, onToast }: {
               const shown = latest ?? approved;
               const val = shown?.validation ?? null;
               const oos = val?.outOfSample;
-              const passed = val ? val.checks.filter((c) => c.passed).length : 0;
+              // A report written by hand (e.g. a migration) may lack fields; never let one row break the page.
+              const checks = val?.checks ?? [];
+              const passed = checks.filter((c) => c.passed).length;
               const rec = records[st.id] ?? null;
               const job = data.jobs.find((j) => j.strategyId === st.id && j.status === 'RUNNING');
               const lastJob = data.jobs.filter((j) => j.strategyId === st.id).sort((a, b) => b.startedAt - a.startedAt)[0];
@@ -201,9 +206,9 @@ export default function StrategyLab({ records, mode, onToast }: {
                     {oos ? (
                       <>
                         <span style={{ color: oos.expectancyR > 0 ? 'var(--ok)' : 'var(--danger)', fontWeight: 700 }}>{oos.expectancyR >= 0 ? '+' : ''}{num(oos.expectancyR)}R</span>
-                        {' '}· {oos.trades} trades · {(oos.winRate * 100).toFixed(0)}% wins · PF {num(oos.profitFactor)}
-                        <div style={sub}>max DD {num(oos.maxDrawdownPct, 1)}% · {passed}/{val!.checks.length} checks passed</div>
-                        {val!.checks.filter((c) => !c.passed).slice(0, 2).map((c) => <div key={c.name} style={{ ...sub, color: 'var(--danger)', whiteSpace: 'normal', maxWidth: 300 }}>✗ {c.detail}</div>)}
+                        {' '}· {oos.trades} trades · {pctOf(oos.winRate)} wins · PF {num(oos.profitFactor)}
+                        <div style={sub}>max DD {num(oos.maxDrawdownPct, 1)}% · {passed}/{checks.length} checks passed</div>
+                        {checks.filter((c) => !c.passed).slice(0, 2).map((c) => <div key={c.name} style={{ ...sub, color: 'var(--danger)', whiteSpace: 'normal', maxWidth: 300 }}>✗ {c.detail}</div>)}
                       </>
                     ) : <span style={{ color: 'var(--muted)' }}>not validated</span>}
                     {lastJob?.status === 'FAILED' && <div style={{ ...sub, color: 'var(--danger)' }}>last run failed: {lastJob.error}</div>}
