@@ -442,6 +442,11 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
           {([
+            ['paperMaxEntriesPerDay', 'PAPER: max entries per day', 1, 500, 1, 'paper builds the ranking, so it trades far more than LIVE'],
+            ['paperMaxOpenPositions', 'PAPER: max open positions', 1, 50, 1, 'also the per-strategy, per-side and per-sector cap in paper'],
+            ['liveTopStrategies', 'LIVE: top paper strategies', 1, 24, 1, 'how many of the best paper strategies may trade LIVE'],
+            ['liveMinPaperTrades', 'LIVE: min paper trades', 5, 500, 1, 'paper trades a strategy needs before it can trade LIVE'],
+            ['liveMinPaperExpectancyR', 'LIVE: min paper avg (R)', 0, 2, 0.05, 'average paper result after charges needed for LIVE'],
             ['minQuality', 'Min setup quality', 40, 100, 1, '0–100 ensemble score'],
             ['minRewardRisk', 'Min reward : risk', 1, 10, 0.1, 'strategy levels, at the live price'],
             ['minNetRewardRisk', 'Min R:R after charges', 0.5, 10, 0.05, 'brokerage, STT, fees, GST, stamp'],
@@ -453,16 +458,16 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxEntryChaseAtr', 'Max entry chase (× ATR)', 0, 5, 0.1, 'reject LTP drift past signal bar close / breakout trigger'],
             ['confirmSeconds', 'Hold before entry (s)', 2, 300, 1, 'setup must stay unchanged'],
             ['maxSetupAgeMin', 'Max setup age (min)', 0, 120, 1, 'older signals are stale — not taken when a slot frees; 0 = off'],
-            ['maxEntriesPerDay', 'Max entries per day', 0, 50, 1, '0 pauses new entries'],
-            ['maxEntriesMorning', 'Max morning entries', 0, 50, 1, '09:30–11:30 IST'],
-            ['maxEntriesAfternoon', 'Max afternoon entries', 0, 50, 1, '13:30–14:45 IST'],
-            ['maxPerSector', 'Max per sector', 1, 50, 1, 'open positions in one NSE industry'],
+            ['maxEntriesPerDay', 'LIVE: max entries per day', 0, 50, 1, '0 pauses LIVE entries; PAPER uses its own cap'],
+            ['maxEntriesMorning', 'LIVE: max morning entries', 0, 50, 1, '09:30–11:30 IST (no session caps in PAPER)'],
+            ['maxEntriesAfternoon', 'LIVE: max afternoon entries', 0, 50, 1, '13:30–14:45 IST (no session caps in PAPER)'],
+            ['maxPerSector', 'LIVE: max per sector', 1, 50, 1, 'open positions in one NSE industry'],
             ['reentryCooldownMin', 'Re-entry cooldown (min)', 0, 120, 1, 'after a position in the symbol closes'],
-            ['maxOpenPositions', 'Max open positions', 1, 50, 1, 'across all strategies'],
+            ['maxOpenPositions', 'LIVE: max open positions', 1, 50, 1, 'across all strategies; PAPER uses its own cap'],
             ['maxLeverage', 'Max intraday leverage (×)', 1, 5, 0.5, 'open MIS exposure ÷ capital; risk stays a % of capital'],
             ['maxVwapStretchAtr', 'Max distance from VWAP (ATR)', 0, 20, 0.5, "don't chase a move already this far from VWAP; 0 = off"],
-            ['maxPerStrategy', 'Max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
-            ['maxSameSide', 'Max same direction', 1, 50, 1, 'open longs, or open shorts'],
+            ['maxPerStrategy', 'LIVE: max per strategy', 1, 50, 1, 'open positions one strategy may lead'],
+            ['maxSameSide', 'LIVE: max same direction', 1, 50, 1, 'open longs, or open shorts'],
             ['autoUniverseSize', 'Auto-picked stocks', 1, 30, 1, "today's movers added to the watchlist"],
             ['autoUniverseMinTurnoverCr', 'Pick min turnover (₹ Cr)', 1, 5000, 1, 'day turnover of an auto-picked stock'],
             ['maxSpreadPct', 'Pick max spread (%)', 0, 2, 0.05, 'bid-ask spread of an auto-picked stock; 0 = off'],
@@ -470,11 +475,6 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['stallMinR', 'No-follow-through min move (R)', 0, 1.5, 0.05, 'favourable move a trade needs by then to be kept'],
             ['retestAtr', 'Retest depth (× ATR)', 0.05, 2, 0.05, 'how far back toward the breakout the resting entry sits'],
             ['retestBars', 'Retest wait (bars)', 1, 12, 1, 'strategy-timeframe bars before an unfilled retest order is cancelled'],
-            ['paperMaxEntriesPerDay', 'PAPER: max entries per day', 1, 500, 1, 'paper builds the ranking, so it trades far more than LIVE'],
-            ['paperMaxOpenPositions', 'PAPER: max open positions', 1, 50, 1, 'also the per-strategy, per-side and per-sector cap in paper'],
-            ['liveTopStrategies', 'LIVE: top paper strategies', 1, 24, 1, 'how many of the best paper strategies may trade LIVE'],
-            ['liveMinPaperTrades', 'LIVE: min paper trades', 5, 500, 1, 'paper trades a strategy needs before it can trade LIVE'],
-            ['liveMinPaperExpectancyR', 'LIVE: min paper avg (R)', 0, 2, 0.05, 'average paper result after charges needed for LIVE'],
           ] as const).map(([key, label, min, max, step, hint]) => (
             <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>
               {label}
@@ -726,7 +726,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       <Panel
         title="Paper ranking → LIVE"
         subtitle={live.auto.liveFromPaper
-          ? `Strategies ranked by their last 50 paper trades. The top ${live.auto.liveTopStrategies} with ${live.auto.liveMinPaperTrades}+ trades averaging ≥ ${live.auto.liveMinPaperExpectancyR}R trade LIVE (approved ones always may).`
+          ? `PAPER trades up to ${live.auto.paperMaxEntriesPerDay} entries a day with ${live.auto.paperMaxOpenPositions} open, every strategy included, to build this ranking. Strategies ranked by their last 50 paper trades. The top ${live.auto.liveTopStrategies} with ${live.auto.liveMinPaperTrades}+ trades averaging ≥ ${live.auto.liveMinPaperExpectancyR}R trade LIVE (approved ones always may).`
           : 'LIVE from paper ranking is off — only approved strategies trade LIVE.'}
       >
         {(live.paperRanking ?? []).length === 0
