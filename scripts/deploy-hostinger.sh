@@ -25,7 +25,8 @@ HOSTINGER_DOMAIN="${HOSTINGER_DOMAIN:-${HOSTINGER_VPS_HOST:-localhost}}"
 # market-hours deploys left the engine re-arming instead of trading.
 IST_DOW=$(TZ=Asia/Kolkata date +%u)
 IST_HHMM=$(TZ=Asia/Kolkata date +%H%M)
-if [[ "$IST_DOW" -le 5 && "$IST_HHMM" -ge 0900 && "$IST_HHMM" -le 1535 && "${FORCE_DEPLOY:-}" != "1" ]]; then
+# 10# forces base 10: bash reads "0930" as an (invalid) octal number.
+if (( IST_DOW <= 5 && 10#$IST_HHMM >= 900 && 10#$IST_HHMM <= 1535 )) && [[ "${FORCE_DEPLOY:-}" != "1" ]]; then
   echo ""
   echo "✗ NSE market hours (IST $(TZ=Asia/Kolkata date +%H:%M)) — a deploy would restart the trading engine mid-session."
   echo "  Deploy after 15:35 IST, or set FORCE_DEPLOY=1 if it cannot wait."
