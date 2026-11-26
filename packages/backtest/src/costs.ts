@@ -44,7 +44,8 @@ export interface CostModel {
 
 /**
  * NSE equity intraday (MIS).
- * - Brokerage: Upstox ₹20 or 0.05% per executed order, whichever is lower.
+ * - Brokerage: Upstox 0.06% per executed order, capped at ₹20 (verified
+ *   against Upstox's brokerage API on 27 Nov 2026).
  * - STT: 0.025% on the sell side only.
  * - NSE transaction charge: 0.00297% (uniform rate since Oct 2024).
  * - SEBI: ₹10/crore = 0.0001%.
@@ -54,10 +55,10 @@ export interface CostModel {
 export const EQUITY_INTRADAY: CostModel = {
   name: 'EQUITY_INTRADAY',
   brokeragePerOrder: 20,
-  brokeragePct: 0.05,
+  brokeragePct: 0.06,
   sttBuyPct: 0,
   sttSellPct: 0.025,
-  exchangePct: 0.00297,
+  exchangePct: 0.00307,
   sebiPct: 0.0001,
   stampBuyPct: 0.003,
   gstPct: 18,

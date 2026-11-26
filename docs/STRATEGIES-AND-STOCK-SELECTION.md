@@ -86,7 +86,7 @@ against an overstretched one and are exempt from the trend and NIFTY filters
 
 **Status** combines two things — the production registry and the AutoPilot strategy list:
 - **Enabled** — on AutoPilot's strategy list; may lead entries.
-- **Stopped** — taken off the AutoPilot list (27 Nov 2026) because it lost money over 20 months. It still analyses every stock and shows on the dashboard, but cannot lead an entry. Re-enable under AutoPilot → strategies.
+- **Stopped** — taken off the AutoPilot list (27 Nov 2026) because it lost money over 20 months. AutoPilot does not run it at all, so it can neither lead an entry nor vote on another strategy's quality score. Re-enable under AutoPilot → strategies.
 - **LIVE** — has a human-APPROVED version; may lead LIVE trades.
 - **Paper** — not validated or not approved; trades in PAPER only.
 - **Failed** — its parameters failed validation (walk-forward, out-of-sample, cost stress); blocked in every mode while "Skip failed strategies" is on.
@@ -140,7 +140,7 @@ A swing SELL is never automated — on a delivery product it would sell shares o
 | `PDH_PDL_CPR` | −0.005R, 22 trades | about break-even; the one strategy approved for LIVE |
 | `PDH_PDL_CPR_15M` | −0.089R, 260 trades | the smallest loss of the rest, and enough signals to keep trades coming |
 
-**Stopped (9)** — still analyse, but cannot lead an entry:
+**Stopped (9)** — not run by AutoPilot (no entries, no votes):
 | Strategy | 20 months | Why it was stopped |
 |---|---|---|
 | `ORB_SUPERTREND` (5m) | −0.476R, 85 trades | the biggest loser: needs Supertrend, EMA and ADX to agree *after* the breakout, so it enters late, near the top of the move |
@@ -169,7 +169,7 @@ and they would use up the 5 daily entries the enabled strategies need.
 
 Why most intraday strategies lose: over half of the stop-outs never moved more
 than +0.25R in profit (the breakout or cross simply fades), and charges take
-about 15% of the risk on every ₹10,000 trade. Stops are not the problem — only
+about 18% of the risk on a ₹10,000 trade with a 1% stop (₹17.6 of ₹100). Stops are not the problem — only
 1–2% of stopped trades reached their target later that day.
 
 ### 3.5 Targets
@@ -230,13 +230,13 @@ every rule blocking each setup. Production values:
 | Reward:risk at strategy levels | **≥ 1.5** |
 | Reward:risk after all charges | **≥ 1.25** (checked at the real quantity) |
 | Minimum intraday stop | **0.65%** of price (charges are a near-fixed share of the money traded) |
-| Charges vs risk | round-trip charges ≤ **20%** of the actual 1R risk at the real quantity — at ₹10,000 per trade that rejects stops tighter than about 0.77% |
+| Charges vs risk | round-trip charges ≤ **20%** of the actual 1R risk at the real quantity — at ₹10,000 per trade (₹17.6 of charges) that rejects stops tighter than about 0.88% |
 | Stop-hunt guard | a stop sitting on a stop cluster (PDH/PDL, opening range, equal highs/lows, round number) is moved just beyond the sweep zone, if that is a small move |
 
 ### Strategy gating
 | Rule | Value |
 |---|---|
-| **Enabled strategies** | **`GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M` only** — the three best 20-month records (+0.003R, −0.005R, −0.089R a trade). The others still analyse and show on the dashboard but cannot lead an entry (they lost 0.2–0.5R a trade). Change it under AutoPilot → strategies |
+| **Enabled strategies** | **`GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M` only** — the three best 20-month records (+0.003R, −0.005R, −0.089R a trade). The others are not run by AutoPilot at all — no entries and no votes in the quality score (they lost 0.2–0.5R a trade). Change it under AutoPilot → strategies |
 | LIVE | the lead must have a human-**APPROVED** version |
 | Failed validation | blocked in every mode (Skip failed strategies: on) |
 | Losing strategy | paused after **20+** of its own trades in this mode with negative expectancy (Pause losing strategies: on) |
@@ -270,7 +270,7 @@ Runs only on a setup that already passed every rule.
 | In practice | the **₹10,000 per-trade cap binds on almost every intraday trade**, so the real risk is about ₹65–150 (1R ≈ ₹100 at a 1% stop). Raising the cap was tested and did worse (see 05-TRADING-SYSTEM §12) |
 | Caps (smallest wins) | ₹10,000 per trade · intraday exposure ≤ **3×** capital · deployed-capital ceiling · 1% of the stock's daily volume · ₹2,000 minimum ticket |
 | AI multiplier | 1× or 0.5× |
-| Charges check | brokerage, STT, exchange, SEBI, stamp duty and GST at the real quantity; net R:R must clear 1.25 |
+| Charges check | Upstox's real schedule at the real quantity — brokerage 0.06% per order capped at ₹20, STT 0.025% on the sell, exchange 0.00307%, SEBI fee, stamp duty 0.003% on the buy, GST 18% (checked against Upstox's brokerage API: ₹17.6 round trip on ₹10,000); net R:R must clear 1.25 |
 | Margin check (LIVE) | Upstox quotes the exact margin; the order shrinks to fit free funds (5% kept back) or is skipped |
 | Order | one Upstox **GTT bracket** (entry + target + stop in one order, stop held at the broker), market price protection on every leg |
 | Rate limit | 8 orders/s, under SEBI's 10/s retail-algo threshold |

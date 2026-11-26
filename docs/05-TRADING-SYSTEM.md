@@ -430,7 +430,7 @@ production settings, paper-eligible strategies, buy only, each half judged separ
 |---|---|---|---|
 | ₹10,000 cap shrinks 1R to ~₹65–100 | **True** (risk-based wants ₹75,000 at a 1% stop) | — | documented |
 | Raise cap to ₹50–75k | lets tight-stop trades past the charges guard | −0.29 to −0.32 / −0.07 to −0.09; rupee loss 8–10× | **rejected** |
-| AI 0.5× size "destroys fee economics" | **False**: brokerage is 0.05% below ₹40k/leg, so charges stay ~15% of 1R at any size | — | none |
+| AI 0.5× size "destroys fee economics" | **False**: brokerage is a percentage (0.06%) below ₹33k/leg, so charges stay ~18% of 1R at any size below that | — | none |
 | "₹71 / 1.08 = ₹65.74 proves the bug" | coincidence: live trades were sized from the small Upstox balance | — | none |
 | Min stop 0.85% / 1.0% | | better / worse | not changed |
 | Charges guard 12% | | +0.18 (23 trades) / −0.18 | not changed |
@@ -479,6 +479,19 @@ positive out-of-sample, ≥ 60% of walk-forward folds, parameter stability,
 **Conclusion:** no intraday rule set here is profitable over 20 months. Keep
 PAPER; approve nothing new for LIVE without a positive result across most of
 these periods.
+
+---
+
+## 12c. Second Gemini review (27 Nov 2026)
+
+| Claim | Checked against | Finding | Action |
+|---|---|---|---|
+| Stopped strategies still vote in the ensemble | `analyzeHybrid` (`opts.strategies`) | **False**: with an AutoPilot strategy list the engine runs only the listed strategies; the rest are not evaluated, so they cannot vote | docs corrected (they had said "still analyse") |
+| Charges under-estimated: Upstox brokerage is 0.1% or ₹20 | **Upstox brokerage API** from the server (₹10,000 and ₹50,000 orders) | Our model was low (0.05%), Gemini's high (0.1%): Upstox charges **0.06% per order capped at ₹20**. Round trip on ₹10,000: Upstox ₹17.62, old model ₹15.29, Gemini ₹27.64 | **fixed** live and backtest models (exchange fee also 0.00297% → 0.00307%); both now match Upstox to the paisa. The 20% charges guard now rejects stops under ~0.88% at ₹10,000 |
+| `ORB_SUPERTREND_15M` is the #1 candidate (+0.48R out-of-sample) | its stored validation report | +0.48R is 14 trades; in-sample −0.00R (23 trades); walk-forward 1 of 4 folds profitable (−0.02, −0.14, −0.08, +0.73R) — one good recent stretch | none |
+| `PDH_PDL_CPR` LIVE v2 (0.9%) vs 0.35% | §12b | 22 vs 14 trades — still too few to choose | owner's call |
+| 40 stocks is too small a research universe for selective strategies | — | valid: selective strategies get 14–75 trades in 20 months | future research |
+| Test exits and trade size on the 3 enabled strategies only, min stop fixed | — | reasonable, but needs new backtests | not run (owner asked for no long backtests) |
 
 ---
 

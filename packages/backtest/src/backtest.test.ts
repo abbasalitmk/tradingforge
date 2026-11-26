@@ -83,11 +83,11 @@ const noFriction: BacktestConfig = { ...DEFAULT_BACKTEST, costs: ZERO_COSTS, sli
 describe('cost model', () => {
   it('matches a hand-computed intraday round trip', () => {
     // BUY 100 @ 1000, SELL @ 1010.
-    //  brokerage min(20, 0.05%×1,00,000=50)=20 + min(20, 50.5)=20 → 40
-    //  STT 0.025% × 1,01,000 = 25.25 · exchange 0.00297% × 2,01,000 = 5.9697
+    //  brokerage min(20, 0.06%×1,00,000=60)=20 + min(20, 60.6)=20 → 40
+    //  STT 0.025% × 1,01,000 = 25.25 · exchange 0.00307% × 2,01,000 = 6.1707
     //  SEBI 0.0001% × 2,01,000 = 0.201 · stamp 0.003% × 1,00,000 = 3
-    //  GST 18% × (40 + 5.9697 + 0.201) = 8.310726
-    expect(roundTripCost(EQUITY_INTRADAY, 'BUY', 100, 1000, 1010)).toBeCloseTo(82.73, 2); // rounded to whole paise
+    //  GST 18% × (40 + 6.1707 + 0.201) = 8.346786
+    expect(roundTripCost(EQUITY_INTRADAY, 'BUY', 100, 1000, 1010)).toBeCloseTo(82.97, 2); // rounded to whole paise
     expect(costBreakdown(EQUITY_INTRADAY, 'BUY', 100, 1000, 1010).stt).toBeCloseTo(25.25, 6);
   });
 

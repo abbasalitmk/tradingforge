@@ -5,7 +5,8 @@
  * as per SEBI regulations, Stamp Duty Act, and Finance Act 2024/2026.
  *
  * Rates:
- *  - Brokerage (Upstox/Discount): ₹20/order or 0.05% of order value, whichever is lower.
+ *  - Brokerage (Upstox intraday): 0.06% of order value, capped at ₹20 per order
+ *    (Upstox's brokerage API, 27 Nov 2026: ₹6.00 on a ₹10,000 order, ₹20 on ₹50,000).
  *  - STT (Securities Transaction Tax):
  *      Intraday: 0.025% on sell side only (0 on buy)
  *      Delivery/Swing: 0.1% on buy & 0.1% on sell
@@ -56,11 +57,11 @@ export function computeIndianCharges(params: {
   const turnover = round2(buyValue + sellValue);
   const grossPnl = round2((sellPrice - buyPrice) * qty);
 
-  // Brokerage: ₹20 per executed leg or 0.05% capped at ₹20
+  // Brokerage: 0.06% per executed leg, capped at ₹20 (the cap binds above ₹33,333)
   const legBrokerage = (val: number) => {
     if (val <= 0) return 0;
     if (params.flatBrokerage !== undefined) return params.flatBrokerage;
-    return Math.min(20, round2(val * 0.0005));
+    return Math.min(20, round2(val * 0.0006));
   };
   const brokerage = round2(legBrokerage(buyValue) + legBrokerage(sellValue));
 
