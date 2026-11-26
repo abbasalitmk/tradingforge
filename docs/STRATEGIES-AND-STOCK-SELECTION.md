@@ -84,35 +84,39 @@ read **closed bars only** — a signal can never come from a candle still formin
 against an overstretched one and are exempt from the trend and NIFTY filters
 (they are blocked only by a 15-minute trend running against them).
 
-**Status** is what the production registry says today:
+**Status** combines two things — the production registry and the AutoPilot strategy list:
+- **Enabled** — on AutoPilot's strategy list; may lead entries.
+- **Stopped** — taken off the AutoPilot list (27 Nov 2026) because it lost money over 20 months. It still analyses every stock and shows on the dashboard, but cannot lead an entry. Re-enable under AutoPilot → strategies.
 - **LIVE** — has a human-APPROVED version; may lead LIVE trades.
 - **Paper** — not validated or not approved; trades in PAPER only.
 - **Failed** — its parameters failed validation (walk-forward, out-of-sample, cost stress); blocked in every mode while "Skip failed strategies" is on.
 
+Results quoted are per trade after charges, 20 months (Mar 2025 – Nov 2026), 40 NSE stocks, production rules. The full list with reasons is in §3.4.
+
 ### 3.1 Intraday, 5-minute bars
 | Strategy | Type | Entry | Stop | Status |
 |---|---|---|---|---|
-| `ORB_SUPERTREND` | trend | Close beyond the 09:15–09:30 opening range, confirmed by Supertrend, EMA9/21, ADX, RVOL ≥ 1.5×, VWAP side, RSI room | 1.5 ATR | Paper |
+| `ORB_SUPERTREND` | trend | Close beyond the 09:15–09:30 opening range, confirmed by Supertrend, EMA9/21, ADX, RVOL ≥ 1.5×, VWAP side, RSI room | 1.5 ATR | **Stopped** (−0.476R, 85 trades) |
 | `VWAP_PULLBACK` | trend | Trend day pulls back to session VWAP and resumes with a rejection bar | 0.5–2.5 ATR | **Failed** |
 | `SUPERTREND_MOMENTUM` | trend | Fresh Supertrend flip with EMA21 slope, RVOL expansion, rising ADX | ≥ 0.5 ATR, ≤ 1.5 ATR | **Failed** |
 | `BB_SQUEEZE_BREAKOUT` | trend | Bollinger bandwidth at a lookback low, then a close outside the band on volume | ≥ 0.5 ATR, ≤ 1.5 ATR | **Failed** |
-| `GMMA_TREND` | trend | Guppy short (3–15) and long (30–60) EMA ribbons separate cleanly; long ribbon sloping; 15-min trend agrees | 0.75–2.5 ATR | Paper |
-| `SMC_STRUCTURE` | trend | First close beyond the last confirmed swing (break of structure / change of character), weighted by a fair-value gap | beyond the opposite swing | Paper |
+| `GMMA_TREND` | trend | Guppy short (3–15) and long (30–60) EMA ribbons separate cleanly; long ribbon sloping; 15-min trend agrees | 0.75–2.5 ATR | **Stopped** (−0.267R, 449 trades) |
+| `SMC_STRUCTURE` | trend | First close beyond the last confirmed swing (break of structure / change of character), weighted by a fair-value gap | beyond the opposite swing | **Stopped** (−0.277R, 128 trades) |
 | `TECHNICAL_COMPOSITE` | trend | EMA12/26 trend and OBV first align, weighted by ADX, RSI, Bollinger room, VWAP | ≥ 1 ATR | **Failed** |
-| `GAP_AND_GO` | trend | 1–4.5% opening gap on 1.6× opening volume (same-time baseline); close beyond the first 15-min candle | 0.5–3 ATR | Paper |
-| `EMA_CROSS_9_21` | trend | EMA9/21 cross with the 15-min EMA20/50 trend agreeing and ADX > 22 | beyond the recent swing, 0.5–2.5 ATR | Paper |
-| `PDH_PDL_CPR` | trend | Narrow central-pivot-range day, first close beyond the previous day's high/low on 1.3× volume | 1–3 ATR | **LIVE** (approved v2 uses a 0.9% CPR width; the code default is 0.3%) |
-| `BB_RSI_REVERSION` | fade | ADX < 18; pierce of the 2-SD band with RSI < 25 / > 75 that closes back inside; target session VWAP | 0.5–2.5 ATR | Paper |
-| `FAILED_BREAKOUT_TRAP` | fade | Thin-volume (< 1.2×) break of the opening range or previous day high/low that closes back inside within 2 bars | beyond the failed extreme | Paper |
-| `OI_WALL_REVERSAL` | fade | Bounce off the peak put-OI strike (or rejection at peak call-OI) while writers add OI | beyond the wall | Paper (needs the F&O desk, off) |
+| `GAP_AND_GO` | trend | 1–4.5% opening gap on 1.6× opening volume (same-time baseline); close beyond the first 15-min candle | 0.5–3 ATR | ✅ **Enabled** · Paper (+0.003R, 75 trades) |
+| `EMA_CROSS_9_21` | trend | EMA9/21 cross with the 15-min EMA20/50 trend agreeing and ADX > 22 | beyond the recent swing, 0.5–2.5 ATR | **Stopped** (−0.424R, 77 trades) |
+| `PDH_PDL_CPR` | trend | Narrow central-pivot-range day, first close beyond the previous day's high/low on 1.3× volume | 1–3 ATR | ✅ **Enabled** · **LIVE** (−0.005R, 22 trades; approved v2 uses a 0.9% CPR width, the code default is 0.3%) |
+| `BB_RSI_REVERSION` | fade | ADX < 18; pierce of the 2-SD band with RSI < 25 / > 75 that closes back inside; target session VWAP | 0.5–2.5 ATR | **Stopped** (1 trade in 20 months, −1.25R) |
+| `FAILED_BREAKOUT_TRAP` | fade | Thin-volume (< 1.2×) break of the opening range or previous day high/low that closes back inside within 2 bars | beyond the failed extreme | **Stopped** (−0.247R, 211 trades) |
+| `OI_WALL_REVERSAL` | fade | Bounce off the peak put-OI strike (or rejection at peak call-OI) while writers add OI | beyond the wall | **Stopped** (needs the F&O desk, which is off — never trades) |
 
 ### 3.2 Intraday, 15-minute bars (wider stops, lower charge drag)
 | Strategy | Type | Entry | Stop | Status |
 |---|---|---|---|---|
 | `ORB_SUPERTREND_15M` | trend | 30-min opening range, first 15-min breakout bar only; Supertrend, EMA9/21, ADX ≥ 25, RVOL ≥ 1.5×, VWAP, RSI room, 0.75% volatility floor | 2 ATR | **Failed** |
-| `PDH_PDL_CPR_15M` | trend | Narrow CPR (≤ 0.3%) breakout beyond PDH/PDL on 1.5× volume | 0.75–2.5 ATR | Paper |
-| `EMA_CROSS_9_21_15M` | trend | 15-min EMA9/21 cross with EMA20/50 trend, ADX > 22, RVOL ≥ 1.2× | 0.75–2.5 ATR | Paper |
-| `SMC_STRUCTURE_15M` | trend | 15-min break of structure + fair-value gap on ≥ 1.2× volume | ≥ 0.75 ATR | Paper |
+| `PDH_PDL_CPR_15M` | trend | Narrow CPR (≤ 0.3%) breakout beyond PDH/PDL on 1.5× volume | 0.75–2.5 ATR | ✅ **Enabled** · Paper (−0.089R, 260 trades) |
+| `EMA_CROSS_9_21_15M` | trend | 15-min EMA9/21 cross with EMA20/50 trend, ADX > 22, RVOL ≥ 1.2× | 0.75–2.5 ATR | **Stopped** (−0.209R, 113 trades; failed Strategy Lab validation) |
+| `SMC_STRUCTURE_15M` | trend | 15-min break of structure + fair-value gap on ≥ 1.2× volume | ≥ 0.75 ATR | **Stopped** (−0.225R, 326 trades; failed Strategy Lab validation) |
 | `HOLY_GRAIL_15M` | trend | Linda Raschke: ADX ≥ 30 trend, pullback to the 20-EMA, enter when a bar breaks the pullback bar | beyond the pullback swing, 0.75–2.5 ATR | **Failed** (20 months: −0.258R, 606 trades) |
 | `INSIDE_BAR_15M` | trend | Inside bar near PDH, PDL or VWAP, then a close beyond the mother bar on 1.2× volume | mother bar's other end, 0.75–2.5 ATR | **Failed** (20 months: −0.127R, 278 trades) |
 
@@ -127,7 +131,48 @@ against an overstretched one and are exempt from the trend and NIFTY filters
 
 A swing SELL is never automated — on a delivery product it would sell shares out of your demat account.
 
-### 3.4 Targets
+### 3.4 Enabled, stopped and failed strategies — and why
+
+**Enabled (3)** — the best 20-month records; AutoPilot trades only these:
+| Strategy | 20 months | Why it is kept |
+|---|---|---|
+| `GAP_AND_GO` | +0.003R, 75 trades | the only strategy at break-even or better; trades the opening gap with volume |
+| `PDH_PDL_CPR` | −0.005R, 22 trades | about break-even; the one strategy approved for LIVE |
+| `PDH_PDL_CPR_15M` | −0.089R, 260 trades | the smallest loss of the rest, and enough signals to keep trades coming |
+
+**Stopped (9)** — still analyse, but cannot lead an entry:
+| Strategy | 20 months | Why it was stopped |
+|---|---|---|
+| `ORB_SUPERTREND` (5m) | −0.476R, 85 trades | the biggest loser: needs Supertrend, EMA and ADX to agree *after* the breakout, so it enters late, near the top of the move |
+| `EMA_CROSS_9_21` (5m) | −0.424R, 77 trades | moving-average crosses on 5-minute bars lag; they fire after the move and whipsaw in chop |
+| `SMC_STRUCTURE` (5m) | −0.277R, 128 trades | buys the break-of-structure close, the most stretched point, and gets caught in the normal pullback |
+| `GMMA_TREND` | −0.267R, 449 trades | lagging EMA-ribbon signal that fires often; the most trades of all, the largest total loss (≈ −120R) |
+| `FAILED_BREAKOUT_TRAP` (fade) | −0.247R, 211 trades | fading failed breakouts lost money; under buy-only it also rarely gets a stock to fade |
+| `SMC_STRUCTURE_15M` | −0.225R, 326 trades | same late-entry problem on 15-minute bars; failed Strategy Lab validation (out-of-sample −0.123R) |
+| `EMA_CROSS_9_21_15M` | −0.209R, 113 trades | same lag on 15-minute bars; failed Strategy Lab validation (out-of-sample −0.270R) |
+| `BB_RSI_REVERSION` (fade) | 1 trade, −1.25R | its conditions (ADX < 18, RSI < 25 on a stock the buy-only scanner picked for rising) almost never occur |
+| `OI_WALL_REVERSAL` (fade) | no trades | needs the F&O option chain; the F&O desk is off |
+
+At about ₹100 of risk per trade, these cost roughly ₹20–48 a trade on average,
+and they would use up the 5 daily entries the enabled strategies need.
+
+**Failed (7)** — failed validation; blocked in every mode:
+| Strategy | Result | Why it failed |
+|---|---|---|
+| `VWAP_PULLBACK` | out-of-sample −0.62R | failed Strategy Lab validation (walk-forward, out-of-sample, cost stress) |
+| `SUPERTREND_MOMENTUM` | out-of-sample −0.49R | failed Strategy Lab validation |
+| `BB_SQUEEZE_BREAKOUT` | out-of-sample −0.42R | failed Strategy Lab validation |
+| `TECHNICAL_COMPOSITE` | out-of-sample −0.32R | failed Strategy Lab validation |
+| `ORB_SUPERTREND_15M` | out-of-sample +0.48R | positive out-of-sample but failed other gates (walk-forward / stability / cost stress) |
+| `HOLY_GRAIL_15M` | −0.258R, 606 trades | 20-month backtest (migration 0012) — a 3-month test had looked fine |
+| `INSIDE_BAR_15M` | −0.127R, 278 trades | 20-month backtest (migration 0012) — a 3-month test had shown +0.19R |
+
+Why most intraday strategies lose: over half of the stop-outs never moved more
+than +0.25R in profit (the breakout or cross simply fades), and charges take
+about 15% of the risk on every ₹10,000 trade. Stops are not the problem — only
+1–2% of stopped trades reached their target later that day.
+
+### 3.5 Targets
 Strategies propose a target (mostly 2R). For **trend** strategies the engine
 restates it at **2.5× the risk** (production `targetR`), then caps it at
 **today's open ± 1.5 × the 14-day daily ATR**. A setup whose cap is already
