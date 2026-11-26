@@ -467,6 +467,15 @@ periods: P1 Mar–Jul 2025, P2 Aug–Dec 2025, P3 Jan–May 2026, P4 Jun–Nov 2
 sample is tiny and every width lost in P4. `PDH_PDL_CPR_15M`: 0.35–0.45% beats
 0.9% overall (−0.09R vs −0.11R); the code default is 0.3%.
 
+Strategy Lab validation (the server's own gates: ≥ 30 trades, PF ≥ 1.1,
+positive out-of-sample, ≥ 60% of walk-forward folds, parameter stability,
+2× cost stress) run locally on the 20 months: `EMA_CROSS_9_21_15M` failed
+(out-of-sample −0.270R, 43 trades) and `SMC_STRUCTURE_15M` failed (−0.123R,
+102 trades). The remaining runs were stopped; none was approved.
+
+**Production selection (27 Nov 2026):** AutoPilot trades only `GAP_AND_GO`,
+`PDH_PDL_CPR` and `PDH_PDL_CPR_15M` — the three best 20-month records.
+
 **Conclusion:** no intraday rule set here is profitable over 20 months. Keep
 PAPER; approve nothing new for LIVE without a positive result across most of
 these periods.

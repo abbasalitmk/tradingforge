@@ -8,8 +8,9 @@ Research history and backtest tables live in [05-TRADING-SYSTEM.md](05-TRADING-S
 > **Status, 27 Nov 2026.** The server runs in **PAPER** with **AutoPilot on**
 > (it stays on across restarts). LIVE is armed only from the dashboard. In LIVE,
 > only human-APPROVED strategies may lead a trade — today that is one intraday
-> strategy, `PDH_PDL_CPR`. **Over 20 months of data no intraday rule set is
-> profitable after charges** (§11); paper trading is collecting forward results.
+> strategy, `PDH_PDL_CPR`. AutoPilot trades only the three strategies with the
+> best record (§5). **Over 20 months of data no intraday rule set is profitable
+> after charges** (§11); paper trading is collecting forward results.
 
 ---
 
@@ -190,6 +191,7 @@ every rule blocking each setup. Production values:
 ### Strategy gating
 | Rule | Value |
 |---|---|
+| **Enabled strategies** | **`GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M` only** — the three best 20-month records (+0.003R, −0.005R, −0.089R a trade). The others still analyse and show on the dashboard but cannot lead an entry (they lost 0.2–0.5R a trade). Change it under AutoPilot → strategies |
 | LIVE | the lead must have a human-**APPROVED** version |
 | Failed validation | blocked in every mode (Skip failed strategies: on) |
 | Losing strategy | paused after **20+** of its own trades in this mode with negative expectancy (Pause losing strategies: on) |
