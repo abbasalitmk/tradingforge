@@ -52,6 +52,9 @@ interface AutoConfig {
   stallExit: boolean;
   stallBars: number;
   stallMinR: number;
+  retestEntry: boolean;
+  retestAtr: number;
+  retestBars: number;
 }
 
 interface AutoUniverseView {
@@ -137,7 +140,7 @@ type Draft = Pick<AutoConfig,
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
   | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'marketAboveOpen' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
-  | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR'>;
+  | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR' | 'retestEntry' | 'retestAtr' | 'retestBars'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -151,7 +154,7 @@ const draftOf = (a: AutoConfig): Draft => ({
   closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
   maxLeverage: a.maxLeverage, maxVwapStretchAtr: a.maxVwapStretchAtr, maxSetupAgeMin: a.maxSetupAgeMin,
   minStopPct: a.minStopPct, stopClusterGuard: a.stopClusterGuard,
-  marketFilter: a.marketFilter, marketAboveOpen: a.marketAboveOpen ?? false, relativeStrength: a.relativeStrength, targetR: a.targetR,
+  marketFilter: a.marketFilter, marketAboveOpen: a.marketAboveOpen ?? true, relativeStrength: a.relativeStrength, targetR: a.targetR,
   maxTargetDailyAtr: a.maxTargetDailyAtr ?? 1.5,
   minRoomDailyAtr: a.minRoomDailyAtr ?? 0.5,
   maxEntryChaseAtr: a.maxEntryChaseAtr ?? 0.5,
@@ -161,6 +164,9 @@ const draftOf = (a: AutoConfig): Draft => ({
   stallExit: a.stallExit ?? false,
   stallBars: a.stallBars ?? 4,
   stallMinR: a.stallMinR ?? 0.25,
+  retestEntry: a.retestEntry ?? false,
+  retestAtr: a.retestAtr ?? 0.25,
+  retestBars: a.retestBars ?? 3,
 });
 const sameDraft = (x: Draft, y: Draft): boolean => JSON.stringify(x) === JSON.stringify(y);
 
@@ -273,6 +279,9 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       stallExit: draft.stallExit,
       stallBars: draft.stallBars,
       stallMinR: draft.stallMinR,
+      retestEntry: draft.retestEntry,
+      retestAtr: draft.retestAtr,
+      retestBars: draft.retestBars,
     });
     setSaving(false);
     if (!r.ok) return onToast(`Autopilot rules NOT saved: ${r.error}`, 'error');
@@ -437,6 +446,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxSpreadPct', 'Pick max spread (%)', 0, 2, 0.05, 'bid-ask spread of an auto-picked stock; 0 = off'],
             ['stallBars', 'No-follow-through bars', 1, 24, 1, "strategy-timeframe bars before a trade that hasn't moved is cut"],
             ['stallMinR', 'No-follow-through min move (R)', 0, 1.5, 0.05, 'favourable move a trade needs by then to be kept'],
+            ['retestAtr', 'Retest depth (× ATR)', 0.05, 2, 0.05, 'how far back toward the breakout the resting entry sits'],
+            ['retestBars', 'Retest wait (bars)', 1, 12, 1, 'strategy-timeframe bars before an unfilled retest order is cancelled'],
           ] as const).map(([key, label, min, max, step, hint]) => (
             <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>
               {label}
@@ -462,6 +473,10 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
           <Chip on={draft.stagedTrail} onClick={() => setDraft({ ...draft, stagedTrail: !draft.stagedTrail })}
             title="Locks +0.35R once +1.2R MFE is hit (covering charges), then trails 1.25 ATR from +1.6R MFE without noisy bar-0 exits">
             Staged profit trail {draft.stagedTrail ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.retestEntry} onClick={() => setDraft({ ...draft, retestEntry: !draft.retestEntry })}
+            title="Instead of buying at market when a breakout bar closes, rest the entry a little back toward the breakout and fill only if price returns within the set bars">
+            Retest entry {draft.retestEntry ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.stallExit} onClick={() => setDraft({ ...draft, stallExit: !draft.stallExit })}
             title="Close an intraday trade that is flat or losing after the set bars without the set favourable move. Backtest Aug–Nov 2026: stop-outs 32% → 18% of trades, expectancy unchanged">
@@ -503,7 +518,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             With the NIFTY {draft.marketFilter ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.marketAboveOpen} onClick={() => setDraft({ ...draft, marketAboveOpen: !draft.marketAboveOpen })}
-            title="Also require the NIFTY above today's open for longs (below for shorts). Off by default: Aug–Nov 2026 it blocked 42% of trend entries as 'no clear direction' and did worse in both halves">
+            title="Also require the NIFTY above today's open for longs (below for shorts). On by default: over 20 months it did better in 3 of 4 periods, though it blocks more entries as 'no clear direction'">
             NIFTY above open {draft.marketAboveOpen ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.relativeStrength} onClick={() => setDraft({ ...draft, relativeStrength: !draft.relativeStrength })}

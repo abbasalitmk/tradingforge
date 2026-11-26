@@ -53,6 +53,13 @@ export interface TradeIntent {
   /** Exit a flat-or-losing position after this many minutes (theta guard). */
   readonly timeStopMin: number | null;
   readonly stall?: StallRule | null;
+  /**
+   * How the entry fills: IMMEDIATE at market now, or a resting trigger —
+   * BELOW for a long that waits for a pullback to `entry` (ABOVE for a short).
+   */
+  readonly entryTrigger?: 'IMMEDIATE' | 'ABOVE' | 'BELOW';
+  /** A resting entry still unfilled at this time is cancelled. */
+  readonly entryExpiresAt?: number | null;
   readonly contract?: ContractInfo;
   readonly underlyingSymbol?: string;
   /** Catalog strategy and registry version that produced the setup. */
@@ -72,6 +79,8 @@ export interface ManagedPosition extends PositionRecord {
   readonly costPaise: Paise;
   readonly timeStopMin: number | null;
   readonly stall?: StallRule | null;
+  readonly entryTrigger?: 'IMMEDIATE' | 'ABOVE' | 'BELOW';
+  readonly entryExpiresAt?: number | null;
   readonly trailingGap: Paise | null;
   readonly stagedTrail?: StagedTrailRule | null;
   /** Ratcheted stop level tracked by staged trailing (initial `stopLoss` stays intact as 1R reference). */
@@ -306,6 +315,8 @@ export class Trader {
         costPaise: intent.costPaise,
         timeStopMin: intent.timeStopMin,
         ...(intent.stall ? { stall: intent.stall } : {}),
+        ...(intent.entryTrigger && intent.entryTrigger !== 'IMMEDIATE' ? { entryTrigger: intent.entryTrigger } : {}),
+        ...(intent.entryExpiresAt ? { entryExpiresAt: intent.entryExpiresAt } : {}),
         trailingGap: intent.trailingGap,
         ...(intent.stagedTrail ? { stagedTrail: intent.stagedTrail } : {}),
         virtualStopPaise: null,
@@ -343,7 +354,7 @@ export class Trader {
         side: p.side,
         quantity: p.quantity,
         product: p.product,
-        entryTrigger: 'IMMEDIATE',
+        entryTrigger: p.entryTrigger ?? 'IMMEDIATE',
         entryPrice: p.entry,
         targetPrice: p.target,
         stopLossPrice: p.stopLoss,
@@ -572,6 +583,11 @@ export class Trader {
       // minutes before the square-off is a trade with no runway.
       if (p.state === 'ENTRY_ACKED' && (mins >= SESSION.CANCEL_PENDING || eod)) {
         await this.exit(p.id, 'EOD_CANCEL');
+        continue;
+      }
+      // A retest entry the price never came back to: the setup has moved on.
+      if (p.state === 'ENTRY_ACKED' && p.entryExpiresAt && now >= p.entryExpiresAt) {
+        await this.exit(p.id, 'ENTRY_EXPIRED');
         continue;
       }
       if (p.state !== 'MANAGING') continue;

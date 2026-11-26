@@ -5,11 +5,11 @@ to enter, sizes, exits and protects capital. Numbers are the code's, and the
 "production" values are what the server runs (AutoPilot settings, 26 Nov 2026).
 Research history and backtest tables live in [05-TRADING-SYSTEM.md](05-TRADING-SYSTEM.md).
 
-> **Status, 26 Nov 2026.** The server runs in **PAPER** with **AutoPilot on**
+> **Status, 27 Nov 2026.** The server runs in **PAPER** with **AutoPilot on**
 > (it stays on across restarts). LIVE is armed only from the dashboard. In LIVE,
 > only human-APPROVED strategies may lead a trade — today that is one intraday
-> strategy, `PDH_PDL_CPR`. No intraday strategy has a proven edge after
-> charges yet; paper trading is collecting forward results.
+> strategy, `PDH_PDL_CPR`. **Over 20 months of data no intraday rule set is
+> profitable after charges** (§11); paper trading is collecting forward results.
 
 ---
 
@@ -112,8 +112,8 @@ against an overstretched one and are exempt from the trend and NIFTY filters
 | `PDH_PDL_CPR_15M` | trend | Narrow CPR (≤ 0.3%) breakout beyond PDH/PDL on 1.5× volume | 0.75–2.5 ATR | Paper |
 | `EMA_CROSS_9_21_15M` | trend | 15-min EMA9/21 cross with EMA20/50 trend, ADX > 22, RVOL ≥ 1.2× | 0.75–2.5 ATR | Paper |
 | `SMC_STRUCTURE_15M` | trend | 15-min break of structure + fair-value gap on ≥ 1.2× volume | ≥ 0.75 ATR | Paper |
-| `HOLY_GRAIL_15M` | trend | Linda Raschke: ADX ≥ 30 trend, pullback to the 20-EMA, enter when a bar breaks the pullback bar | beyond the pullback swing, 0.75–2.5 ATR | Paper (new) |
-| `INSIDE_BAR_15M` | trend | Inside bar near PDH, PDL or VWAP, then a close beyond the mother bar on 1.2× volume | mother bar's other end, 0.75–2.5 ATR | Paper (new) |
+| `HOLY_GRAIL_15M` | trend | Linda Raschke: ADX ≥ 30 trend, pullback to the 20-EMA, enter when a bar breaks the pullback bar | beyond the pullback swing, 0.75–2.5 ATR | **Failed** (20 months: −0.258R, 606 trades) |
+| `INSIDE_BAR_15M` | trend | Inside bar near PDH, PDL or VWAP, then a close beyond the mother bar on 1.2× volume | mother bar's other end, 0.75–2.5 ATR | **Failed** (20 months: −0.127R, 278 trades) |
 
 ### 3.3 Swing, daily bars (swing segment is **off** in production)
 | Strategy | Entry | Status |
@@ -128,7 +128,7 @@ A swing SELL is never automated — on a delivery product it would sell shares o
 
 ### 3.4 Targets
 Strategies propose a target (mostly 2R). For **trend** strategies the engine
-restates it at **2× the risk** (production `targetR`), then caps it at
+restates it at **2.5× the risk** (production `targetR`), then caps it at
 **today's open ± 1.5 × the 14-day daily ATR**. A setup whose cap is already
 behind the price, or with less than **0.5 daily ATR** of room left, is skipped.
 Fade strategies keep their own level targets (VWAP, the far OI wall).
@@ -172,9 +172,9 @@ every rule blocking each setup. Production values:
 |---|---|
 | Direction | **Buy only** |
 | 15-min trend | price on the trade's side of 15-min VWAP, and the 15-min trend (EMA20/50 + ADX ≥ 20) not against it |
-| **With the NIFTY** | longs only while the NIFTY's **15-min EMA20 > EMA50**; shorts on the mirror. The extra "NIFTY above today's open" condition is an option, **off** (it blocked 42% of entries as "no clear direction" and did worse in both halves of the Aug–Nov test) |
+| **With the NIFTY** | longs only while the NIFTY's **15-min EMA20 > EMA50 and it trades above today's open**; shorts on the mirror. The open condition is the usual reason for "NIFTY has no clear direction"; it can be switched off, but over 20 months it did better in 3 of 4 periods (−0.196R vs −0.226R a trade) |
 | Relative strength | buy only stocks up more than the NIFTY today (short only weaker ones) |
-| No chasing (VWAP) | trend entries ≤ **2.5 ATR** from session VWAP |
+| No chasing (VWAP) | trend entries ≤ **5 ATR** from session VWAP |
 | No chasing (entry) | live price ≤ **0.5 ATR** past the signal bar's close, ≤ 0.75 ATR past the breakout trigger |
 
 ### Trade quality
@@ -235,7 +235,8 @@ Runs only on a setup that already passed every rule.
 | Exit | When | Production |
 |---|---|---|
 | Target / stop-loss | at the broker, via the GTT bracket | always |
-| Staged profit trail | at **+1.2R** the stop locks **+0.35R**; from **+1.6R** it trails **1.25 ATR** behind the best price | **off** (no better than a fixed target in either test) |
+| Staged profit trail | at **+1.2R** the stop locks **+0.35R**; from **+1.6R** it trails **1.25 ATR** behind the best price | **on** |
+| Retest entry | rest the entry 0.25 ATR back toward the breakout, cancelled after 3 bars unfilled | **off** (20 months: no better than buying the close, −0.226R both) |
 | No-follow-through exit | close a flat/losing trade that hasn't gone +0.25R within 4 strategy bars | **off** (cut stop-outs 32% → 18% with expectancy unchanged) |
 | Exchange trailing GTT | trails at the initial risk distance from entry | off |
 | Pending entries cancelled | **15:00** | always |
@@ -272,7 +273,8 @@ Runs only on a setup that already passed every rule.
 
 ## 11. How good is it? (honest summary)
 
-- On 3 months of real 5-minute data (Aug–Nov 2026, 40 large/mid/small caps), the strategies allowed in paper, with the current rules, lose about **0.05–0.12R per trade** after charges — much better than before the 26 Nov changes (−0.20R), but **not yet profitable**.
+- On **20 months** of real 5-minute data (Mar 2025 – Nov 2026, 40 large/mid/small caps), the strategies allowed in paper lose about **0.2R per trade** after charges (2,631 trades, −0.226R; −0.196R with the NIFTY open rule). Every variation tested — stops, targets, trails, retest entries, VWAP limits, trade size — moves that by a few hundredths of an R; none makes it positive. A 3-month test (Aug–Nov 2026) looked far better and did not hold up.
+- Per strategy, only `GAP_AND_GO` (+0.003R, 75 trades) and `PDH_PDL_CPR` (−0.005R, 22 trades; +0.21R over 14 trades at a 0.35% CPR width) are near break-even. All others lose 0.09–0.48R a trade.
 - The audit of stop-outs: **52–56% never went above +0.25R** — the losses come from entries without follow-through, not from stops that are too tight (only 1–2% hit the target after being stopped).
 - Real Upstox trades so far: **12 trades, −₹71, −0.09R** average.
 - Approve a strategy for LIVE only after it is positive in paper and passes Strategy Lab validation; more capital does not create an edge.

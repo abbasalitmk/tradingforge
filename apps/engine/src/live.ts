@@ -98,10 +98,12 @@ export const AutoConfigSchema = z.object({
   marketFilter: z.boolean().default(true),
   /**
    * With the market filter, also require the NIFTY above today's open for
-   * longs (below, for shorts). Off: over Aug–Nov 2026 it blocked 42% of trend
-   * entries as "no clear direction" and made results worse in both halves.
+   * longs (below, for shorts). On: over 20 months (Mar 2025 – Nov 2026) it
+   * was better in 3 of 4 periods (−0.196R vs −0.226R a trade, half the rupee
+   * loss) although it blocks more entries as "no clear direction". A 3-month
+   * test (Aug–Nov 2026) had pointed the other way.
    */
-  marketAboveOpen: z.boolean().default(false),
+  marketAboveOpen: z.boolean().default(true),
   /** Trend entries only in stocks beating the NIFTY today (buys) or lagging it (shorts). */
   relativeStrength: z.boolean().default(true),
   /**
@@ -203,6 +205,15 @@ export const AutoConfigSchema = z.object({
   stallExit: z.boolean().default(false),
   stallBars: z.number().int().min(1).max(24).default(4),
   stallMinR: z.number().min(0).max(1.5).default(0.25),
+  /**
+   * Retest entry: instead of buying at market once a breakout bar closes,
+   * rest an order `retestAtr` ATRs back toward the breakout and let it fill
+   * only if price comes back within `retestBars` bars of the strategy's
+   * timeframe. Stop and target stay where the signal put them.
+   */
+  retestEntry: z.boolean().default(false),
+  retestAtr: z.number().min(0.05).max(2).default(0.25),
+  retestBars: z.number().int().min(1).max(12).default(3),
 });
 export type AutoConfig = z.infer<typeof AutoConfigSchema>;
 
@@ -231,7 +242,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   minStopPct: 1,
   stopClusterGuard: true,
   marketFilter: true,
-  marketAboveOpen: false,
+  marketAboveOpen: true,
   relativeStrength: true,
   targetR: 3,
   maxTargetDailyAtr: 1.5,
@@ -254,6 +265,9 @@ export const DEFAULT_AUTO: AutoConfig = {
   stallExit: false,
   stallBars: 4,
   stallMinR: 0.25,
+  retestEntry: false,
+  retestAtr: 0.25,
+  retestBars: 3,
 };
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */

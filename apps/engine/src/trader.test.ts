@@ -358,6 +358,27 @@ describe('exits outside the bracket', () => {
     expect(moved.ok && moved.position.state).toBe('MANAGING');
   });
 
+  it('a retest entry waits for the pullback, and is cancelled if it never comes', async () => {
+    const s = setup();
+    s.tick(100);
+    const filled = await s.trader.open(intent({ entry: P(95), entryTrigger: 'BELOW', entryExpiresAt: s.clock.ms() + 15 * 60_000 }));
+    await s.settle();
+    expect(filled.ok && filled.position.state).toBe('ENTRY_ACKED');
+    s.tick(94.5);
+    await s.settle();
+    expect(filled.ok && filled.position.state).toBe('MANAGING');
+
+    const t = setup();
+    t.tick(100);
+    const missed = await t.trader.open(intent({ entry: P(95), entryTrigger: 'BELOW', entryExpiresAt: t.clock.ms() + 15 * 60_000 }));
+    await t.settle();
+    t.clock.advance(16 * 60_000);
+    t.tick(101);
+    await t.trader.manage(() => 101);
+    await t.settle();
+    expect(missed.ok && missed.position.state).toBe('CANCELLED');
+  });
+
   it('kill switch flattens every open position through the broker', async () => {
     const s = setup();
     s.tick(100);

@@ -70,6 +70,14 @@ export interface BacktestConfig {
   structureTargets?: boolean;
   /** Close at the bar's close once `bars` have passed with MFE under `minMfeR` and the trade not in profit. */
   stall?: { readonly bars: number; readonly minMfeR: number };
+  /**
+   * Retest entry: instead of buying the next open after a breakout closes,
+   * rest a limit back at a level and fill only if price returns within `bars`
+   * bars. TRIGGER = the breakout level (+ offsetAtr × ATR toward the close),
+   * MID = the signal bar's midpoint, ATR = offsetAtr × ATR inside the close.
+   * Stop and target stay where the signal put them.
+   */
+  retest?: { readonly bars: number; readonly level: 'TRIGGER' | 'MID' | 'ATR'; readonly offsetAtr: number };
 }
 
 /**
@@ -410,7 +418,7 @@ function simulate(
   const slip = cfg.slippageBps / 10_000;
   const maxHold = Math.max(1, cfg.maxHoldBars ?? 20);
   const trades: TradeRecord[] = [];
-  const atrSeries = (cfg.trail || (intraday && ((cfg.maxVwapStretchAtr ?? 0) > 0 || (cfg.minStopAtr ?? 0) > 0))) ? atr(candles, 14) : null;
+  const atrSeries = (cfg.trail || (intraday && ((cfg.maxVwapStretchAtr ?? 0) > 0 || (cfg.minStopAtr ?? 0) > 0 || cfg.retest))) ? atr(candles, 14) : null;
   const vwSeries = intraday && (cfg.maxVwapStretchAtr ?? 0) > 0 ? vwap(candles) : null;
   const dailyStats = intraday && (cfg.maxTargetDailyAtr ?? 0) > 0 ? intradaySessionStats(candles) : null;
   const need5mContext = intraday && (cfg.htfBias || cfg.marketSeries);
@@ -512,7 +520,7 @@ function simulate(
       const fiveEnd = fiveMinByClose?.get(closeT);
       if (mIdx !== undefined && mIdx >= 100) {
         const mSlice = cfg.marketSeries.slice(Math.max(0, mIdx - 299), mIdx + 1);
-        const mSide = marketDirection(mSlice, { requireAboveOpen: cfg.marketAboveOpen ?? false });
+        const mSide = marketDirection(mSlice, { requireAboveOpen: cfg.marketAboveOpen ?? true });
         if (mSide !== rawSig.side) return null;
         const fiveSlice = fiveEnd !== undefined ? raw5mCandles.slice(Math.max(0, fiveEnd - 150), fiveEnd + 1) : candles.slice(Math.max(0, sigIdx - 150), sigIdx + 1);
         const ownCh = dayChangePct(fiveSlice);
@@ -558,8 +566,32 @@ function simulate(
 
     if (long ? !(stop < target) : !(stop > target)) return null;
 
-    const fill = against(bar.open, sig.side);
+    let entryIdx = e;
+    let fill = against(bar.open, sig.side);
     if (long ? bar.open <= stop || fill <= stop : bar.open >= stop || fill >= stop) return null;
+    if (intraday && cfg.retest) {
+      const sb = candles[sigIdx]!;
+      const a = atrSeries?.[sigIdx] ?? 0;
+      const trig = sig.indicators?.['triggerPrice'];
+      const level = cfg.retest.level === 'TRIGGER' && typeof trig === 'number' ? trig + dir * cfg.retest.offsetAtr * a
+        : cfg.retest.level === 'ATR' ? sb.close - dir * cfg.retest.offsetAtr * a
+        : (sb.high + sb.low) / 2;
+      // A level at or beyond the close is no retest: the order would fill at once.
+      if ((sb.close - level) * dir > 0) {
+        if (long ? level <= stop : level >= stop) return null;
+        let hit = -1;
+        for (let k = e; k < Math.min(to, e + cfg.retest.bars); k++) {
+          if (meta.day[k] !== meta.day[sigIdx] || pastSquareOff(k)) break;
+          if (long ? candles[k]!.low <= level : candles[k]!.high >= level) { hit = k; break; }
+        }
+        if (hit < 0) return null;
+        const hb = candles[hit]!;
+        if (long ? hb.open <= stop : hb.open >= stop) return null;
+        // The resting trigger sends a market order when price reaches the level (or the open, if it gapped past).
+        fill = against(long ? Math.min(hb.open, level) : Math.max(hb.open, level), sig.side);
+        entryIdx = hit;
+      }
+    }
     if (long ? fill >= target : fill <= target) return null;
 
     const risk = Math.abs(fill - stop);
@@ -582,11 +614,13 @@ function simulate(
       const estStopCost = roundTripCost(cfg.costs, sig.side, qty, fill, stop);
       if (estStopCost / (risk * qty) * 100 > cfg.maxChargePctOfRisk) return null;
     }
-    return { side: sig.side, entryIdx: e, entryPrice: fill, stop, target, best: fill, risk, qty, mae: 0, mfe: 0 };
+    return { side: sig.side, entryIdx, entryPrice: fill, stop, target, best: fill, risk, qty, mae: 0, mfe: 0 };
   };
 
   /** Advance an open position through bar j. Returns the trade if it closed. */
   const step = (p: OpenPosition, j: number): TradeRecord | null => {
+    // A resting retest order that has not filled yet.
+    if (j < p.entryIdx) return null;
     const bar = candles[j]!;
     const long = p.side === 'BUY';
     const held = j - p.entryIdx + 1;

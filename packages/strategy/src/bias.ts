@@ -76,10 +76,9 @@ export function trendBias15(closed5m: readonly Candle[], minAdx = BIAS_MIN_ADX):
  * buy strength in a rising market and short weakness in a falling one.
  *
  * `requireAboveOpen` also demands the index be above (below) today's open.
- * Aug–Nov 2026, production settings, paper-eligible strategies: that extra
- * condition was the main source of "no clear direction" and made results
- * worse in both halves (−0.498R/−0.055R a trade vs −0.276R/−0.053R on the
- * EMA trend alone, with 42% fewer trades).
+ * It is the main source of "no clear direction", but over 20 months of NSE
+ * data (Mar 2025 – Nov 2026) entries taken with it did better in 3 of 4
+ * periods (−0.196R vs −0.226R a trade), so live runs with it on.
  */
 export function marketDirection(closed5m: readonly Candle[], o: { requireAboveOpen?: boolean } = {}): Side | null {
   const last = closed5m[closed5m.length - 1];

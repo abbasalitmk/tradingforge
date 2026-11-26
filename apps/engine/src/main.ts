@@ -674,6 +674,20 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
   if (trader.holds(key)) return { ok: false, reason: 'already holding' };
   if (!verdictNow().allowEntries) return { ok: false, reason: 'circuit breaker tripped' };
 
+  // Retest entry: rest the order back toward the breakout instead of buying the close.
+  const tfMin = getStrategy(meta.strategyId)?.timeframe === '15m' ? 15 : 5;
+  const retest = product === 'I' && signal.style === 'INTRADAY' && state.auto.retestEntry && signal.atr > 0;
+  if (retest) {
+    const dir = signal.side === 'BUY' ? 1 : -1;
+    const level = Math.round(signal.entry - dir * state.auto.retestAtr * signal.atr * 100) as Paise;
+    if ((level - signal.stopLoss) * dir <= 0) return { ok: false, reason: 'retest level is beyond the stop' };
+    const stopPct = (Math.abs(level - signal.stopLoss) / level) * 100;
+    if (state.auto.minStopPct > 0 && stopPct < state.auto.minStopPct) {
+      return { ok: false, reason: `stop ${stopPct.toFixed(2)}% from the retest level (min ${state.auto.minStopPct}%)` };
+    }
+    signal = { ...signal, entry: level };
+  }
+
   const deployed = trader.deployed();
   const sized = sizePosition({
     mode: state.sizingMode,
@@ -754,14 +768,18 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     costPaise: (signal.entry * qty) as Paise,
     timeStopMin: null,
     stall: signal.style === 'INTRADAY' && state.auto.stallExit
-      ? { afterMin: state.auto.stallBars * (getStrategy(meta.strategyId)?.timeframe === '15m' ? 15 : 5), minMfeR: state.auto.stallMinR }
+      ? { afterMin: state.auto.stallBars * tfMin, minMfeR: state.auto.stallMinR }
       : null,
+    ...(retest ? {
+      entryTrigger: signal.side === 'BUY' ? 'BELOW' as const : 'ABOVE' as const,
+      entryExpiresAt: clock.ms() + state.auto.retestBars * tfMin * 60_000,
+    } : {}),
     strategyId: meta.strategyId,
     ...(meta.strategyVersion ? { strategyVersion: meta.strategyVersion } : {}),
     quality: meta.quality,
   });
   return r.ok
-    ? { ok: true, detail: `${qty} × ₹${entryRs.toFixed(2)} · net R:R ${netRR.toFixed(2)} after ~₹${costAtTarget.toFixed(2)} charges${stagedTrail ? ' · staged trail' : state.auto.trailStop ? ' · trailing stop' : ''}` }
+    ? { ok: true, detail: `${qty} × ₹${entryRs.toFixed(2)}${retest ? ` (retest order, ${state.auto.retestBars} bars)` : ''} · net R:R ${netRR.toFixed(2)} after ~₹${costAtTarget.toFixed(2)} charges${stagedTrail ? ' · staged trail' : state.auto.trailStop ? ' · trailing stop' : ''}` }
     : { ok: false, reason: r.reason };
 }
 

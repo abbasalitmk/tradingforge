@@ -445,6 +445,34 @@ production settings, paper-eligible strategies, buy only, each half judged separ
 
 ---
 
+## 12b. 20-month review (27 Nov 2026) — supersedes the 3-month conclusions above
+
+Data: 5-minute bars, 10 Mar 2025 – 25 Nov 2026 (~420 sessions), 40 NSE stocks,
+13 paper-eligible strategies, production rules, full charges, buy only. Four
+periods: P1 Mar–Jul 2025, P2 Aug–Dec 2025, P3 Jan–May 2026, P4 Jun–Nov 2026.
+
+| Variant | Trades | Per trade | Periods better than "26 Nov production" | Decision |
+|---|---|---|---|---|
+| 26 Nov production (VWAP 2.5, 2R, no trail, NIFTY EMA-only) | 2,631 | −0.226R | — | replaced |
+| Previous settings (VWAP 5, 2.5R, staged trail on) | 2,794 | −0.213R | 3 of 4 | **restored** |
+| NIFTY needs trend **and** above today's open | 1,654 | **−0.196R** | 3 of 4, half the rupee loss | **restored (default on)** |
+| Retest entry, 0.25 ATR, 3 bars | 1,945 | −0.226R | 2 of 4 | option, **off** |
+| Retest at breakout level / bar midpoint / 0.5 ATR | 1,302–1,375 | −0.231 to −0.257R | ≤ 2 of 4 | rejected |
+| `HOLY_GRAIL_15M` | 606 | −0.258R | — | **failed** (migration 0012) |
+| `INSIDE_BAR_15M` | 278 | −0.127R | — | **failed** (migration 0012) |
+| `FAILED_BREAKOUT_TRAP` (fade) | 211 | −0.247R | — | no down-day scanner built for it |
+
+`PDH_PDL_CPR` (5m, approved v2 at 0.9% CPR width): 22 trades −0.005R; at 0.45%
+15 trades +0.118R; at 0.35% 14 trades +0.214R — narrower looks better but the
+sample is tiny and every width lost in P4. `PDH_PDL_CPR_15M`: 0.35–0.45% beats
+0.9% overall (−0.09R vs −0.11R); the code default is 0.3%.
+
+**Conclusion:** no intraday rule set here is profitable over 20 months. Keep
+PAPER; approve nothing new for LIVE without a positive result across most of
+these periods.
+
+---
+
 ## 13. Where it lives in the code
 
 | Part | File |
