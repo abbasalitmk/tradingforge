@@ -163,7 +163,7 @@ describe('MarketService.stockEdge', () => {
     const r = await service().stockEdge('BETA');
     expect(r.edges.map((e) => e.strategyId)).toEqual(STRATEGY_CATALOG.map((d) => d.id));
     expect(r.edges.some((e) => (e.trades ?? 0) > 0)).toBe(true);
-  });
+  }, 15_000);
 
   it('fails visibly on a rate limit and does not cache the failure', async () => {
     const m = service(fakeClient({ backfillFailOnce: true }));

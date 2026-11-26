@@ -122,6 +122,15 @@ describe('confluence requirements', () => {
     expect(strict.evaluate(ctx(candles))).toBeNull();
   });
 
+  it('requires hard Supertrend, VWAP, ADX and close-location gates when hardGates is enabled', () => {
+    const p = new IntradayProfile(
+      { ...DEFAULT_INTRADAY, minAdx: 25, minConfidence: 10 },
+      { hardGates: true, minStopPct: 0.75 },
+    );
+    // Sideways chop (ADX below 25) or soft low-RVOL breakout cannot bypass hardGates even at minConfidence: 10.
+    expect(p.evaluate(ctx(session({ bars: 60, breakoutFrom: 57, stepPct: 0.0005 })))).toBeNull();
+  });
+
   it('records which checks fired, so a trade can be explained later', () => {
     const s = new IntradayProfile().evaluate(ctx(session({ bars: 60 })))!;
     expect(s.reasons.length).toBeGreaterThan(0);

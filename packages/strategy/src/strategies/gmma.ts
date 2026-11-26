@@ -59,14 +59,27 @@ export function resample15(candles: readonly Candle[]): Candle[] {
   return out;
 }
 
-const ribbons = (c: readonly number[], at: number): { short: number[]; long: number[] } | null => {
-  const pick = (periods: number[]): number[] | null => {
-    const vals = periods.map((p) => ema(c, p)[at] ?? null);
-    return vals.every((v) => v !== null) ? (vals as number[]) : null;
-  };
-  const short = pick(SHORT);
-  const long = pick(LONG);
-  return short && long ? { short, long } : null;
+const computeRibbonSeries = (c: readonly number[]): { short: ReadonlyArray<ReadonlyArray<number | null>>; long: ReadonlyArray<ReadonlyArray<number | null>> } => ({
+  short: SHORT.map((p) => ema(c, p)),
+  long: LONG.map((p) => ema(c, p)),
+});
+
+const ribbonAt = (
+  series: ReturnType<typeof computeRibbonSeries>, at: number,
+): { short: number[]; long: number[] } | null => {
+  const short: number[] = [];
+  for (const s of series.short) {
+    const v = s[at];
+    if (v == null) return null;
+    short.push(v);
+  }
+  const long: number[] = [];
+  for (const s of series.long) {
+    const v = s[at];
+    if (v == null) return null;
+    long.push(v);
+  }
+  return { short, long };
 };
 
 /** Signed gap between the ribbons: > 0 short fully above long, < 0 fully below, 0 tangled. */
@@ -110,8 +123,9 @@ export class GmmaProfile implements StrategyProfile {
     const c = closes(candles);
     const n = c.length;
 
-    const now = ribbons(c, n - 1);
-    const then = ribbons(c, n - 1 - p.slopeBars);
+    const series = computeRibbonSeries(c);
+    const now = ribbonAt(series, n - 1);
+    const then = ribbonAt(series, n - 1 - p.slopeBars);
     if (!now || !then) return null;
     const sepNow = separation(now);
     if (sepNow === 0) return null;
@@ -121,7 +135,7 @@ export class GmmaProfile implements StrategyProfile {
     // Fresh: within freshBars the ribbons were still tangled or opposite.
     let fresh = false;
     for (let k = 1; k <= p.freshBars; k++) {
-      const r = ribbons(c, n - 1 - k);
+      const r = ribbonAt(series, n - 1 - k);
       if (r && separation(r) * dir <= 0) { fresh = true; break; }
     }
 

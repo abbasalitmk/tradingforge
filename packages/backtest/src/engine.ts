@@ -385,6 +385,11 @@ function simulate(
 ): TradeRecord[] {
   const candles = data.candles;
   const intraday = def.timeframe !== '1d';
+  // Live squares off at 15:05 whatever the bar size. A bar that runs past it
+  // (the 15:00–15:15 bar on 15-min data) is one live never holds through, so
+  // it is closed at that bar's open rather than tested for stop and target.
+  const barMinutes = def.timeframe === '15m' ? 15 : 5;
+  const pastSquareOff = (k: number): boolean => meta.mins[k]! + barMinutes > SESSION.SQUARE_OFF;
   const slip = cfg.slippageBps / 10_000;
   const maxHold = Math.max(1, cfg.maxHoldBars ?? 20);
   const trades: TradeRecord[] = [];
@@ -440,7 +445,7 @@ function simulate(
       // Never carry an intraday signal into the next session, and never open
       // a position the square-off would close on the same bar.
       if (meta.day[e] !== meta.day[e - 1]) return null;
-      if (meta.mins[e]! >= SESSION.SQUARE_OFF) return null;
+      if (pastSquareOff(e)) return null;
     }
 
     const sigIdx = e - 1;
@@ -548,7 +553,7 @@ function simulate(
       (long ? price - p.entryPrice : p.entryPrice - price) / p.risk;
 
     if (intraday && j > p.entryIdx
-      && (meta.mins[j]! >= SESSION.SQUARE_OFF || meta.day[j] !== meta.day[p.entryIdx])) {
+      && (pastSquareOff(j) || meta.day[j] !== meta.day[p.entryIdx])) {
       p.mae = Math.min(p.mae, toR(bar.open));
       p.mfe = Math.max(p.mfe, toR(bar.open));
       return close(p, bar.open, 'EOD', bar.ts, held - 1);

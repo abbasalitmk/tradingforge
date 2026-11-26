@@ -647,7 +647,7 @@ export function guardSetupStop(s: HybridSetup, closed: readonly Candle[]): Hybri
  */
 export function signalAgeMs(
   strategyId: string, side: Side, closed: readonly Candle[], daily: readonly Candle[],
-  params: Params | undefined, maxBars: number, ctx: { instrumentKey: string; symbol: string },
+  params: Params | undefined, maxBars: number, ctx: { instrumentKey: string; symbol: string }, now?: number,
 ): number {
   const def = getStrategy(strategyId);
   if (!def || def.timeframe === '1d') return 0;
@@ -664,7 +664,11 @@ export function signalAgeMs(
     if (!s || s.side !== side) break;
     bars++;
   }
-  return bars * stepMs;
+  // The signal has stood since the bar it came from closed, not since it was
+  // first seen: on a 15-min bar that is up to 15 minutes the earlier bars miss.
+  const latestBar = series[series.length - 1];
+  const sinceClose = now !== undefined && latestBar ? Math.max(0, now - (latestBar.ts + stepMs)) : 0;
+  return bars * stepMs + sinceClose;
 }
 
 /** How far the price sits from today's VWAP in 5-min ATRs, signed, from closed bars. */
@@ -765,7 +769,7 @@ export class LiveAnalyzer {
         if (since === now && s.style === 'INTRADAY' && cfg.closedBarEntries && cfg.maxSetupAgeMin > 0) {
           since -= signalAgeMs(
             s.primaryStrategyId, s.side, closed, daily, params[s.primaryStrategyId],
-            Math.ceil(cfg.maxSetupAgeMin / (5 * tfStep)) + 1, t,
+            Math.ceil(cfg.maxSetupAgeMin / (5 * tfStep)) + 1, t, now,
           );
         }
         this.stability.set(key, { sig, since });

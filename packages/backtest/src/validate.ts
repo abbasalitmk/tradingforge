@@ -67,7 +67,7 @@ export function liveParityBacktestFor(def: Pick<StrategyDefinition, 'style' | 't
     ...base,
     entrySessionsOnly: true,
     htfBias: true,
-    minStopPct: def.timeframe === '15m' ? 0.6 : 0.5,
+    minStopPct: def.timeframe === '15m' ? 0.75 : 0.5,
     maxVwapStretchAtr: 5,
     stopClusterGuard: true,
     targetR: 2.5,

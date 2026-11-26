@@ -206,6 +206,30 @@ describe('backtest engine', () => {
     expect(runBacktest(activeWindow, undefined, data(intra), { ...noFriction, entrySessionsOnly: true }).length).toBeGreaterThan(0);
   });
 
+  it('never holds a 15-min position past the 15:05 square-off', () => {
+    const LATE_15: StrategyDefinition = {
+      ...LATE_BUY, id: 'TEST_LATE_15', timeframe: '15m',
+      create() {
+        return {
+          style: 'INTRADAY', name: 'late15', warmupBars: 1,
+          evaluate(ctx) {
+            const last = ctx.candles[ctx.candles.length - 1]!;
+            if (istMinutes(new Date(last.ts)) !== 14 * 60 + 30) return null;
+            return { ...sig(ctx, 'BUY', last.close, last.close * 0.5, last.close * 2), style: 'INTRADAY' };
+          },
+        };
+      },
+    };
+    const bars = intradaySeries('2026-01-05', 2, { seed: 3, startPrice: 500, drift: 0, vol: 0.001 });
+    const t = runBacktest(LATE_15, undefined, data(bars), noFriction);
+    expect(t.length).toBeGreaterThan(0);
+    for (const tr of t) {
+      expect(tr.exitReason).toBe('EOD');
+      // The 15:00 bar runs to 15:15: live is flat by 15:05, so it exits at that bar's open.
+      expect(istMinutes(new Date(tr.exitTs))).toBe(15 * 60);
+    }
+  });
+
   it('exits a swing trade on time after maxHoldBars', () => {
     const flat = Array.from({ length: 30 }, (_, i) => day(i, 100, 101, 99, 100));
     const t = runBacktest(fixed(80, 200, 1), undefined, data(flat), { ...noFriction, maxHoldBars: 5 });

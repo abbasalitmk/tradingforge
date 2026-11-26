@@ -103,6 +103,10 @@ export class MarketFeed extends EventEmitter {
   private detachSocket(ws: WebSocket | null): void {
     if (!ws) return;
     ws.removeAllListeners();
+    // Terminating a socket still CONNECTING emits 'error' on the next tick; with
+    // no listener left, Node throws and the whole engine dies — e.g. arming
+    // LIVE or refreshing the token during a reconnect.
+    ws.on('error', () => {});
     try {
       ws.terminate();
     } catch {

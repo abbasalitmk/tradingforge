@@ -51,14 +51,23 @@ export const DEFAULT_INTRADAY: IntradayParams = {
  * A breakout is only taken once the opening range is CLOSED. Trading a range
  * that is still forming means breaking out of a level that is still moving.
  */
+export interface IntradayOptions {
+  /** Enforce Supertrend, EMA9/21, VWAP, ADX and close-location as hard prerequisites (used by 15m v2). */
+  readonly hardGates?: boolean;
+  /** Minimum volatility/cost stop floor as % of entry price (e.g. 0.75 on 15m). */
+  readonly minStopPct?: number;
+}
+
 export class IntradayProfile implements StrategyProfile {
   readonly style: TradingStyle = 'INTRADAY';
   readonly name = 'ORB + Supertrend + VWAP';
   readonly warmupBars: number;
   private readonly p: IntradayParams;
+  private readonly opts: IntradayOptions;
 
-  constructor(params: IntradayParams = DEFAULT_INTRADAY) {
+  constructor(params: IntradayParams = DEFAULT_INTRADAY, opts: IntradayOptions = {}) {
     this.p = params;
+    this.opts = opts;
     this.warmupBars = Math.max(params.atrPeriod, 26) + 5;
   }
 
@@ -119,6 +128,18 @@ export class IntradayProfile implements StrategyProfile {
     const ema21 = latest(ema(c, 21));
     const adxNow = latest(adx(candles, 14).adx);
     const vwapNow = latest(vwap(candles));
+    const barRange = last.high - last.low;
+    const closeLoc = barRange > 0
+      ? (long ? (last.close - last.low) / barRange : (last.high - last.close) / barRange)
+      : 0.5;
+
+    if (this.opts.hardGates) {
+      if (stDir !== (long ? 1 : -1)) return null;
+      if (ema9 === null || ema21 === null || (long ? ema9 <= ema21 : ema9 >= ema21)) return null;
+      if (adxNow === null || adxNow < this.p.minAdx) return null;
+      if (vwapNow === null || (long ? price <= vwapNow : price >= vwapNow)) return null;
+      if (closeLoc < 0.55) return null;
+    }
 
     const checks: Confluence[] = [
       {
@@ -175,7 +196,9 @@ export class IntradayProfile implements StrategyProfile {
     const confidence = scoreConfluence(checks);
     if (confidence < this.p.minConfidence) return null;
 
-    const stopDistance = atrNow * this.p.stopAtrMultiple;
+    const rawStop = atrNow * this.p.stopAtrMultiple;
+    const minFloor = this.opts.minStopPct && this.opts.minStopPct > 0 ? price * (this.opts.minStopPct / 100) : 0;
+    const stopDistance = Math.max(rawStop, minFloor);
     const entry = rupeesToPaise(price);
     const stopLoss = rupeesToPaise(long ? price - stopDistance : price + stopDistance);
     const target = rupeesToPaise(
@@ -218,27 +241,35 @@ export const ORB_SUPERTREND_15M: StrategyDefinition = {
   name: 'ORB + Supertrend + VWAP (15m)',
   style: 'INTRADAY',
   timeframe: '15m',
-  description: '15-minute bar ORB breakout confirmed by Supertrend, EMA9/21, ADX, >=1.4x RVOL, VWAP side and fresh RSI room (<72 / >28).',
+  description: '30-min opening range breakout on closed 15m bars (first breakout bar only) with hard Supertrend, EMA9/21, ADX >= 25, RVOL >= 1.5x, VWAP alignment, RSI room (<72 / >28), close strength and >= 0.75% volatility floor.',
   defaults: {
     ...DEFAULT_INTRADAY,
-    minRelativeVolume: 1.4,
-    freshBars: 2,
-    stopAtrMultiple: 1.5,
-    targetRR: 2,
+    orbMinutes: 30,
+    minRelativeVolume: 1.5,
+    minAdx: 25,
+    rsiUpper: 72,
+    rsiLower: 28,
+    freshBars: 1,
+    stopAtrMultiple: 2.0,
+    targetRR: 2.0,
+    minConfidence: 70,
   } as unknown as Params,
   bounds: {
-    orbMinutes: { min: 15, max: 30, step: 15 },
-    stopAtrMultiple: { min: 1, max: 3, step: 0.25 },
-    targetRR: { min: 1.2, max: 3.5, step: 0.25 },
-    minRelativeVolume: { min: 1, max: 3, step: 0.2 },
-    minAdx: { min: 12, max: 35, step: 1 },
-    rsiUpper: { min: 62, max: 85, step: 2 },
-    rsiLower: { min: 15, max: 38, step: 2 },
-    freshBars: { min: 1, max: 8, step: 1 },
-    minConfidence: { min: 50, max: 90, step: 5 },
+    orbMinutes: { min: 15, max: 45, step: 15 },
+    stopAtrMultiple: { min: 1.5, max: 3, step: 0.25 },
+    targetRR: { min: 1.5, max: 3, step: 0.25 },
+    minRelativeVolume: { min: 1.3, max: 2.5, step: 0.2 },
+    minAdx: { min: 20, max: 32, step: 2 },
+    rsiUpper: { min: 66, max: 78, step: 2 },
+    rsiLower: { min: 22, max: 34, step: 2 },
+    freshBars: { min: 1, max: 3, step: 1 },
+    minConfidence: { min: 60, max: 85, step: 5 },
   },
   create(params) {
-    return tagged(this.id, new IntradayProfile(clampParams(this, params) as unknown as IntradayParams));
+    return tagged(
+      this.id,
+      new IntradayProfile(clampParams(this, params) as unknown as IntradayParams, { hardGates: true, minStopPct: 0.75 }),
+    );
   },
 };
 

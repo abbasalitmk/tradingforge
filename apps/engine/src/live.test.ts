@@ -254,6 +254,22 @@ describe('session discipline', () => {
     expect(decide(short(-7.7), equity, { ...both, maxVwapStretchAtr: 0 }, paper).blockers).toEqual([]);
   });
 
+  it('counts the time since the signal bar closed when a setup is first seen mid-bar', () => {
+    const def = getStrategy('ORB_SUPERTREND')!;
+    const bars = intraday('2026-01-05', 8, { seed: 1, start: 1000, drift: 0.0006, vol: 0.003, volume: 20_000 });
+    const fires = (i: number) => def.create().evaluate({
+      instrumentKey: 'K', symbol: 'S', candles: bars.slice(0, i + 1), higherTf: [], clock: new FixedClock(new Date(closeOf(bars[i]!, '5m'))),
+    });
+    // A bar that fired when the one before it did not: a brand-new signal.
+    const i = bars.findIndex((_, k) => k > 1 && fires(k)?.side === 'BUY' && fires(k - 1)?.side !== 'BUY');
+    expect(i).toBeGreaterThan(0);
+    const closedAt = closeOf(bars[i]!, '5m');
+    const ctx = { instrumentKey: 'K', symbol: 'S' };
+    expect(signalAgeMs('ORB_SUPERTREND', 'BUY', bars.slice(0, i + 1), [], undefined, 3, ctx, closedAt)).toBe(0);
+    // First seen 4 minutes after that bar closed (a restart, a new pick): 4 minutes old, not new.
+    expect(signalAgeMs('ORB_SUPERTREND', 'BUY', bars.slice(0, i + 1), [], undefined, 3, ctx, closedAt + 4 * 60_000)).toBe(4 * 60_000);
+  });
+
   it('skips a setup that went stale waiting for a slot, and enters a fresh one', () => {
     // 23 Nov: every close was followed by an entry within seconds — setups that
     // had stood behind the position cap for an hour.

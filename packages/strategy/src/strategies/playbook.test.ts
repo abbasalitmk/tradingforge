@@ -90,8 +90,9 @@ describe('PDH/PDL narrow-CPR breakout', () => {
   it('skips a thin breakout and a wide-CPR day', () => {
     const thin = run(PDH_PDL_CPR, [...day('2026-01-05', quiet(75, 100)), ...day('2026-01-06', yesterday), ...day('2026-01-07', [...today, [100.5, 101.4, 100.4, 101.3, 1200]])]);
     expect(thin).toBeNull();
-    const wide: Bar[] = [[100, 101, 99.9, 100.5, 1000], [100.5, 100.6, 99, 99.5, 1000], ...quiet(73, 100.9)];
-    expect(run(PDH_PDL_CPR, [...day('2026-01-05', quiet(75, 100)), ...day('2026-01-06', wide), ...day('2026-01-07', [...quiet(20, 100.9), [100.9, 101.4, 100.8, 101.3, 2500]])])).toBeNull();
+    // High 102, low 98, close 101.8 -> CPR width ~1.2% (> 0.9% maxCprWidthPct).
+    const wide: Bar[] = [[100, 102, 99.9, 100.5, 1000], [100.5, 100.6, 98, 99.5, 1000], ...quiet(73, 101.8)];
+    expect(run(PDH_PDL_CPR, [...day('2026-01-05', quiet(75, 100)), ...day('2026-01-06', wide), ...day('2026-01-07', [...quiet(20, 101.8), [101.8, 102.5, 101.7, 102.4, 2500]])])).toBeNull();
   });
 });
 
