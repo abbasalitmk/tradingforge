@@ -6,16 +6,16 @@ import { decide, AutoConfigSchema, type DecisionContext, type Target } from './l
 
 /*
  * Acceptance check of every entry filter against the AutoPilot settings the
- * production engine ran with on 26 Nov 2026 (GET /auto/config). A clean setup
+ * production engine runs (GET /auto/config, 26 Nov 2026, after the audit review). A clean setup
  * must pass; breaking any one rule must block it with that rule's reason.
  */
 const PRODUCTION = AutoConfigSchema.parse({
   enabled: true, targetMode: 'ALL_SCANNED', targetSymbol: 'RELIANCE', minPrice: 50, maxPrice: 3000,
   segments: { intraday: true, swing: false, fno: false }, minQuality: 70, minRewardRisk: 1.5, minNetRewardRisk: 1.25,
-  confirmSeconds: 6, strategies: [], maxEntriesPerDay: 5, maxEntriesMorning: 5, maxEntriesAfternoon: 3, maxPerSector: 2,
-  reentryCooldownMin: 5, closedBarEntries: true, htfBias: true, htfBiasStrict: false, maxVwapStretchAtr: 5, maxSetupAgeMin: 10,
-  minStopPct: 0.65, stopClusterGuard: true, marketFilter: true, relativeStrength: true, targetR: 2.5, maxTargetDailyAtr: 1.5,
-  minRoomDailyAtr: 0.5, maxEntryChaseAtr: 0.5, stagedTrail: true, maxCostPctOfRisk: 20, maxOpenPositions: 5, maxPerStrategy: 2,
+  confirmSeconds: 2, strategies: [], maxEntriesPerDay: 5, maxEntriesMorning: 5, maxEntriesAfternoon: 3, maxPerSector: 2,
+  reentryCooldownMin: 5, closedBarEntries: true, htfBias: true, htfBiasStrict: false, maxVwapStretchAtr: 2.5, maxSetupAgeMin: 10,
+  minStopPct: 0.65, stopClusterGuard: true, marketFilter: true, relativeStrength: true, targetR: 2, maxTargetDailyAtr: 1.5,
+  minRoomDailyAtr: 0.5, maxEntryChaseAtr: 0.5, stagedTrail: false, maxCostPctOfRisk: 20, maxOpenPositions: 5, maxPerStrategy: 2,
   maxSameSide: 3, trailStop: false, pauseLosingStrategies: true, skipFailedStrategies: true, tradeSide: 'BUY', autoUniverse: true,
   autoUniverseSize: 15, maxLeverage: 3, autoUniverseMinTurnoverCr: 25, maxSpreadPct: 0.15, stallExit: false, stallBars: 4, stallMinR: 0.25,
 });
@@ -54,9 +54,9 @@ describe('production AutoPilot filters', () => {
     ['against the 15-min trend', () => blockers({ bias: { ...up, side: 'SELL', vwapSide: 'SELL', emaSide: 'SELL', reason: 'down' } }), /against a 15-min trend/],
     ['NIFTY falling', () => blockers({ marketSide: 'SELL' }), /NIFTY is falling/],
     ['weaker than NIFTY', () => blockers({ relStrengthPct: -0.4 }), /weaker than the market/],
-    ['chasing far from VWAP', () => blockers({ vwapStretchAtr: 6 }), /chases a move 6\.0 ATR from VWAP/],
+    ['chasing far from VWAP', () => blockers({ vwapStretchAtr: 3 }), /chases a move 3\.0 ATR from VWAP \(max 2\.5\)/],
     ['entry chased past the bar close', () => blockers({ entry: 502, barCloseEntry: 500 }), /entry chased 1\.00 ATR past bar close/],
-    ['not held long enough', () => blockers({ stableSeconds: 3 }), /stable 3s < 6s/],
+    ['not held long enough', () => blockers({ stableSeconds: 1 }), /stable 1s < 2s/],
     ['stale signal', () => blockers({ stableSeconds: 11 * 60 }), /stale: signalling for 11 min/],
     ['already invalidated', () => blockers({ invalidReason: 'price ₹494 already through stop ₹495' }), /already through stop/],
     ['daily entry cap', () => blockers({}, { entriesToday: 5 }), /daily entry cap 5 reached/],
