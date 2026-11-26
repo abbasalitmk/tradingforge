@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { z } from 'zod';
+import type { Candle } from '@tradeforger/core';
 import { istDateKey, type Clock } from '@tradeforger/core';
 import type { UpstoxClient } from '@tradeforger/upstox';
 import { backfill } from '@tradeforger/data';
@@ -125,10 +126,22 @@ export class ResearchLab {
     return out;
   }
 
-  private runWorker(strategyId: string, params: Params, datasets: Dataset[]): Promise<ValidationReport> {
+  /** Historical NIFTY 50 5-min bars for live-parity intraday market & RS filtering. */
+  async marketHistory(days: number): Promise<Candle[]> {
+    const to = istDateKey(new Date(this.clock.ms() - DAY));
+    const from = istDateKey(new Date(this.clock.ms() - days * DAY));
+    const r = await backfill(this.client, 'NSE_INDEX|Nifty 50', 'minutes', 5, from, to);
+    if (!r.ok) {
+      console.warn(`[research] Nifty 50 market history unavailable — ${r.error.message}`);
+      return [];
+    }
+    return r.value;
+  }
+
+  private runWorker(strategyId: string, params: Params, datasets: Dataset[], marketSeries: Candle[]): Promise<ValidationReport> {
     return new Promise((resolve, reject) => {
       const w = new Worker(new URL('./research-worker.ts', import.meta.url), {
-        workerData: { strategyId, params, datasets },
+        workerData: { strategyId, params, datasets, marketSeries },
       });
       w.once('message', (m: { ok: true; report: ValidationReport } | { ok: false; error: string }) => {
         void w.terminate();
@@ -150,10 +163,14 @@ export class ResearchLab {
   private async doValidate(job: ResearchJob, v: StrategyVersion, days?: number): Promise<void> {
     const def = getStrategy(v.strategyId);
     if (!def) throw new Error(`unknown strategy ${v.strategyId}`);
+    const spanDays = days ?? (def.timeframe === '1d' ? 1100 : 365);
     job.stage = 'loading history';
-    const data = await this.datasets(def, days ?? (def.timeframe === '1d' ? 1100 : 60));
+    const [data, marketSeries] = await Promise.all([
+      this.datasets(def, spanDays),
+      def.timeframe === '1d' ? Promise.resolve([]) : this.marketHistory(spanDays),
+    ]);
     job.stage = `validating on ${data.length} symbols`;
-    const report = await this.runWorker(v.strategyId, v.params, data);
+    const report = await this.runWorker(v.strategyId, v.params, data, marketSeries);
     const updated = await this.registry.recordValidation(v.id, report.status === 'APPROVED', report);
     // The report's own word is "APPROVED"; the registry translates it to VALIDATED.
     job.result = updated.status === 'REJECTED' ? 'REJECTED' : 'VALIDATED';

@@ -92,8 +92,14 @@ export class StrategyRegistry {
     const v = this.list(strategyId)
       .filter((x) => x.validation !== null && x.validation !== undefined && key(x.params) === active)
       .sort((a, b) => b.version - a.version)[0];
-    if (!v || (v.status !== 'VALIDATED' && v.status !== 'REJECTED')) return null;
-    return { status: v.status, oosExpectancyR: oos(v) };
+    if (!v) return null;
+    if (v.status === 'VALIDATED' || v.status === 'REJECTED') return { status: v.status, oosExpectancyR: oos(v) };
+    // Preserve REJECTED verdict even after a failing v1 is RETIRED (prevents PAPER from treating it as untested).
+    const reportStatus = valOf(v)?.status;
+    if (v.status === 'RETIRED' && (reportStatus === 'APPROVED' || reportStatus === 'VALIDATED' || reportStatus === 'REJECTED')) {
+      return { status: reportStatus === 'REJECTED' ? 'REJECTED' : 'VALIDATED', oosExpectancyR: oos(v) };
+    }
+    return null;
   }
 
   /** Params the live analyzer runs: the approved version where one exists, else defaults. */

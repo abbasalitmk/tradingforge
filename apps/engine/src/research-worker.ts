@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
+import type { Candle } from '@tradeforger/core';
 import { DEFAULT_VALIDATION, liveParityBacktestFor, validateStrategy, type Dataset } from '@tradeforger/backtest';
 import { getStrategy, type Params } from '@tradeforger/strategy';
 
@@ -7,13 +8,17 @@ import { getStrategy, type Params } from '@tradeforger/strategy';
  * sweep is seconds of CPU; on the engine's thread that would freeze tick
  * handling and exit management for the duration.
  */
-interface Input { strategyId: string; params: Params; datasets: Dataset[] }
+interface Input { strategyId: string; params: Params; datasets: Dataset[]; marketSeries?: Candle[] }
 
 const input = workerData as Input;
 try {
   const def = getStrategy(input.strategyId);
   if (!def) throw new Error(`unknown strategy ${input.strategyId}`);
-  const report = validateStrategy(def, input.params, input.datasets, DEFAULT_VALIDATION, liveParityBacktestFor(def));
+  const bt = {
+    ...liveParityBacktestFor(def),
+    ...(input.marketSeries && input.marketSeries.length > 0 ? { marketSeries: input.marketSeries } : {}),
+  };
+  const report = validateStrategy(def, input.params, input.datasets, DEFAULT_VALIDATION, bt);
   parentPort?.postMessage({ ok: true, report });
 } catch (e) {
   parentPort?.postMessage({ ok: false, error: e instanceof Error ? e.message : String(e) });
