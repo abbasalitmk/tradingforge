@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { FixedClock, type Signal, newSignalId, rupeesToPaise } from '@tradeforger/core';
 import { BreakoutPatternAnalyzer } from './breakout-pattern-analyzer.ts';
 import { MlExpectancyAnalyzer } from './ml-expectancy-analyzer.ts';
-import { AiConsensusEngine } from './consensus.ts';
+import { AiConsensusEngine, thinVolume } from './consensus.ts';
 import { AiReviewer } from './reviewer.ts';
 
 const clock = new FixedClock(new Date('2026-09-14T05:30:00Z')); // 11:00 IST
@@ -164,6 +164,14 @@ describe('AiConsensusEngine & Multi-Model Reviewer', () => {
     expect(consensus.blocked).toBe(true);
     expect(consensus.sizeMultiplier).toBe(0);
     expect(consensus.consensusGrade).toBe('REJECT');
+  });
+
+  it('does not read an unknown RVOL (reported as 0) as thin volume', () => {
+    const at = (rvol: number) => thinVolume({ style: 'INTRADAY', indicators: { rvol } });
+    expect(at(0.75)).toBe(true);
+    expect(at(0)).toBe(false);
+    expect(at(1.5)).toBe(false);
+    expect(thinVolume({ style: 'SWING', indicators: { rvol: 0.5 } })).toBe(false);
   });
 
   it('blocks when remote LLMs also caution against overbought chasing even on modest local edge', () => {

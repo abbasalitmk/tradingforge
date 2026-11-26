@@ -338,6 +338,19 @@ describe('session discipline', () => {
     expect(restateTarget(fade, 3)).toBe(fade);
   });
 
+  it('skips a setup when the day has less than half a daily ATR of its normal range left', () => {
+    const sig = (entry: number) => ({ id: 'sig' as SignalId, instrumentKey: 'K', symbol: 'S', style: 'INTRADAY' as const, side: 'BUY' as const,
+      entry: entry as Paise, stopLoss: (entry - 100) as Paise, target: (entry + 200) as Paise, atr: 1, confidence: 80, reasons: [], indicators: {}, generatedAt: 0 });
+    const at = (entry: number) => {
+      const signal = sig(entry);
+      const vote = { strategyId: 'ORB_SUPERTREND', name: 'ORB', style: 'INTRADAY' as const, side: 'BUY' as const, confidence: 80, signal, reasons: [] };
+      // Opened at 98, daily ATR 2: the day's 1.5× range reaches 101.
+      return restateTarget(setup({ entry: entry / 100, votes: [vote] }), 3, { dailyAtr: 2, dayOpen: 98, maxDailyAtrMultiple: 1.5, minRoomDailyAtr: 0.5 });
+    };
+    expect(at(10_000).invalidReason ?? null).toBeNull();               // 1.00 left of 2.00 ATR → 0.5 ATR: enough
+    expect(at(10_050).invalidReason).toContain('0.25× daily ATR');       // half of that left
+  });
+
   it('caps entries per session inside the daily cap', () => {
     const ctx = { ...paper, entriesToday: 5, session: 'AFTERNOON' as const, entriesBySession: { MORNING: 5, AFTERNOON: 3 } };
     const d = decide(setup(), equity, { ...on, maxEntriesPerDay: 8 }, ctx);

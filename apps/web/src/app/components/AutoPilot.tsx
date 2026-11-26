@@ -43,6 +43,7 @@ interface AutoConfig {
   relativeStrength: boolean;
   targetR: number;
   maxTargetDailyAtr: number;
+  minRoomDailyAtr: number;
   maxEntryChaseAtr: number;
   stagedTrail: boolean;
   maxCostPctOfRisk: number;
@@ -130,7 +131,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'>;
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -146,6 +147,7 @@ const draftOf = (a: AutoConfig): Draft => ({
   minStopPct: a.minStopPct, stopClusterGuard: a.stopClusterGuard,
   marketFilter: a.marketFilter, relativeStrength: a.relativeStrength, targetR: a.targetR,
   maxTargetDailyAtr: a.maxTargetDailyAtr ?? 1.5,
+  minRoomDailyAtr: a.minRoomDailyAtr ?? 0.5,
   maxEntryChaseAtr: a.maxEntryChaseAtr ?? 0.5,
   stagedTrail: a.stagedTrail ?? true,
   maxCostPctOfRisk: a.maxCostPctOfRisk ?? 20,
@@ -252,6 +254,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       relativeStrength: draft.relativeStrength,
       targetR: draft.targetR,
       maxTargetDailyAtr: draft.maxTargetDailyAtr,
+      minRoomDailyAtr: draft.minRoomDailyAtr,
       maxEntryChaseAtr: draft.maxEntryChaseAtr,
       stagedTrail: draft.stagedTrail,
       maxCostPctOfRisk: draft.maxCostPctOfRisk,
@@ -400,6 +403,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['maxCostPctOfRisk', 'Max fee % of 1R risk', 0, 100, 5, 'reject if charges exceed this % of initial stop risk; 0 = off'],
             ['targetR', 'Trend target (× risk)', 0, 6, 0.25, "winners must carry charges; 0 = strategy's own"],
             ['maxTargetDailyAtr', 'Max daily ADR target (× ATR)', 0, 5, 0.25, 'caps intraday target within prior 14d Daily ATR from open'],
+            ['minRoomDailyAtr', 'Min day range left (× ATR)', 0, 2, 0.25, "skip if the day's normal move is already spent; 0 = off"],
             ['maxEntryChaseAtr', 'Max entry chase (× ATR)', 0, 5, 0.1, 'reject LTP drift past signal bar close / breakout trigger'],
             ['confirmSeconds', 'Hold before entry (s)', 2, 300, 1, 'setup must stay unchanged'],
             ['maxSetupAgeMin', 'Max setup age (min)', 0, 120, 1, 'older signals are stale — not taken when a slot frees; 0 = off'],

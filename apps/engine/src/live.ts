@@ -79,11 +79,11 @@ export const AutoConfigSchema = z.object({
   /**
    * Smallest intraday stop distance, % of entry. Charges and slippage are a
    * near-fixed share of the money traded, so on a tight stop they are a large
-   * share of the risk: on two months of 5-minute data (19 NSE stocks) stops
-   * under 0.5% lost about 0.3R a trade to costs, and requiring 0.5% halved the
-   * loss per trade in both months. 0 turns it off.
+   * share of the risk. Over two separate years of 5-minute data (19 NSE
+   * stocks), trades with stops of 1% or more did ~0.1R a trade better than
+   * tighter ones in both years. 0 turns it off.
    */
-  minStopPct: z.number().min(0).max(5).default(0.5),
+  minStopPct: z.number().min(0).max(5).default(1),
   /**
    * Move a stop that sits on a stop cluster (previous-day high/low, opening
    * range, equal highs/lows, a round number) just beyond the sweep zone, if
@@ -111,6 +111,13 @@ export const AutoConfigSchema = z.object({
    * today's open (0 turns off). Prevents demanding +6% from a stock whose daily ATR is 2%.
    */
   maxTargetDailyAtr: z.number().min(0).max(5).default(1.5),
+  /**
+   * Room the day still has: between the entry and that cap there must be at
+   * least this many daily ATRs, or the day's normal move is already spent.
+   * Over two separate years, entries with under 0.5 left lost about 0.4R a
+   * trade in both. 0 turns it off.
+   */
+  minRoomDailyAtr: z.number().min(0).max(2).default(0.5),
   /**
    * Reject intraday setups whose live LTP has already chased > N ATRs past
    * bar-close signal entry (or > 1.5N ATRs past breakout trigger). 0 = off.
@@ -199,12 +206,13 @@ export const DEFAULT_AUTO: AutoConfig = {
   htfBiasStrict: false,
   maxVwapStretchAtr: 5,
   maxSetupAgeMin: 10,
-  minStopPct: 0.65,
+  minStopPct: 1,
   stopClusterGuard: true,
   marketFilter: true,
   relativeStrength: true,
   targetR: 3,
   maxTargetDailyAtr: 1.5,
+  minRoomDailyAtr: 0.5,
   maxEntryChaseAtr: 0.5,
   stagedTrail: false,
   maxCostPctOfRisk: 20,
@@ -572,6 +580,8 @@ export interface TargetRestateOptions {
   readonly dailyAtr?: number | null;
   readonly dayOpen?: number | null;
   readonly maxDailyAtrMultiple?: number;
+  /** Least distance from entry to the cap, in daily ATRs; less invalidates the setup. */
+  readonly minRoomDailyAtr?: number;
 }
 
 /**
@@ -599,6 +609,14 @@ export function restateTarget(s: HybridSetup, r: number, opts?: TargetRestateOpt
         target = capPaise;
         adrCapped = true;
       }
+    }
+    const room = ((capPaise - lead.signal.entry) * dir) / (opts.dailyAtr * 100);
+    if (!adrExhausted && opts.minRoomDailyAtr && opts.minRoomDailyAtr > 0 && room < opts.minRoomDailyAtr) {
+      return {
+        ...s,
+        rewardRisk: 0,
+        invalidReason: `only ${Math.max(0, room).toFixed(2)}× daily ATR of the day's range left (min ${opts.minRoomDailyAtr})`,
+      };
     }
   }
 
@@ -761,7 +779,9 @@ export class LiveAnalyzer {
         // Guard stop cluster FIRST, then compute targetR & ADR cap from final stop distance.
         const guarded = cfg.stopClusterGuard && found.style === 'INTRADAY' ? guardSetupStop(found, closed) : found;
         const s = guarded.style === 'INTRADAY'
-          ? restateTarget(guarded, cfg.targetR, { dailyAtr: dAtr, dayOpen: todayOpen, maxDailyAtrMultiple: cfg.maxTargetDailyAtr })
+          ? restateTarget(guarded, cfg.targetR, {
+            dailyAtr: dAtr, dayOpen: todayOpen, maxDailyAtrMultiple: cfg.maxTargetDailyAtr, minRoomDailyAtr: cfg.minRoomDailyAtr,
+          })
           : guarded;
         const def = getStrategy(s.primaryStrategyId);
         const tfStep = def?.timeframe === '15m' ? 3 : 1;

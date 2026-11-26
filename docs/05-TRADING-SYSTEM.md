@@ -355,6 +355,23 @@ Using the live-parity backtester (`entrySessionsOnly`, `htfBias`, NIFTY directio
 
 None is a proven edge. Approving any for LIVE is your decision; the evidence does not support it yet.
 
+### Learning from trades: a model trained on one year, judged on the other
+A logistic-regression model learned, from 2,938 and 3,600 trades (Nov 2024 – Nov 2025 and Nov 2025 – Nov 2026), which entry conditions (strength vs NIFTY, day move, VWAP distance, 30-min run, stop width, volatility, time, 15-min trend, volume, strategy, side) predict a win.
+| Trained on | Judged on (unseen) | All trades | Trades the model kept |
+|---|---|---|---|
+| 2024–25 | 2025–26 | −0.131R | −0.137R to −0.144R |
+| 2025–26 | 2024–25 | −0.216R | −0.085R to −0.162R |
+
+It looked profitable on its own training year and not on the other: these conditions do not separate winners from losers reliably. It is **not** used live.
+
+Two conditions held in **both** years and are now rules:
+| Rule | 2024–25 | 2025–26 |
+|---|---|---|
+| Current rules | −0.216R (2,938) | −0.131R (3,600) |
+| + stop ≥ 1% of price, ≥ 0.5 daily ATR of range left (`minStopPct` 1, `minRoomDailyAtr` 0.5) | **−0.125R** (653) | **−0.032R** (960) |
+
+Better in both years, still slightly negative, and no single strategy was positive in both years with a meaningful sample.
+
 ### Why LIVE takes no intraday trades
 1. **No APPROVED intraday strategy** (migration `0007` retired the failing `@v1` approvals). `decide()` blocks every intraday setup with "has no APPROVED version (required in LIVE)". This is intended.
 2. On top of that, normal filters block many setups: NIFTY direction (gap-up-then-fade mornings), chase > 0.5 ATR past the bar close, daily-range cap already passed, price band, quality < 70.

@@ -113,7 +113,12 @@ export class ResearchLab {
       const r = def.timeframe === '1d'
         ? await backfill(this.client, s.instrumentKey, 'days', 1, from, to)
         : await backfill(this.client, s.instrumentKey, 'minutes', 5, from, to);
-      if (!r.ok) continue;
+      if (!r.ok) {
+        // One symbol's gap should not stop a run, but an expired token or a ban
+        // fails every symbol: say so rather than validate on whatever is left.
+        console.warn(`[research] ${def.id}: no ${def.timeframe} history for ${s.symbol} — ${r.error.message}`);
+        continue;
+      }
       if (r.value.length > 0) out.push({ symbol: s.symbol, instrumentKey: s.instrumentKey, candles: r.value });
     }
     if (out.length === 0) throw new Error('no historical data for any research symbol');

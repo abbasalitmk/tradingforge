@@ -33,6 +33,15 @@ export interface ConsensusOptions {
  *
  * Combines their votes into a high-conviction consensus decision.
  */
+/**
+ * Intraday volume too thin to trust a breakout: RVOL under 0.8. Strategies
+ * report an RVOL they could not compute as 0 — missing data, not thin volume.
+ */
+export function thinVolume(signal: Pick<Signal, 'style' | 'indicators'>): boolean {
+  const rvol = signal.indicators['rvol'];
+  return signal.style === 'INTRADAY' && rvol !== undefined && rvol > 0 && rvol < 0.8;
+}
+
 export class AiConsensusEngine {
   private readonly quantModel: FreeRealtimeAnalyzer;
   private readonly patternModel: BreakoutPatternAnalyzer;
@@ -83,10 +92,9 @@ export class AiConsensusEngine {
     const allFlags = Array.from(new Set(votes.flatMap((v) => [...v.flags])));
 
     const rsi = signal.indicators['rsi'];
-    const rvol = signal.indicators['rvol'];
     const isLong = signal.side === 'BUY';
     const hardExtreme = (rsi !== undefined && rsi > 0 && (isLong ? rsi > 75 : rsi < 25))
-      || (signal.style === 'INTRADAY' && signal.indicators['rvol'] !== undefined && rvol !== undefined && rvol < 0.8);
+      || thinVolume(signal);
     const DISQUALIFIER_FLAGS = new Set([
       'RSI_OVERBOUGHT', 'RSI_OVERSOLD', 'THIN_VOLUME', 'OVERSTRETCHED_FROM_VWAP',
       'INSIDE_RANGE_ENTRY', 'TIGHT_STOP_NOISE_RISK',
