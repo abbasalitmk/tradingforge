@@ -152,6 +152,50 @@ describe('journal and recovery', () => {
     expect(trader.positions.size).toBe(0);
   });
 
+  it('keeps paper practice out of LIVE: P&L, loss streak, orders, holdings and capital are per broker', async () => {
+    const s = setup();
+    s.tick(100);
+    const r = await s.trader.open(intent());          // paper entry
+    await s.settle();
+    s.tick(65);                                        // paper stop-out
+    await s.settle();
+    expect(r.ok && r.position.state).toBe('CLOSED');
+    expect(s.trader.consecutiveLosses).toBe(1);
+    const open = await s.trader.open(intent({ instrumentKey: 'NSE_EQ|P2', symbol: 'P2' }));
+    expect(open.ok).toBe(false);                       // no price for P2 on paper: fine, still counted as an order
+    // Switch to the live broker (a second paper engine stands in for Upstox).
+    const live = new PaperBroker(s.clock, { ...DEFAULT_PAPER_CONFIG, latencyMs: 0, slippageBps: 0 });
+    s.trader.setBroker('UPSTOX', live);
+    expect(s.trader.realisedPnl).toBe(P(0));
+    expect(s.trader.consecutiveLosses).toBe(0);
+    expect(s.trader.ordersToday).toBe(0);
+    expect(s.trader.deployed()).toBe(P(0));
+    // A paper position still open does not block or use up a LIVE slot in the same stock...
+    s.trader.setBroker('PAPER', s.broker);
+    s.tick(100);
+    const held = await s.trader.open(intent());
+    await s.settle();
+    expect(held.ok && held.position.state).toBe('MANAGING');
+    s.trader.setBroker('UPSTOX', live);
+    expect(s.trader.holds(KEY)).toBe(false);
+    expect(s.trader.live('UPSTOX')).toHaveLength(0);
+    // ...but it is still managed: every position stays under the exit loop.
+    expect(s.trader.live().some((p) => p.broker === 'PAPER')).toBe(true);
+  });
+
+  it('rebuilds each broker\'s day separately after a restart', () => {
+    const s = setup('12:00');
+    const closed = (pnl: number, hhmm: string, broker: 'PAPER' | 'UPSTOX') => ({
+      state: 'CLOSED', realisedPnl: P(pnl), closedAt: at(hhmm).getTime(), openedAt: at('09:30').getTime(), broker,
+    }) as unknown as Parameters<typeof s.trader.restoreDay>[0][number];
+    s.trader.restoreDay([closed(-300, '10:00', 'PAPER'), closed(-200, '10:30', 'PAPER'), closed(400, '11:00', 'UPSTOX')]);
+    expect(s.trader.consecutiveLosses).toBe(2);        // active broker: PAPER
+    s.trader.setBroker('UPSTOX', s.broker);
+    expect(s.trader.realisedPnl).toBe(P(400));
+    expect(s.trader.consecutiveLosses).toBe(0);
+    expect(s.trader.ordersToday).toBe(2);
+  });
+
   it('rebuilds today’s P&L and loss streak from the journal', () => {
     const s = setup('12:00');
     const closed = (pnl: number, hhmm: string) => ({

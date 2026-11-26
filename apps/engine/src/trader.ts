@@ -105,6 +105,16 @@ export const isOperatorExit = (reason: string | null | undefined): boolean =>
 
 const LIVE_STATES = new Set(['ENTRY_SENT', 'ENTRY_ACKED', 'ENTRY_FILLED', 'BRACKET_ARMED', 'MANAGING', 'EXIT_TRIGGERED', 'ORPHANED']);
 const REJECT_WINDOW_MS = 5 * 60_000;
+
+interface Ledger {
+  realisedPnl: Paise;
+  consecutiveLosses: number;
+  orderTimes: number[];
+  rejectTimes: number[];
+}
+
+/** Journal rows written before positions recorded their broker were all paper. */
+const brokerOfRecord = (p: { broker?: BrokerId }): BrokerId => p.broker ?? 'PAPER';
 /** How far past its planned risk a position may run before the per-trade backstop takes over from the stop. */
 const STOP_SLIPPAGE_ALLOWANCE = 1.15;
 
@@ -131,10 +141,12 @@ export class Trader {
   private active: BrokerId;
 
   private day = '';
-  realisedPnl = 0 as Paise;
-  consecutiveLosses = 0;
-  private orderTimes: number[] = [];
-  private rejectTimes: number[] = [];
+  /**
+   * Today's P&L, loss streak, orders and rejects, kept per broker: paper
+   * trades are practice and must never use up LIVE's daily limits or trip its
+   * loss breakers. The getters below read the active broker's ledger.
+   */
+  private ledgers = new Map<BrokerId, Ledger>();
 
   constructor(deps: TraderDeps) {
     this.d = deps;
@@ -172,15 +184,21 @@ export class Trader {
     return next;
   }
 
+  private ledger(id: BrokerId = this.active): Ledger {
+    let l = this.ledgers.get(id);
+    if (!l) {
+      l = { realisedPnl: 0 as Paise, consecutiveLosses: 0, orderTimes: [], rejectTimes: [] };
+      this.ledgers.set(id, l);
+    }
+    return l;
+  }
+
   /** Daily counters reset on the IST date, which is what the exchange runs on. */
   rollDay(): void {
     const today = istDateKey(this.d.clock.now());
     if (today === this.day) return;
     this.day = today;
-    this.realisedPnl = 0 as Paise;
-    this.consecutiveLosses = 0;
-    this.orderTimes = [];
-    this.rejectTimes = [];
+    this.ledgers.clear();
   }
 
   /**
@@ -190,18 +208,20 @@ export class Trader {
    */
   restoreDay(today: readonly ManagedPosition[]): void {
     this.rollDay();
+    this.ledgers.clear();
     const closed = today
       .filter((p) => p.closedAt !== null && p.realisedPnl !== null && istDateKey(new Date(p.closedAt)) === this.day)
       .sort((a, b) => a.closedAt! - b.closedAt!);
-    this.realisedPnl = closed.reduce((s, p) => s + p.realisedPnl!, 0) as Paise;
-    this.consecutiveLosses = 0;
     for (const p of closed) {
-      if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = p.realisedPnl! < 0 ? this.consecutiveLosses + 1 : 0;
+      const l = this.ledger(brokerOfRecord(p));
+      l.realisedPnl = (l.realisedPnl + p.realisedPnl!) as Paise;
+      if (!isOperatorExit(p.exitReason)) l.consecutiveLosses = p.realisedPnl! < 0 ? l.consecutiveLosses + 1 : 0;
+      l.orderTimes.push(p.closedAt!);
     }
-    this.orderTimes = [
-      ...today.filter((p) => p.state !== 'REJECTED' && istDateKey(new Date(p.openedAt)) === this.day).map((p) => p.openedAt),
-      ...closed.map((p) => p.closedAt!),
-    ].sort((a, b) => a - b);
+    for (const p of today) {
+      if (p.state !== 'REJECTED' && istDateKey(new Date(p.openedAt)) === this.day) this.ledger(brokerOfRecord(p)).orderTimes.push(p.openedAt);
+    }
+    for (const l of this.ledgers.values()) l.orderTimes.sort((a, b) => a - b);
   }
 
   /** Put a journaled position back under management. Its broker must already be registered. */
@@ -209,28 +229,33 @@ export class Trader {
     this.positions.set(p.id, p);
   }
 
-  get ordersToday(): number { return this.orderTimes.length; }
-  get orderTimestamps(): readonly number[] { return this.orderTimes; }
+  /** Today's realised P&L on the active broker. */
+  get realisedPnl(): Paise { return this.ledger().realisedPnl; }
+  get consecutiveLosses(): number { return this.ledger().consecutiveLosses; }
+  get ordersToday(): number { return this.ledger().orderTimes.length; }
+  get orderTimestamps(): readonly number[] { return this.ledger().orderTimes; }
   get rejectsLast5Min(): number {
     const cutoff = this.d.clock.ms() - REJECT_WINDOW_MS;
-    return this.rejectTimes.filter((t) => t >= cutoff).length;
+    return this.ledger().rejectTimes.filter((t) => t >= cutoff).length;
   }
 
-  live(): ManagedPosition[] {
-    return [...this.positions.values()].filter((p) => LIVE_STATES.has(p.state));
+  /** Open or pending positions — on one broker when given, else all of them (all are managed). */
+  live(broker?: BrokerId): ManagedPosition[] {
+    return [...this.positions.values()].filter((p) => LIVE_STATES.has(p.state) && (broker === undefined || p.broker === broker));
   }
 
   hasOrphan(): boolean {
     return [...this.positions.values()].some((p) => p.state === 'ORPHANED');
   }
 
-  /** Open or pending in this instrument — at most one at a time. */
-  holds(instrumentKey: string): boolean {
-    return this.live().some((p) => p.instrumentKey === instrumentKey);
+  /** Open or pending in this instrument on the active broker — at most one at a time. */
+  holds(instrumentKey: string, broker: BrokerId = this.active): boolean {
+    return this.live(broker).some((p) => p.instrumentKey === instrumentKey);
   }
 
-  deployed(): Paise {
-    return this.live().reduce((s, p) => s + p.costPaise, 0) as Paise;
+  /** Capital the active broker's open positions lock up. */
+  deployed(broker: BrokerId = this.active): Paise {
+    return this.live(broker).reduce((s, p) => s + p.costPaise, 0) as Paise;
   }
 
   unrealised(p: ManagedPosition, ltp: number | null): Paise {
@@ -297,7 +322,7 @@ export class Trader {
         this.positions.delete(p.id);
         return { ok: false, reason: `journal write failed, order not sent: ${e instanceof Error ? e.message : e}` };
       }
-      this.orderTimes.push(this.d.clock.ms());
+      this.ledger(p.broker).orderTimes.push(this.d.clock.ms());
 
       const r = await broker.placeBracketOrder({
         positionId: p.id,
@@ -318,7 +343,7 @@ export class Trader {
           // unprotected position until a human has looked at the order book.
           await m.orphan(p, `ambiguous placement: ${r.error.message}`);
         } else {
-          if (r.error.kind === 'REJECTED') this.rejectTimes.push(this.d.clock.ms());
+          if (r.error.kind === 'REJECTED') this.ledger(p.broker).rejectTimes.push(this.d.clock.ms());
           p.exitReason = r.error.message;
           await m.transition(p, 'REJECTED');
         }
@@ -360,7 +385,7 @@ export class Trader {
         if (p.state !== 'ENTRY_ACKED' && p.state !== 'ENTRY_SENT') return;
         p.exitReason = e.reason;
         await m.transition(p, 'CANCELLED');
-        this.rejectTimes.push(e.at);
+        this.ledger(p.broker).rejectTimes.push(e.at);
         return;
       }
       case 'EXIT_FILLED': {
@@ -382,9 +407,10 @@ export class Trader {
     p.exitReason ??= leg;
     p.realisedPnl = pnl;
     p.closedAt = at;
-    this.orderTimes.push(at);
-    this.realisedPnl = (this.realisedPnl + pnl) as Paise;
-    if (!isOperatorExit(p.exitReason)) this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
+    const l = this.ledger(p.broker);
+    l.orderTimes.push(at);
+    l.realisedPnl = (l.realisedPnl + pnl) as Paise;
+    if (!isOperatorExit(p.exitReason)) l.consecutiveLosses = pnl < 0 ? l.consecutiveLosses + 1 : 0;
     await m.transition(p, 'CLOSED');
     this.log(`[TRADE CLOSED] ${p.contract?.tradingSymbol ?? p.symbol} ${p.exitReason} @ ₹${(price / 100).toFixed(2)} P&L ₹${(pnl / 100).toFixed(2)}`);
     this.d.onClosed?.(p);
@@ -468,7 +494,8 @@ export class Trader {
       p.closedAt = now;
       if (pnl !== null) {
         this.rollDay();
-        this.realisedPnl = (this.realisedPnl + pnl) as Paise;
+        const l = this.ledger(p.broker);
+        l.realisedPnl = (l.realisedPnl + pnl) as Paise;
       }
       await m.transition(p, 'CLOSED');
       this.log(`[RESOLVED] ${p.symbol} closed by operator — ${r.note}`);

@@ -8,7 +8,7 @@ import {
 } from '@tradeforger/core';
 import { db, audit, closeDb, runMigrations } from '@tradeforger/db';
 import { TokenStore, UpstoxClient } from '@tradeforger/upstox';
-import { PaperBroker, UpstoxBroker, type BrokerPort } from '@tradeforger/broker';
+import { PaperBroker, UpstoxBroker, type BrokerPort, type BrokerId } from '@tradeforger/broker';
 import {
   evaluate, effectiveMode, fire, canEnterLive, armUntilSessionEnd,
   type RiskSnapshot, type KillLevel,
@@ -167,7 +167,8 @@ const state = {
     minRewardRisk: cfg.TF_AUTO_MIN_RR,
     segments: segmentsForMode(cfg.TF_AUTO_TRADING_MODE, DEFAULT_AUTO.segments),
   } as AutoConfig,
-  autoEntries: { day: '', count: 0, bySession: { MORNING: 0, AFTERNOON: 0 } as Record<EntrySession, number> },
+  /** Autonomous entries today, per broker: paper practice never spends LIVE's quota. */
+  autoEntries: { day: '', byBroker: {} as Partial<Record<BrokerId, EntryTally>> },
   /** The single stock the dashboard is analysing in real time. */
   focus: null as { instrumentKey: string; symbol: string } | null,
   /** Resolved instrument for SINGLE_STOCK scope; analysed whatever the focus is. */
@@ -441,22 +442,25 @@ async function fitToFunds(o: {
     : { ok: false, reason: `insufficient funds: ₹${m.value.finalMargin.toFixed(2)} margin for ${o.quantity}, ₹${available.toFixed(2)} available` };
 }
 
+interface EntryTally { count: number; bySession: Record<EntrySession, number> }
+
 // ─────────────────────────────── risk snapshot ───────────────────────────────
 
+/** Open P&L of the active broker's positions: paper never moves LIVE's loss limits. */
 function unrealisedTotal(): Paise {
-  return trader.live().reduce((s, p) => s + trader.unrealised(p, ltpOf(p.instrumentKey)), 0) as Paise;
+  return trader.live(trader.activeBroker).reduce((s, p) => s + trader.unrealised(p, ltpOf(p.instrumentKey)), 0) as Paise;
 }
 
 function snapshot(): RiskSnapshot {
   let worst = 0;
-  for (const p of trader.live()) {
+  for (const p of trader.live(trader.activeBroker)) {
     worst = Math.min(worst, trader.unrealised(p, ltpOf(p.instrumentKey)));
   }
   return {
     startingCapitalPaise: capitalPaise(),
     realisedPnlPaise: trader.realisedPnl,
     unrealisedPnlPaise: unrealisedTotal(),
-    openPositions: trader.live().length,
+    openPositions: trader.live(trader.activeBroker).length,
     ordersToday: trader.ordersToday,
     consecutiveLosses: trader.consecutiveLosses,
     rejectsLast5Min: trader.rejectsLast5Min,
@@ -594,8 +598,10 @@ async function primePrice(instrumentKey: string): Promise<number | null> {
 
 /** When each symbol (an F&O position's underlying) last had a position close. */
 const lastExitAt = new Map<string, number>();
+const exitKey = (broker: BrokerId | undefined, symbol: string): string => `${broker ?? 'PAPER'}|${symbol}`;
 const noteExit = (p: ManagedPosition): void => {
-  if (p.closedAt !== null) lastExitAt.set(p.underlyingSymbol ?? p.symbol, Math.max(lastExitAt.get(p.underlyingSymbol ?? p.symbol) ?? 0, p.closedAt));
+  const key = exitKey(p.broker, p.underlyingSymbol ?? p.symbol);
+  if (p.closedAt !== null) lastExitAt.set(key, Math.max(lastExitAt.get(key) ?? 0, p.closedAt));
 };
 
 function onPositionClosed(p: ManagedPosition): void {
@@ -801,7 +807,7 @@ async function sizeFno(plan: FnoPlan, volume: number, aiMultiplier: number): Pro
 /** Derivatives entry: the underlying's setup becomes an option (or futures) plan. */
 async function enterFno(symbol: string, signal: Signal, ai: AiDecision, meta: EntryMeta): Promise<EntryResult> {
   if (!state.fnoEnabled) return { ok: false, reason: 'F&O desk disabled' };
-  if (trader.live().some((p) => p.underlyingSymbol === symbol)) return { ok: false, reason: `already positioned in ${symbol}` };
+  if (trader.live(trader.activeBroker).some((p) => p.underlyingSymbol === symbol)) return { ok: false, reason: `already positioned in ${symbol}` };
 
   const planned = await fnoDesk.plan(symbol, signal);
   if (!planned.ok) {
@@ -1243,7 +1249,7 @@ async function refreshStrategyRecords(): Promise<void> {
 
 /** Everything `decide()` needs to know about the account right now. */
 function decisionContext(): DecisionContext {
-  const open = trader.live();
+  const open = trader.live(trader.activeBroker);
   const byStrategy: Record<string, number> = {};
   for (const p of open) if (p.strategyId) byStrategy[p.strategyId] = (byStrategy[p.strategyId] ?? 0) + 1;
   const bySector: Record<string, number> = {};
@@ -1256,10 +1262,10 @@ function decisionContext(): DecisionContext {
   return {
     mode: currentMode(),
     approved: (id) => registry.approved(id) !== null,
-    entriesToday: state.autoEntries.count,
+    entriesToday: entryTally().count,
     session: entrySession(clock.now()),
-    entriesBySession: state.autoEntries.bySession,
-    reentryWaitSec: (symbol) => Math.max(0, Math.ceil(((lastExitAt.get(symbol) ?? 0) + cooldownMs - now) / 1000)),
+    entriesBySession: entryTally().bySession,
+    reentryWaitSec: (symbol) => Math.max(0, Math.ceil(((lastExitAt.get(exitKey(trader.activeBroker, symbol)) ?? 0) + cooldownMs - now) / 1000)),
     open: {
       total: open.length,
       byStrategy,
@@ -1273,7 +1279,13 @@ function decisionContext(): DecisionContext {
 
 function rollAutoDay(): void {
   const today = istDateKey(clock.now());
-  if (state.autoEntries.day !== today) state.autoEntries = { day: today, count: 0, bySession: { MORNING: 0, AFTERNOON: 0 } };
+  if (state.autoEntries.day !== today) state.autoEntries = { day: today, byBroker: {} };
+}
+
+/** Today's autonomous entries on a broker (the active one by default). */
+function entryTally(broker: BrokerId = trader.activeBroker): EntryTally {
+  rollAutoDay();
+  return (state.autoEntries.byBroker[broker] ??= { count: 0, bySession: { MORNING: 0, AFTERNOON: 0 } });
 }
 
 const strategyVersionFor = (strategyId: string): string | undefined =>
@@ -1300,9 +1312,10 @@ async function act(a: LiveAnalysis, s: LiveSetup): Promise<void> {
     ? await enterFno(a.symbol, lead, ai, meta)
     : await enterEquity(lead, s.route === 'EQ_SWING' ? 'D' : 'I', ai, meta);
   if (r.ok) {
-    state.autoEntries.count++;
+    const tally = entryTally();
+    tally.count++;
     const session = entrySession(clock.now());
-    if (session) state.autoEntries.bySession[session]++;
+    if (session) tally.bySession[session]++;
     log('PLACED', `${ai.verdict} · size ×${ai.sizeMultiplier}${r.detail ? ` · ${r.detail}` : ''}`);
   } else {
     log('REJECTED', r.reason);
@@ -1344,7 +1357,7 @@ async function liveCycle(): Promise<void> {
     const key = `${a.instrumentKey}|${s.style}`;
     if ((cooldown.get(key) ?? 0) > clock.ms()) continue;
     if (trader.holds(a.instrumentKey)) continue;
-    if (s.route === 'FNO' && trader.live().some((p) => p.underlyingSymbol === a.symbol)) continue;
+    if (s.route === 'FNO' && trader.live(trader.activeBroker).some((p) => p.underlyingSymbol === a.symbol)) continue;
     cooldown.set(key, clock.ms() + 5 * 60_000);
     acting = true;
     try {
@@ -1718,13 +1731,14 @@ async function recoverPositions(): Promise<void> {
   // The daily entry cap counts entries the broker accepted (act() counts r.ok);
   // a restart must not hand autonomous mode a fresh day's quota.
   const today = istDateKey(clock.now());
-  const entered = todays.filter((p) => istDateKey(new Date(p.openedAt)) === today && p.state !== 'REJECTED');
-  const bySession: Record<EntrySession, number> = { MORNING: 0, AFTERNOON: 0 };
-  for (const p of entered) {
+  state.autoEntries = { day: today, byBroker: {} };
+  for (const p of todays) {
+    if (istDateKey(new Date(p.openedAt)) !== today || p.state === 'REJECTED') continue;
+    const tally = entryTally(p.broker ?? 'PAPER');
+    tally.count++;
     const session = entrySession(new Date(p.openedAt));
-    if (session) bySession[session]++;
+    if (session) tally.bySession[session]++;
   }
-  state.autoEntries = { day: today, count: entered.length, bySession };
   // The re-entry cooldown survives a restart too.
   for (const p of todays) noteExit(p);
   if (open.length === 0) return;
@@ -1979,8 +1993,8 @@ const server = createServer(async (req, res) => {
       intervalMs: cfg.TF_ANALYSIS_INTERVAL_MS,
       mode: currentMode(),
       auto: state.auto,
-      entriesToday: state.autoEntries.count,
-      entriesBySession: state.autoEntries.bySession,
+      entriesToday: entryTally().count,
+      entriesBySession: entryTally().bySession,
       account: {
         riskCapital: paiseToRupees(capitalPaise()),
         fromBroker: currentMode() === 'LIVE' && account.capitalPaise !== null,
