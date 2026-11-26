@@ -20,6 +20,18 @@ HOSTINGER_VPS_HOST="${HOSTINGER_VPS_HOST:-${1:-}}"
 HOSTINGER_VPS_USER="${HOSTINGER_VPS_USER:-root}"
 HOSTINGER_DOMAIN="${HOSTINGER_DOMAIN:-${HOSTINGER_VPS_HOST:-localhost}}"
 
+# 1b. Never restart the engine mid-session. A deploy recreates the engine:
+# LIVE comes back disarmed, open positions are re-adopted, and on 26 Nov five
+# market-hours deploys left the engine re-arming instead of trading.
+IST_DOW=$(TZ=Asia/Kolkata date +%u)
+IST_HHMM=$(TZ=Asia/Kolkata date +%H%M)
+if [[ "$IST_DOW" -le 5 && "$IST_HHMM" -ge 0900 && "$IST_HHMM" -le 1535 && "${FORCE_DEPLOY:-}" != "1" ]]; then
+  echo ""
+  echo "✗ NSE market hours (IST $(TZ=Asia/Kolkata date +%H:%M)) — a deploy would restart the trading engine mid-session."
+  echo "  Deploy after 15:35 IST, or set FORCE_DEPLOY=1 if it cannot wait."
+  exit 1
+fi
+
 # 2. Pre-flight Verification
 echo ""
 echo "→ [1/4] Running Local Quality Checks..."

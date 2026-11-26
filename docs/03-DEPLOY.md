@@ -36,6 +36,7 @@ Run the deployment script from your project root:
 *(Or set `export HOSTINGER_VPS_HOST=<YOUR_HOSTINGER_VPS_IP>` and run `npm run deploy:hostinger`)*
 
 ### What the deploy script does:
+0. **Refuses during NSE market hours** (Mon–Fri 09:00–15:35 IST): a deploy restarts the engine, which comes back with LIVE disarmed. Override with `FORCE_DEPLOY=1` only if it cannot wait.
 1. **Tests locally**: Runs `npm run typecheck` and `npm test` (all 435 tests).
 2. **Syncs code**: Copies project files to `/opt/tradeforger` on your VPS, strictly ignoring secrets (`.env*`, `.secrets.local`, `.git`).
 3. **Preserves `.env`**: If `/opt/tradeforger/.env` already exists on Hostinger, the script leaves it untouched so your server settings are never overwritten.
