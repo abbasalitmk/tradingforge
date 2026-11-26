@@ -420,7 +420,32 @@ Strategies still allowed to lead in PAPER, together: **−0.204R → −0.052R a
 
 ---
 
-## 12. Where it lives in the code
+## 12. External audit review (Gemini, 26 Nov 2026)
+
+`tradeforger_deep_technical_audit_solutions.md` was checked against the code
+and its testable fixes backtested: 3 months (18 Aug – 25 Nov 2026), 40 stocks,
+production settings, paper-eligible strategies, buy only, each half judged separately.
+
+| Audit claim / fix | Finding | Result per trade (H1 / H2), production −0.274R / −0.056R | Decision |
+|---|---|---|---|
+| ₹10,000 cap shrinks 1R to ~₹65–100 | **True** (risk-based wants ₹75,000 at a 1% stop) | — | documented |
+| Raise cap to ₹50–75k | lets tight-stop trades past the charges guard | −0.29 to −0.32 / −0.07 to −0.09; rupee loss 8–10× | **rejected** |
+| AI 0.5× size "destroys fee economics" | **False**: brokerage is 0.05% below ₹40k/leg, so charges stay ~15% of 1R at any size | — | none |
+| "₹71 / 1.08 = ₹65.74 proves the bug" | coincidence: live trades were sized from the small Upstox balance | — | none |
+| Min stop 0.85% / 1.0% | | better / worse | not changed |
+| Charges guard 12% | | +0.18 (23 trades) / −0.18 | not changed |
+| VWAP chase 2.0 / 1.5 ATR | | better / worse | not changed |
+| **VWAP chase 2.5 ATR + 2R target + staged trail off** | | **−0.268 / −0.005** (rupee loss −41%) | **applied** |
+| Target 1.6R / 1.8R | | worse / worse | rejected |
+| Failed strategies add +8 agreement | **True** — a logic bug | not backtestable (ensemble) | **fixed**: they no longer vote |
+| 6 s entry hold is redundant on closed bars | true | not backtestable | **2 s** |
+| CPR width 0.35–0.45% for PDH_PDL_CPR | 4 vs 8 trades — too few to judge | | approved v2 kept (owner's call) |
+| Intrabar / FVG-retest / stop-order entries | architectural (resting trigger orders) | — | not done |
+| Fade strategies starved by buy-only + up-day picks | true (0 trades) | — | noted |
+
+---
+
+## 13. Where it lives in the code
 
 | Part | File |
 |---|---|

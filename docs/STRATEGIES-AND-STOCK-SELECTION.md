@@ -128,7 +128,7 @@ A swing SELL is never automated — on a delivery product it would sell shares o
 
 ### 3.4 Targets
 Strategies propose a target (mostly 2R). For **trend** strategies the engine
-restates it at **2.5× the risk** (production `targetR`), then caps it at
+restates it at **2× the risk** (production `targetR`), then caps it at
 **today's open ± 1.5 × the 14-day daily ATR**. A setup whose cap is already
 behind the price, or with less than **0.5 daily ATR** of room left, is skipped.
 Fade strategies keep their own level targets (VWAP, the far OI wall).
@@ -147,6 +147,7 @@ quality = lead confidence
         − 20 × (opposing confidence ÷ lead confidence), per opposing strategy
         + 5 per unit of reward:risk above 2 (max ±10)
 ```
+- Strategies that **failed validation do not vote** — neither as agreement nor as conflict. (They used to add +8 to other strategies' quality.)
 - Capped at **40** if an opposing vote is within 10 points of the lead (a coin flip).
 - Capped at **30** if the stop is closer than 0.2% of price.
 - Every setup is re-priced at the live LTP; one already past its stop or target is invalid.
@@ -162,7 +163,7 @@ every rule blocking each setup. Production values:
 | Rule | Value |
 |---|---|
 | Entry windows | **09:30–11:30** and **13:30–14:45** IST (09:15–09:29, the midday 11:30–13:30 and after 14:45 are blocked) |
-| Setup must hold unchanged | **6 s** |
+| Setup must hold unchanged | **2 s** (bars are closed already; a longer hold only delays the order) |
 | Setup freshness | entered only within **10 min** of first signalling |
 | Re-entry cooldown | **5 min** after a position in the same stock closes |
 
@@ -173,7 +174,7 @@ every rule blocking each setup. Production values:
 | 15-min trend | price on the trade's side of 15-min VWAP, and the 15-min trend (EMA20/50 + ADX ≥ 20) not against it |
 | **With the NIFTY** | longs only while the NIFTY's **15-min EMA20 > EMA50**; shorts on the mirror. The extra "NIFTY above today's open" condition is an option, **off** (it blocked 42% of entries as "no clear direction" and did worse in both halves of the Aug–Nov test) |
 | Relative strength | buy only stocks up more than the NIFTY today (short only weaker ones) |
-| No chasing (VWAP) | trend entries ≤ **5 ATR** from session VWAP |
+| No chasing (VWAP) | trend entries ≤ **2.5 ATR** from session VWAP |
 | No chasing (entry) | live price ≤ **0.5 ATR** past the signal bar's close, ≤ 0.75 ATR past the breakout trigger |
 
 ### Trade quality
@@ -183,7 +184,7 @@ every rule blocking each setup. Production values:
 | Reward:risk at strategy levels | **≥ 1.5** |
 | Reward:risk after all charges | **≥ 1.25** (checked at the real quantity) |
 | Minimum intraday stop | **0.65%** of price (charges are a near-fixed share of the money traded) |
-| Charges vs risk | round-trip charges ≤ **20%** of the planned 1R risk |
+| Charges vs risk | round-trip charges ≤ **20%** of the actual 1R risk at the real quantity — at ₹10,000 per trade that rejects stops tighter than about 0.77% |
 | Stop-hunt guard | a stop sitting on a stop cluster (PDH/PDL, opening range, equal highs/lows, round number) is moved just beyond the sweep zone, if that is a small move |
 
 ### Strategy gating
@@ -219,6 +220,7 @@ Runs only on a setup that already passed every rule.
 |---|---|
 | Capital | ₹50,000 risk capital (in LIVE: the smaller of that ceiling and the real Upstox balance, refreshed every minute) |
 | Size | **risk-based: 1.5% of capital at the stop** → `quantity = ₹750 ÷ |entry − stop|` (risk % hard-capped at 2%) |
+| In practice | the **₹10,000 per-trade cap binds on almost every intraday trade**, so the real risk is about ₹65–150 (1R ≈ ₹100 at a 1% stop). Raising the cap was tested and did worse (see 05-TRADING-SYSTEM §12) |
 | Caps (smallest wins) | ₹10,000 per trade · intraday exposure ≤ **3×** capital · deployed-capital ceiling · 1% of the stock's daily volume · ₹2,000 minimum ticket |
 | AI multiplier | 1× or 0.5× |
 | Charges check | brokerage, STT, exchange, SEBI, stamp duty and GST at the real quantity; net R:R must clear 1.25 |
@@ -233,7 +235,7 @@ Runs only on a setup that already passed every rule.
 | Exit | When | Production |
 |---|---|---|
 | Target / stop-loss | at the broker, via the GTT bracket | always |
-| Staged profit trail | at **+1.2R** the stop locks **+0.35R**; from **+1.6R** it trails **1.25 ATR** behind the best price | **on** (your setting; 12-month test: slightly worse than a fixed target) |
+| Staged profit trail | at **+1.2R** the stop locks **+0.35R**; from **+1.6R** it trails **1.25 ATR** behind the best price | **off** (no better than a fixed target in either test) |
 | No-follow-through exit | close a flat/losing trade that hasn't gone +0.25R within 4 strategy bars | **off** (cut stop-outs 32% → 18% with expectancy unchanged) |
 | Exchange trailing GTT | trails at the initial risk distance from entry | off |
 | Pending entries cancelled | **15:00** | always |

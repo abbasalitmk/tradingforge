@@ -801,6 +801,7 @@ export class LiveAnalyzer {
         {
           params, ...(strategies && strategies.length ? { strategies } : {}),
           canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch, closed),
+          canVote: (v) => !(cfg.skipFailedStrategies && ctx.verdict?.(v.strategyId)?.status === 'REJECTED'),
         },
       );
 

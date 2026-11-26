@@ -83,6 +83,19 @@ describe('hybrid analysis', () => {
     expect([...setup.agreeing, ...setup.conflicting]).toContain(top);
   });
 
+  it('ignores votes from strategies that may not vote (failed validation)', () => {
+    const busy = [...series.keys()].slice(100).map((i) => {
+      const input = { instrumentKey: 'K', symbol: 'S', intraday: series.slice(0, i + 1), daily: dailies, clock: new FixedClock(new Date(closeOf(series[i]!, '5m'))) };
+      return { input, r: analyzeHybrid(input) };
+    }).find(({ r: x }) => x.best.INTRADAY && [...x.best.INTRADAY.agreeing, ...x.best.INTRADAY.conflicting].length > 0);
+    expect(busy).toBeDefined();
+    const { input, r: base } = busy!;
+    const muted = [...base.best.INTRADAY!.agreeing, ...base.best.INTRADAY!.conflicting][0]!;
+    const setup = analyzeHybrid(input, { canVote: (v) => v.strategyId !== muted }).best.INTRADAY!;
+    expect(setup.primaryStrategyId).toBe(base.best.INTRADAY!.primaryStrategyId);
+    expect([...setup.agreeing, ...setup.conflicting]).not.toContain(muted);
+  });
+
   it('reports levels in rupees with a consistent reward:risk', () => {
     const x = r.best.INTRADAY!;
     expect(x.rewardRisk).toBeCloseTo(Math.abs(x.target - x.entry) / Math.abs(x.entry - x.stopLoss), 1);

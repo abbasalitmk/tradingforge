@@ -72,6 +72,12 @@ export interface HybridOptions {
    * strongest leads anyway so the setup (and why it is blocked) stays visible.
    */
   readonly canLead?: (vote: StrategyVote) => boolean;
+  /**
+   * Which firing votes count as agreement or conflict. A strategy whose
+   * parameters failed validation has shown it loses money; its signal is no
+   * confirmation of anything. Default: every vote counts.
+   */
+  readonly canVote?: (vote: StrategyVote) => boolean;
 }
 
 /** Each additional strategy on the same side adds this, up to AGREE_CAP. */
@@ -175,8 +181,9 @@ export function analyzeHybrid(
     const leaders = opts.canLead ? firing.filter(opts.canLead) : firing;
     const lead = (leaders.length > 0 ? leaders : firing).reduce((a, b) => (b.confidence > a.confidence ? b : a));
     const ls = lead.signal!;
-    const agreeing = firing.filter((v) => v !== lead && v.side === lead.side);
-    const opposing = firing.filter((v) => v.side !== lead.side);
+    const voters = opts.canVote ? firing.filter((v) => v === lead || opts.canVote!(v)) : firing;
+    const agreeing = voters.filter((v) => v !== lead && v.side === lead.side);
+    const opposing = voters.filter((v) => v.side !== lead.side);
     const riskPct = (Math.abs(ls.entry - ls.stopLoss) / ls.entry) * 100;
     const tooTight = riskPct < MIN_RISK_PCT[style];
     let quality = setupQuality(ls, agreeing.map((v) => v.signal!), opposing.map((v) => v.signal!));
