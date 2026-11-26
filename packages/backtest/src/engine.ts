@@ -56,6 +56,8 @@ export interface BacktestConfig {
   entrySessionsOnly?: boolean;
   /** Optional index 5m series for NIFTY direction + relative-strength live parity. */
   marketSeries?: readonly Candle[];
+  /** NIFTY direction also needs the index above/below today's open (live `marketAboveOpen`). */
+  marketAboveOpen?: boolean;
   /** Least room between entry and the daily-ATR target cap, in daily ATRs (live `minRoomDailyAtr`). */
   minRoomDailyAtr?: number;
   /** Least stop distance in ATR(14) of the signal timeframe — outside the bar-to-bar noise. */
@@ -510,7 +512,7 @@ function simulate(
       const fiveEnd = fiveMinByClose?.get(closeT);
       if (mIdx !== undefined && mIdx >= 100) {
         const mSlice = cfg.marketSeries.slice(Math.max(0, mIdx - 299), mIdx + 1);
-        const mSide = marketDirection(mSlice);
+        const mSide = marketDirection(mSlice, { requireAboveOpen: cfg.marketAboveOpen ?? false });
         if (mSide !== rawSig.side) return null;
         const fiveSlice = fiveEnd !== undefined ? raw5mCandles.slice(Math.max(0, fiveEnd - 150), fiveEnd + 1) : candles.slice(Math.max(0, sigIdx - 150), sigIdx + 1);
         const ownCh = dayChangePct(fiveSlice);

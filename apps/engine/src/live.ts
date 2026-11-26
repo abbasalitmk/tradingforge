@@ -96,6 +96,12 @@ export const AutoConfigSchema = z.object({
    * both months of the two-month backtest. Counter-trend strategies exempt.
    */
   marketFilter: z.boolean().default(true),
+  /**
+   * With the market filter, also require the NIFTY above today's open for
+   * longs (below, for shorts). Off: over Aug–Nov 2026 it blocked 42% of trend
+   * entries as "no clear direction" and made results worse in both halves.
+   */
+  marketAboveOpen: z.boolean().default(false),
   /** Trend entries only in stocks beating the NIFTY today (buys) or lagging it (shorts). */
   relativeStrength: z.boolean().default(true),
   /**
@@ -225,6 +231,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   minStopPct: 1,
   stopClusterGuard: true,
   marketFilter: true,
+  marketAboveOpen: false,
   relativeStrength: true,
   targetR: 3,
   maxTargetDailyAtr: 1.5,
@@ -773,7 +780,7 @@ export class LiveAnalyzer {
     const out: LiveAnalysis[] = [];
     const seen = new Set<string>();
     const market = this.src.market ? this.src.market().filter((c) => c.ts + BAR_MS <= now) : null;
-    const marketSide = market && market.length > 0 ? marketDirection(market) : undefined;
+    const marketSide = market && market.length > 0 ? marketDirection(market, { requireAboveOpen: cfg.marketAboveOpen }) : undefined;
     const marketChange = market && market.length > 0 ? dayChangePct(market) : null;
 
     for (const t of targets) {

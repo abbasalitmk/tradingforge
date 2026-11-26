@@ -40,6 +40,7 @@ interface AutoConfig {
   minStopPct: number;
   stopClusterGuard: boolean;
   marketFilter: boolean;
+  marketAboveOpen: boolean;
   relativeStrength: boolean;
   targetR: number;
   maxTargetDailyAtr: number;
@@ -135,7 +136,7 @@ type Draft = Pick<AutoConfig,
   | 'minQuality' | 'minRewardRisk' | 'minNetRewardRisk' | 'confirmSeconds' | 'maxEntriesPerDay' | 'strategies'
   | 'maxOpenPositions' | 'maxPerStrategy' | 'maxSameSide' | 'trailStop' | 'pauseLosingStrategies' | 'skipFailedStrategies'
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
-  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
+  | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'marketAboveOpen' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
   | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
@@ -150,7 +151,7 @@ const draftOf = (a: AutoConfig): Draft => ({
   closedBarEntries: a.closedBarEntries, htfBias: a.htfBias, htfBiasStrict: a.htfBiasStrict,
   maxLeverage: a.maxLeverage, maxVwapStretchAtr: a.maxVwapStretchAtr, maxSetupAgeMin: a.maxSetupAgeMin,
   minStopPct: a.minStopPct, stopClusterGuard: a.stopClusterGuard,
-  marketFilter: a.marketFilter, relativeStrength: a.relativeStrength, targetR: a.targetR,
+  marketFilter: a.marketFilter, marketAboveOpen: a.marketAboveOpen ?? false, relativeStrength: a.relativeStrength, targetR: a.targetR,
   maxTargetDailyAtr: a.maxTargetDailyAtr ?? 1.5,
   minRoomDailyAtr: a.minRoomDailyAtr ?? 0.5,
   maxEntryChaseAtr: a.maxEntryChaseAtr ?? 0.5,
@@ -260,6 +261,7 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       minStopPct: draft.minStopPct,
       stopClusterGuard: draft.stopClusterGuard,
       marketFilter: draft.marketFilter,
+      marketAboveOpen: draft.marketAboveOpen,
       relativeStrength: draft.relativeStrength,
       targetR: draft.targetR,
       maxTargetDailyAtr: draft.maxTargetDailyAtr,
@@ -497,8 +499,12 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             </Chip>
           )}
           <Chip on={draft.marketFilter} onClick={() => setDraft({ ...draft, marketFilter: !draft.marketFilter })}
-            title="Trend entries only with the NIFTY: buy when its 15-min EMAs point up and it trades above today's open; short on the mirror">
+            title="Trend entries only with the NIFTY: buy when its 15-min EMA20 is above EMA50; short on the mirror">
             With the NIFTY {draft.marketFilter ? 'on' : 'off'}
+          </Chip>
+          <Chip on={draft.marketAboveOpen} onClick={() => setDraft({ ...draft, marketAboveOpen: !draft.marketAboveOpen })}
+            title="Also require the NIFTY above today's open for longs (below for shorts). Off by default: Aug–Nov 2026 it blocked 42% of trend entries as 'no clear direction' and did worse in both halves">
+            NIFTY above open {draft.marketAboveOpen ? 'on' : 'off'}
           </Chip>
           <Chip on={draft.relativeStrength} onClick={() => setDraft({ ...draft, relativeStrength: !draft.relativeStrength })}
             title="Buy only stocks up more than the NIFTY today; short only those doing worse">

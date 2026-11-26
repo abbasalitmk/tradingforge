@@ -72,18 +72,23 @@ export function trendBias15(closed5m: readonly Candle[], minAdx = BIAS_MIN_ADX):
 
 /**
  * The market's direction today, from the index's closed 5-minute bars: up
- * when its 15-minute EMA20 is over EMA50 and it trades above today's open,
- * down on the mirror, otherwise none. Professionals buy strength in a rising
- * market and short weakness in a falling one; on two months of NSE 5-minute
- * data, trend entries taken only with the NIFTY were better in both months.
+ * when its 15-minute EMA20 is over EMA50, down on the mirror. Professionals
+ * buy strength in a rising market and short weakness in a falling one.
+ *
+ * `requireAboveOpen` also demands the index be above (below) today's open.
+ * Aug–Nov 2026, production settings, paper-eligible strategies: that extra
+ * condition was the main source of "no clear direction" and made results
+ * worse in both halves (−0.498R/−0.055R a trade vs −0.276R/−0.053R on the
+ * EMA trend alone, with 42% fewer trades).
  */
-export function marketDirection(closed5m: readonly Candle[]): Side | null {
+export function marketDirection(closed5m: readonly Candle[], o: { requireAboveOpen?: boolean } = {}): Side | null {
   const last = closed5m[closed5m.length - 1];
   if (!last) return null;
   const open = closed5m[sessionStartIndex(closed5m)]!.open;
   const { emaSide } = trendBias15(closed5m);
-  if (emaSide === 'BUY' && last.close > open) return 'BUY';
-  if (emaSide === 'SELL' && last.close < open) return 'SELL';
+  const withOpen = (side: Side): boolean => !o.requireAboveOpen || (side === 'BUY' ? last.close > open : last.close < open);
+  if (emaSide === 'BUY' && withOpen('BUY')) return 'BUY';
+  if (emaSide === 'SELL' && withOpen('SELL')) return 'SELL';
   return null;
 }
 

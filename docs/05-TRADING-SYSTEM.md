@@ -1,5 +1,7 @@
 # TradeForger — How Automated Trading Works
 
+> **Current reference:** [STRATEGIES-AND-STOCK-SELECTION.md](STRATEGIES-AND-STOCK-SELECTION.md) — this file keeps the research history and backtest results.
+
 How the engine picks stocks, finds setups, decides to enter, sizes and places
 orders, and exits. Every number here is what the code uses. Settings marked
 **(AutoPilot)** can be changed on the dashboard.
@@ -170,7 +172,7 @@ and the dashboard shows exactly which one blocked a setup.
 ### Market and stock strength **[ready, not deployed]**
 | Rule | Value |
 |---|---|
-| With the NIFTY | Longs only when NIFTY's 15-min EMA20 > EMA50 **and** it trades above today's open; shorts on the mirror; nothing when NIFTY has no direction (AutoPilot) |
+| With the NIFTY | Longs only when NIFTY's 15-min EMA20 > EMA50; shorts on the mirror (AutoPilot). The "above today's open" condition is now an option, off: Aug–Nov 2026 it was the main source of "no clear direction" and did worse in both halves (−0.491R/−0.071R a trade vs −0.283R/−0.061R, real backtester, production settings) |
 | Relative strength | Buy only stocks up more than NIFTY today; short only those doing worse (AutoPilot) |
 
 ### Trade quality **[deployed unless marked]**

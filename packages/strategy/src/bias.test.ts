@@ -57,11 +57,21 @@ describe('sector map', () => {
 });
 
 describe('market direction and relative strength', () => {
-  it('reads the index as rising only with its 15-min EMAs up and price above today\'s open', () => {
+  it('reads the index direction from its 15-min EMAs', () => {
     const up = trending(3, 0.1).map((c) => ({ ...c, volume: 0 }));
     expect(marketDirection(up)).toBe('BUY');
     const down = trending(3, -0.1, 200).map((c) => ({ ...c, volume: 0 }));
     expect(marketDirection(down)).toBe('SELL');
+  });
+
+  it('with requireAboveOpen, an uptrend trading under today\'s open has no direction', () => {
+    const up = trending(3, 0.1).map((c) => ({ ...c, volume: 0 }));
+    const last = up[up.length - 1]!;
+    const todayOpen = up[150]!.open;
+    // Today's last bar dips below the session open while the EMAs still point up.
+    const dipped = [...up.slice(0, -1), { ...last, close: todayOpen - 0.5, low: todayOpen - 0.6 }];
+    expect(marketDirection(dipped)).toBe('BUY');
+    expect(marketDirection(dipped, { requireAboveOpen: true })).toBeNull();
   });
 
   it('measures the day change from the previous session close', () => {
