@@ -412,6 +412,8 @@ function marginUtilisationPct(): number {
  */
 function exposureRoomPaise(product: Product): Paise {
   const deployed = trader.deployed();
+  // Paper money: room is the paper position ceiling, not the account's leverage.
+  if (trader.activeBroker === 'PAPER') return Math.max(0, limitsNow().maxDeployedCapitalPaise - deployed) as Paise;
   const ceiling = rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed;
   const leverage = product === 'I' ? state.auto.maxLeverage : 1;
   return Math.max(0, Math.min(ceiling, capitalPaise() * leverage - deployed)) as Paise;
@@ -474,7 +476,28 @@ function snapshot(): RiskSnapshot {
   };
 }
 
-const verdictNow = () => evaluate(snapshot(), cfg.limits, clock);
+/**
+ * Limits for the broker in use. LIVE keeps the configured limits. PAPER is
+ * where the strategy ranking is built, so it may take many more positions and
+ * is not stopped for the day by a losing streak or the daily-loss limit —
+ * paper money; the records are what matter. Feed, divergence and maintenance
+ * breakers apply to both.
+ */
+function limitsNow(): typeof cfg.limits {
+  if (trader.activeBroker !== 'PAPER') return cfg.limits;
+  const open = state.auto.paperMaxOpenPositions;
+  return {
+    ...cfg.limits,
+    maxDeployedCapitalPaise: (cfg.limits.maxSpendPerTradePaise * open) as Paise,
+    maxConcurrentPositions: open,
+    maxConsecutiveLosses: 1_000,
+    dailyLossPct: 100,
+    maxOrdersPerDay: Math.max(cfg.limits.maxOrdersPerDay, state.auto.paperMaxEntriesPerDay * 3),
+    maxOrdersPerMinute: Math.max(cfg.limits.maxOrdersPerMinute, 30),
+  };
+}
+
+const verdictNow = () => evaluate(snapshot(), limitsNow(), clock);
 
 // ─────────────────────────────── market feed ───────────────────────────────
 
@@ -701,7 +724,7 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
     lotSize: 1,
     avgDailyVolume: Math.max(watchlist.get(key)?.volume ?? 0, 50_000),
     deployedCapital: deployed,
-  }, cfg.limits);
+  }, limitsNow());
   if (!sized.ok) return { ok: false, reason: `sizing: ${sized.reason} — ${sized.detail}` };
 
   // CAUTION shrinks the size; it must never round a rejection up to one share.
@@ -819,7 +842,7 @@ async function sizeFno(plan: FnoPlan, volume: number, aiMultiplier: number): Pro
     deployedCapital: deployed,
     costPerUnit,
     maxQuantity: Math.min(c.freezeQuantity, cfg.TF_FNO_MAX_LOTS * c.lotSize),
-  }, cfg.limits);
+  }, limitsNow());
   if (!sized.ok) return { ok: false, reason: `${sized.reason}: ${sized.detail}` };
 
   const lots = Math.floor((sized.result.quantity / c.lotSize) * aiMultiplier);
@@ -1636,7 +1659,7 @@ function startLoops(): void {
   setInterval(() => {
     if (sseClients.size === 0) return;
     const snap = snapshot();
-    const v = evaluate(snap, cfg.limits, clock);
+    const v = evaluate(snap, limitsNow(), clock);
     broadcastSse('telemetry', {
       mode: currentMode(),
       istTime: istHHMM(clock.now()),
@@ -1956,7 +1979,7 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === '/state') {
     const snap = snapshot();
-    const v = evaluate(snap, cfg.limits, clock);
+    const v = evaluate(snap, limitsNow(), clock);
     // Informational momentum ranking of the watched set; autonomous entries rank by hybrid quality (/analysis/live).
     const ranked = stockScanner.rankUniverse([...watchlist.values()], liveBars(watchlist.keys()), {
       minPrice: state.auto.minPrice,

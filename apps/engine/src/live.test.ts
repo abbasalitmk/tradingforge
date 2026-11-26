@@ -22,6 +22,8 @@ const equity: Target = { instrumentKey: 'NSE_EQ|X', symbol: 'X', fnoUnderlying: 
 const index: Target = { instrumentKey: 'NSE_FO|1', symbol: 'NIFTY', fnoUnderlying: true, cashTradeable: false };
 const on: AutoConfig = { ...DEFAULT_AUTO, enabled: true };
 const paper = { mode: 'PAPER' as const, approved: () => false, entriesToday: 0 };
+/** LIVE with the approval gate satisfied, for the LIVE-only caps. */
+const liveOk = { ...paper, mode: 'LIVE' as const, approved: () => true };
 
 describe('autonomous entry decision', () => {
   it('acts on a stable, high-quality intraday setup in paper', () => {
@@ -60,8 +62,19 @@ describe('autonomous entry decision', () => {
   });
 
   it('honours the strategy allow-list and the daily entry cap', () => {
-    const d = decide(setup(), equity, { ...on, strategies: ['VWAP_PULLBACK'] }, { ...paper, entriesToday: 5 });
+    const d = decide(setup(), equity, { ...on, strategies: ['VWAP_PULLBACK'] }, { ...liveOk, entriesToday: 5 });
     expect(d.blockers).toEqual(expect.arrayContaining(['ORB_SUPERTREND not enabled', 'daily entry cap 5 reached']));
+  });
+
+  it('gives PAPER its own wider caps so the ranking gets its sample', () => {
+    expect(decide(setup(), equity, on, { ...paper, entriesToday: 5 }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...paper, entriesToday: 100 }).blockers).toContain('daily entry cap 100 reached');
+    const busy = { total: 6, byStrategy: { ORB_SUPERTREND: 4 }, bySide: { BUY: 6, SELL: 0 } };
+    expect(decide(setup(), equity, on, { ...paper, open: busy }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...paper, open: { ...busy, total: 20 } }).blockers).toContain('20 positions open (max 20)');
+    // Session caps are LIVE's; a losing record pauses a strategy only in LIVE.
+    expect(decide(setup(), equity, on, { ...paper, session: 'AFTERNOON' as const, entriesBySession: { MORNING: 5, AFTERNOON: 3 } }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...paper, record: () => ({ trades: 25, expectancyR: -0.12 }) }).blockers).toEqual([]);
   });
 
   it('blocks entries when setup price is outside minPrice and maxPrice filters', () => {
@@ -201,18 +214,18 @@ describe('portfolio limits and strategy gating', () => {
   const open = (total: number, byStrategy: Record<string, number> = {}, bySide = { BUY: 0, SELL: 0 }) => ({ total, byStrategy, bySide });
 
   it('caps open positions in total, per lead strategy and per side', () => {
-    const d = decide(setup(), equity, on, { ...paper, open: open(5, { ORB_SUPERTREND: 2 }, { BUY: 3, SELL: 0 }) });
+    const d = decide(setup(), equity, on, { ...liveOk, open: open(5, { ORB_SUPERTREND: 2 }, { BUY: 3, SELL: 0 }) });
     expect(d.blockers).toEqual(expect.arrayContaining([
       '5 positions open (max 5)', '2 open from ORB_SUPERTREND (max 2)', '3 long positions open (max 3)',
     ]));
     // A short is a different bet from the open longs.
-    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, { ...on, tradeSide: 'BOTH' }, { ...paper, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
+    expect(decide(setup({ side: 'SELL', bias: downBias }), equity, { ...on, tradeSide: 'BOTH' }, { ...liveOk, open: open(3, {}, { BUY: 3, SELL: 0 }) }).blockers).toEqual([]);
   });
 
   it('pauses a strategy only once its own record is meaningful and losing', () => {
-    const losing = { ...paper, record: () => ({ trades: 25, expectancyR: -0.12 }) };
+    const losing = { ...liveOk, record: () => ({ trades: 25, expectancyR: -0.12 }) };
     expect(decide(setup(), equity, on, losing).blockers.join()).toContain('ORB_SUPERTREND paused');
-    expect(decide(setup(), equity, on, { ...paper, record: () => ({ trades: 8, expectancyR: -0.9 }) }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...liveOk, record: () => ({ trades: 8, expectancyR: -0.9 }) }).blockers).toEqual([]);
     expect(decide(setup(), equity, { ...on, pauseLosingStrategies: false }, losing).blockers).toEqual([]);
   });
 
@@ -385,7 +398,7 @@ describe('session discipline', () => {
   });
 
   it('caps entries per session inside the daily cap', () => {
-    const ctx = { ...paper, entriesToday: 5, session: 'AFTERNOON' as const, entriesBySession: { MORNING: 5, AFTERNOON: 3 } };
+    const ctx = { ...liveOk, entriesToday: 5, session: 'AFTERNOON' as const, entriesBySession: { MORNING: 5, AFTERNOON: 3 } };
     const d = decide(setup(), equity, { ...on, maxEntriesPerDay: 8 }, ctx);
     expect(d.blockers).toEqual(['afternoon entry cap 3 reached']);
     expect(decide(setup(), equity, { ...on, maxEntriesPerDay: 8 }, { ...ctx, entriesBySession: { MORNING: 5, AFTERNOON: 2 } }).blockers).toEqual([]);
@@ -399,9 +412,9 @@ describe('session discipline', () => {
   it('caps open positions per sector', () => {
     const banked: Target = { ...equity, sector: 'Financial Services' };
     const open = { total: 2, byStrategy: {}, bySide: { BUY: 2, SELL: 0 }, bySector: { 'Financial Services': 2 } };
-    expect(decide(setup(), banked, on, { ...paper, open }).blockers.join()).toContain('per sector');
-    expect(decide(setup(), { ...banked, sector: 'Power' }, on, { ...paper, open }).blockers).toEqual([]);
-    expect(decide(setup(), equity, on, { ...paper, open }).blockers).toEqual([]);
+    expect(decide(setup(), banked, on, { ...liveOk, open }).blockers.join()).toContain('per sector');
+    expect(decide(setup(), { ...banked, sector: 'Power' }, on, { ...liveOk, open }).blockers).toEqual([]);
+    expect(decide(setup(), equity, on, { ...liveOk, open }).blockers).toEqual([]);
   });
 
   it('blocks entries when live LTP has chased > maxEntryChaseAtr beyond bar close or trigger', () => {

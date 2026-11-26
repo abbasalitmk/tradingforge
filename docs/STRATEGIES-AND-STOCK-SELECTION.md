@@ -39,7 +39,7 @@ At most **one entry per 2-second cycle**: the highest-quality setup that passes 
 |---|---|
 | Default universe | 11 liquid large caps: RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK, SBIN, BHARTIARTL, LT, ITC, KOTAKBANK, TATAMOTORS |
 | Manual watchlist | Up to 40 stocks you add from the dashboard |
-| **Auto-pick "today's movers"** | Re-picked every **5 minutes, 09:20–14:45 IST**, from **every NSE EQ-series company share** (~2,400) |
+| **Auto-pick "today's movers"** | Re-picked every **5 minutes, 09:20–14:45 IST**, from **every NSE EQ-series company share** (~2,400); the top **30** are watched |
 
 The auto-pick is **not limited to the Nifty 50**. On real data its picks were
 about 25–33% Nifty 50, 28–31% Midcap 150, 19–22% Smallcap 250 and the rest
@@ -64,7 +64,7 @@ other NSE stocks.
 4. **Ranking:** `log10(turnover) × move score × (0.5 + range strength)`. The move
    score peaks at 0.5–3.5% and is cut steeply above 3.5%, so a liquid stock
    early in its move beats an over-extended spike.
-5. **Top 15** are kept. A current pick that still ranks in the top 30 keeps its
+5. **Top 30** are kept. A current pick that still ranks in the top 60 keeps its
    place, so the list doesn't churn (every change resets a setup's clock).
 6. New picks immediately load candles (prior sessions, today, 1 year daily),
    get a REST quote and subscribe to the live WebSocket feed. Any stock without
@@ -245,12 +245,15 @@ every rule blocking each setup. Production values:
 | Losing strategy | paused after **20+** of its own trades in this mode with negative expectancy (Pause losing strategies: on) |
 
 ### Portfolio limits
-| Rule | Value |
-|---|---|
-| Entries per day | **5** (morning **5**, afternoon **3**) |
-| Open positions | **5** total, **2** per strategy, **3** per direction |
-| Per sector | **2** open positions per NSE industry |
-| Per stock | one position at a time |
+PAPER builds the strategy ranking, so it trades far more freely than LIVE.
+
+| Rule | LIVE | PAPER |
+|---|---|---|
+| Entries per day | **5** (morning **5**, afternoon **3**) | **100**, no session caps |
+| Open positions | **5** total, **2** per strategy, **3** per direction | **20** (also the per-strategy, per-side and per-sector cap) |
+| Per sector | **2** open positions per NSE industry | 20 |
+| Losing-strategy pause | after 20+ of its own live trades at negative expectancy | off — every strategy keeps trading to reach the ranking's 30-trade sample |
+| Per stock | one position at a time | one position at a time |
 
 ---
 
@@ -297,6 +300,11 @@ Runs only on a setup that already passed every rule.
 ---
 
 ## 9. Circuit breakers — block new entries (exits still allowed)
+
+These are LIVE's. In PAPER the losing-streak and daily-loss breakers do not stop
+the day (paper money; the records are what matter), the position cap is 20 and
+the order caps scale with the 100 daily entries. Feed, mismatch, maintenance and
+entry-window breakers apply to both.
 
 | Breaker | Trips at |
 |---|---|

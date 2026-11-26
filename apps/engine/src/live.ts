@@ -222,6 +222,15 @@ export const AutoConfigSchema = z.object({
    * of the top or below the bar stops trading LIVE at the next refresh.
    */
   liveFromPaper: z.boolean().default(true),
+  /**
+   * PAPER collects the records the ranking needs, so it trades far more
+   * freely than LIVE: up to `paperMaxEntriesPerDay` entries and
+   * `paperMaxOpenPositions` open positions (that cap also stands in for the
+   * per-strategy, per-side and per-sector caps), with no session caps. LIVE
+   * keeps maxEntriesPerDay / maxOpenPositions and the rest.
+   */
+  paperMaxEntriesPerDay: z.number().int().min(1).max(500).default(100),
+  paperMaxOpenPositions: z.number().int().min(1).max(50).default(20),
   liveTopStrategies: z.number().int().min(1).max(24).default(3),
   liveMinPaperTrades: z.number().int().min(5).max(500).default(30),
   liveMinPaperExpectancyR: z.number().min(0).max(2).default(0.1),
@@ -280,6 +289,8 @@ export const DEFAULT_AUTO: AutoConfig = {
   retestAtr: 0.25,
   retestBars: 3,
   liveFromPaper: true,
+  paperMaxEntriesPerDay: 100,
+  paperMaxOpenPositions: 20,
   liveTopStrategies: 3,
   liveMinPaperTrades: 30,
   liveMinPaperExpectancyR: 0.1,
@@ -556,7 +567,8 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
     blockers.push(`${strategyId} failed validation${oos !== null ? ` (${oos.toFixed(2)}R out-of-sample)` : ''} — improve it in Strategy Lab`);
   }
   const rec = ctx.record?.(strategyId) ?? null;
-  if (cfg.pauseLosingStrategies && rec && rec.trades >= MIN_TRADES_TO_JUDGE && rec.expectancyR < 0) {
+  // LIVE only: in PAPER a strategy must keep trading to reach the ranking's sample.
+  if (ctx.mode === 'LIVE' && cfg.pauseLosingStrategies && rec && rec.trades >= MIN_TRADES_TO_JUDGE && rec.expectancyR < 0) {
     blockers.push(`${strategyId} paused: ${rec.expectancyR.toFixed(2)}R expectancy over its last ${rec.trades} ${ctx.mode === 'LIVE' ? 'live' : 'paper'} trades`);
   }
   return blockers;
@@ -629,8 +641,11 @@ export function decide(
     blockers.push(`price ₹${setup.entry.toFixed(2)} > max ₹${cfg.maxPrice}`);
   }
   blockers.push(...strategyBlockers(setup.primaryStrategyId, cfg, ctx));
-  if (ctx.entriesToday >= cfg.maxEntriesPerDay) blockers.push(`daily entry cap ${cfg.maxEntriesPerDay} reached`);
-  if (ctx.session && ctx.entriesBySession) {
+  // PAPER builds the ranking's records, so it has its own, much wider caps.
+  const paper = ctx.mode !== 'LIVE';
+  const dailyCap = paper ? cfg.paperMaxEntriesPerDay : cfg.maxEntriesPerDay;
+  if (ctx.entriesToday >= dailyCap) blockers.push(`daily entry cap ${dailyCap} reached`);
+  if (!paper && ctx.session && ctx.entriesBySession) {
     const cap = ctx.session === 'MORNING' ? cfg.maxEntriesMorning : cfg.maxEntriesAfternoon;
     if (ctx.entriesBySession[ctx.session] >= cap) blockers.push(`${ctx.session.toLowerCase()} entry cap ${cap} reached`);
   }
@@ -640,13 +655,17 @@ export function decide(
   // Portfolio: several entries from one strategy, or all on one side, are one
   // correlated bet sized as several. Cap the concentration, not just the count.
   if (ctx.open) {
-    if (ctx.open.total >= cfg.maxOpenPositions) blockers.push(`${ctx.open.total} positions open (max ${cfg.maxOpenPositions})`);
+    const maxOpen = paper ? cfg.paperMaxOpenPositions : cfg.maxOpenPositions;
+    const [perStrategy, perSide, perSector] = paper
+      ? [cfg.paperMaxOpenPositions, cfg.paperMaxOpenPositions, cfg.paperMaxOpenPositions]
+      : [cfg.maxPerStrategy, cfg.maxSameSide, cfg.maxPerSector];
+    if (ctx.open.total >= maxOpen) blockers.push(`${ctx.open.total} positions open (max ${maxOpen})`);
     const byLead = ctx.open.byStrategy[setup.primaryStrategyId] ?? 0;
-    if (byLead >= cfg.maxPerStrategy) blockers.push(`${byLead} open from ${setup.primaryStrategyId} (max ${cfg.maxPerStrategy})`);
+    if (byLead >= perStrategy) blockers.push(`${byLead} open from ${setup.primaryStrategyId} (max ${perStrategy})`);
     const sameSide = ctx.open.bySide[setup.side] ?? 0;
-    if (sameSide >= cfg.maxSameSide) blockers.push(`${sameSide} ${setup.side === 'BUY' ? 'long' : 'short'} positions open (max ${cfg.maxSameSide})`);
+    if (sameSide >= perSide) blockers.push(`${sameSide} ${setup.side === 'BUY' ? 'long' : 'short'} positions open (max ${perSide})`);
     const inSector = target.sector ? ctx.open.bySector?.[target.sector] ?? 0 : 0;
-    if (target.sector && inSector >= cfg.maxPerSector) blockers.push(`${inSector} open in ${target.sector} (max ${cfg.maxPerSector} per sector)`);
+    if (target.sector && inSector >= perSector) blockers.push(`${inSector} open in ${target.sector} (max ${perSector} per sector)`);
   }
 
   return { route, blockers };

@@ -56,6 +56,8 @@ interface AutoConfig {
   retestAtr: number;
   retestBars: number;
   liveFromPaper: boolean;
+  paperMaxEntriesPerDay: number;
+  paperMaxOpenPositions: number;
   liveTopStrategies: number;
   liveMinPaperTrades: number;
   liveMinPaperExpectancyR: number;
@@ -148,7 +150,7 @@ type Draft = Pick<AutoConfig,
   | 'autoUniverse' | 'autoUniverseSize' | 'autoUniverseMinTurnoverCr'
   | 'maxEntriesMorning' | 'maxEntriesAfternoon' | 'maxPerSector' | 'reentryCooldownMin' | 'closedBarEntries' | 'htfBias' | 'htfBiasStrict' | 'maxLeverage' | 'maxVwapStretchAtr' | 'maxSetupAgeMin' | 'minStopPct' | 'stopClusterGuard' | 'marketFilter' | 'marketAboveOpen' | 'relativeStrength' | 'targetR' | 'maxTargetDailyAtr' | 'minRoomDailyAtr' | 'maxEntryChaseAtr' | 'stagedTrail' | 'maxCostPctOfRisk'
   | 'maxSpreadPct' | 'stallExit' | 'stallBars' | 'stallMinR' | 'retestEntry' | 'retestAtr' | 'retestBars'
-  | 'liveFromPaper' | 'liveTopStrategies' | 'liveMinPaperTrades' | 'liveMinPaperExpectancyR'>;
+  | 'liveFromPaper' | 'paperMaxEntriesPerDay' | 'paperMaxOpenPositions' | 'liveTopStrategies' | 'liveMinPaperTrades' | 'liveMinPaperExpectancyR'>;
 
 const draftOf = (a: AutoConfig): Draft => ({
   minQuality: a.minQuality, minRewardRisk: a.minRewardRisk, minNetRewardRisk: a.minNetRewardRisk, confirmSeconds: a.confirmSeconds,
@@ -176,6 +178,8 @@ const draftOf = (a: AutoConfig): Draft => ({
   retestAtr: a.retestAtr ?? 0.25,
   retestBars: a.retestBars ?? 3,
   liveFromPaper: a.liveFromPaper ?? true,
+  paperMaxEntriesPerDay: a.paperMaxEntriesPerDay ?? 100,
+  paperMaxOpenPositions: a.paperMaxOpenPositions ?? 20,
   liveTopStrategies: a.liveTopStrategies ?? 3,
   liveMinPaperTrades: a.liveMinPaperTrades ?? 30,
   liveMinPaperExpectancyR: a.liveMinPaperExpectancyR ?? 0.1,
@@ -295,6 +299,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       retestAtr: draft.retestAtr,
       retestBars: draft.retestBars,
       liveFromPaper: draft.liveFromPaper,
+      paperMaxEntriesPerDay: draft.paperMaxEntriesPerDay,
+      paperMaxOpenPositions: draft.paperMaxOpenPositions,
       liveTopStrategies: draft.liveTopStrategies,
       liveMinPaperTrades: draft.liveMinPaperTrades,
       liveMinPaperExpectancyR: draft.liveMinPaperExpectancyR,
@@ -464,6 +470,8 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
             ['stallMinR', 'No-follow-through min move (R)', 0, 1.5, 0.05, 'favourable move a trade needs by then to be kept'],
             ['retestAtr', 'Retest depth (× ATR)', 0.05, 2, 0.05, 'how far back toward the breakout the resting entry sits'],
             ['retestBars', 'Retest wait (bars)', 1, 12, 1, 'strategy-timeframe bars before an unfilled retest order is cancelled'],
+            ['paperMaxEntriesPerDay', 'PAPER: max entries per day', 1, 500, 1, 'paper builds the ranking, so it trades far more than LIVE'],
+            ['paperMaxOpenPositions', 'PAPER: max open positions', 1, 50, 1, 'also the per-strategy, per-side and per-sector cap in paper'],
             ['liveTopStrategies', 'LIVE: top paper strategies', 1, 24, 1, 'how many of the best paper strategies may trade LIVE'],
             ['liveMinPaperTrades', 'LIVE: min paper trades', 5, 500, 1, 'paper trades a strategy needs before it can trade LIVE'],
             ['liveMinPaperExpectancyR', 'LIVE: min paper avg (R)', 0, 2, 0.05, 'average paper result after charges needed for LIVE'],
