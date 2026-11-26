@@ -473,8 +473,9 @@ positive out-of-sample, ≥ 60% of walk-forward folds, parameter stability,
 (out-of-sample −0.270R, 43 trades) and `SMC_STRUCTURE_15M` failed (−0.123R,
 102 trades). The remaining runs were stopped; none was approved.
 
-**Production selection (27 Nov 2026):** AutoPilot trades only `GAP_AND_GO`,
-`PDH_PDL_CPR` and `PDH_PDL_CPR_15M` — the three best 20-month records.
+**Production selection:** on 27 Nov 2026 AutoPilot was limited to the three best
+20-month records (`GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M`); later the same
+day all strategies were re-enabled at the owner's request (failed ones stay blocked).
 
 **Conclusion:** no intraday rule set here is profitable over 20 months. Keep
 PAPER; approve nothing new for LIVE without a positive result across most of

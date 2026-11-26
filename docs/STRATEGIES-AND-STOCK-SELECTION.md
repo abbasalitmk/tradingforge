@@ -8,8 +8,8 @@ Research history and backtest tables live in [05-TRADING-SYSTEM.md](05-TRADING-S
 > **Status, 27 Nov 2026.** The server runs in **PAPER** with **AutoPilot on**
 > (it stays on across restarts). LIVE is armed only from the dashboard. In LIVE,
 > only human-APPROVED strategies may lead a trade — today that is one intraday
-> strategy, `PDH_PDL_CPR`. AutoPilot trades only the three strategies with the
-> best record (§5). **Over 20 months of data no intraday rule set is profitable
+> strategy, `PDH_PDL_CPR`. AutoPilot trades **every strategy that has not failed
+> validation** (12 intraday, §5); the 7 failed ones stay blocked. **Over 20 months of data no intraday rule set is profitable
 > after charges** (§11); paper trading is collecting forward results.
 
 ---
@@ -86,7 +86,7 @@ against an overstretched one and are exempt from the trend and NIFTY filters
 
 **Status** combines two things — the production registry and the AutoPilot strategy list:
 - **Enabled** — on AutoPilot's strategy list; may lead entries.
-- **Stopped** — taken off the AutoPilot list (27 Nov 2026) because it lost money over 20 months. AutoPilot does not run it at all, so it can neither lead an entry nor vote on another strategy's quality score. Re-enable under AutoPilot → strategies.
+- **Stopped** — taken off AutoPilot's strategy list; AutoPilot then does not run it at all (no entries, no votes). None is stopped today: all strategies were re-enabled on 27 Nov 2026 at the owner's request. Choose under AutoPilot → strategies.
 - **LIVE** — has a human-APPROVED version; may lead LIVE trades.
 - **Paper** — not validated or not approved; trades in PAPER only.
 - **Failed** — its parameters failed validation (walk-forward, out-of-sample, cost stress); blocked in every mode while "Skip failed strategies" is on.
@@ -96,27 +96,27 @@ Results quoted are per trade after charges, 20 months (Mar 2025 – Nov 2026), 4
 ### 3.1 Intraday, 5-minute bars
 | Strategy | Type | Entry | Stop | Status |
 |---|---|---|---|---|
-| `ORB_SUPERTREND` | trend | Close beyond the 09:15–09:30 opening range, confirmed by Supertrend, EMA9/21, ADX, RVOL ≥ 1.5×, VWAP side, RSI room | 1.5 ATR | **Stopped** (−0.476R, 85 trades) |
+| `ORB_SUPERTREND` | trend | Close beyond the 09:15–09:30 opening range, confirmed by Supertrend, EMA9/21, ADX, RVOL ≥ 1.5×, VWAP side, RSI room | 1.5 ATR | ✅ **Enabled** · Paper (−0.476R, 85 trades) |
 | `VWAP_PULLBACK` | trend | Trend day pulls back to session VWAP and resumes with a rejection bar | 0.5–2.5 ATR | **Failed** |
 | `SUPERTREND_MOMENTUM` | trend | Fresh Supertrend flip with EMA21 slope, RVOL expansion, rising ADX | ≥ 0.5 ATR, ≤ 1.5 ATR | **Failed** |
 | `BB_SQUEEZE_BREAKOUT` | trend | Bollinger bandwidth at a lookback low, then a close outside the band on volume | ≥ 0.5 ATR, ≤ 1.5 ATR | **Failed** |
-| `GMMA_TREND` | trend | Guppy short (3–15) and long (30–60) EMA ribbons separate cleanly; long ribbon sloping; 15-min trend agrees | 0.75–2.5 ATR | **Stopped** (−0.267R, 449 trades) |
-| `SMC_STRUCTURE` | trend | First close beyond the last confirmed swing (break of structure / change of character), weighted by a fair-value gap | beyond the opposite swing | **Stopped** (−0.277R, 128 trades) |
+| `GMMA_TREND` | trend | Guppy short (3–15) and long (30–60) EMA ribbons separate cleanly; long ribbon sloping; 15-min trend agrees | 0.75–2.5 ATR | ✅ **Enabled** · Paper (−0.267R, 449 trades) |
+| `SMC_STRUCTURE` | trend | First close beyond the last confirmed swing (break of structure / change of character), weighted by a fair-value gap | beyond the opposite swing | ✅ **Enabled** · Paper (−0.277R, 128 trades) |
 | `TECHNICAL_COMPOSITE` | trend | EMA12/26 trend and OBV first align, weighted by ADX, RSI, Bollinger room, VWAP | ≥ 1 ATR | **Failed** |
 | `GAP_AND_GO` | trend | 1–4.5% opening gap on 1.6× opening volume (same-time baseline); close beyond the first 15-min candle | 0.5–3 ATR | ✅ **Enabled** · Paper (+0.003R, 75 trades) |
-| `EMA_CROSS_9_21` | trend | EMA9/21 cross with the 15-min EMA20/50 trend agreeing and ADX > 22 | beyond the recent swing, 0.5–2.5 ATR | **Stopped** (−0.424R, 77 trades) |
+| `EMA_CROSS_9_21` | trend | EMA9/21 cross with the 15-min EMA20/50 trend agreeing and ADX > 22 | beyond the recent swing, 0.5–2.5 ATR | ✅ **Enabled** · Paper (−0.424R, 77 trades) |
 | `PDH_PDL_CPR` | trend | Narrow central-pivot-range day, first close beyond the previous day's high/low on 1.3× volume | 1–3 ATR | ✅ **Enabled** · **LIVE** (−0.005R, 22 trades; approved v2 uses a 0.9% CPR width, the code default is 0.3%) |
-| `BB_RSI_REVERSION` | fade | ADX < 18; pierce of the 2-SD band with RSI < 25 / > 75 that closes back inside; target session VWAP | 0.5–2.5 ATR | **Stopped** (1 trade in 20 months, −1.25R) |
-| `FAILED_BREAKOUT_TRAP` | fade | Thin-volume (< 1.2×) break of the opening range or previous day high/low that closes back inside within 2 bars | beyond the failed extreme | **Stopped** (−0.247R, 211 trades) |
-| `OI_WALL_REVERSAL` | fade | Bounce off the peak put-OI strike (or rejection at peak call-OI) while writers add OI | beyond the wall | **Stopped** (needs the F&O desk, which is off — never trades) |
+| `BB_RSI_REVERSION` | fade | ADX < 18; pierce of the 2-SD band with RSI < 25 / > 75 that closes back inside; target session VWAP | 0.5–2.5 ATR | ✅ **Enabled** · Paper (1 trade in 20 months, −1.25R) |
+| `FAILED_BREAKOUT_TRAP` | fade | Thin-volume (< 1.2×) break of the opening range or previous day high/low that closes back inside within 2 bars | beyond the failed extreme | ✅ **Enabled** · Paper (−0.247R, 211 trades) |
+| `OI_WALL_REVERSAL` | fade | Bounce off the peak put-OI strike (or rejection at peak call-OI) while writers add OI | beyond the wall | ✅ **Enabled** · Paper (needs the F&O desk, which is off — never trades) |
 
 ### 3.2 Intraday, 15-minute bars (wider stops, lower charge drag)
 | Strategy | Type | Entry | Stop | Status |
 |---|---|---|---|---|
 | `ORB_SUPERTREND_15M` | trend | 30-min opening range, first 15-min breakout bar only; Supertrend, EMA9/21, ADX ≥ 25, RVOL ≥ 1.5×, VWAP, RSI room, 0.75% volatility floor | 2 ATR | **Failed** |
 | `PDH_PDL_CPR_15M` | trend | Narrow CPR (≤ 0.3%) breakout beyond PDH/PDL on 1.5× volume | 0.75–2.5 ATR | ✅ **Enabled** · Paper (−0.089R, 260 trades) |
-| `EMA_CROSS_9_21_15M` | trend | 15-min EMA9/21 cross with EMA20/50 trend, ADX > 22, RVOL ≥ 1.2× | 0.75–2.5 ATR | **Stopped** (−0.209R, 113 trades; failed Strategy Lab validation) |
-| `SMC_STRUCTURE_15M` | trend | 15-min break of structure + fair-value gap on ≥ 1.2× volume | ≥ 0.75 ATR | **Stopped** (−0.225R, 326 trades; failed Strategy Lab validation) |
+| `EMA_CROSS_9_21_15M` | trend | 15-min EMA9/21 cross with EMA20/50 trend, ADX > 22, RVOL ≥ 1.2× | 0.75–2.5 ATR | ✅ **Enabled** · Paper (−0.209R, 113 trades; failed Strategy Lab validation) |
+| `SMC_STRUCTURE_15M` | trend | 15-min break of structure + fair-value gap on ≥ 1.2× volume | ≥ 0.75 ATR | ✅ **Enabled** · Paper (−0.225R, 326 trades; failed Strategy Lab validation) |
 | `HOLY_GRAIL_15M` | trend | Linda Raschke: ADX ≥ 30 trend, pullback to the 20-EMA, enter when a bar breaks the pullback bar | beyond the pullback swing, 0.75–2.5 ATR | **Failed** (20 months: −0.258R, 606 trades) |
 | `INSIDE_BAR_15M` | trend | Inside bar near PDH, PDL or VWAP, then a close beyond the mother bar on 1.2× volume | mother bar's other end, 0.75–2.5 ATR | **Failed** (20 months: −0.127R, 278 trades) |
 
@@ -133,15 +133,15 @@ A swing SELL is never automated — on a delivery product it would sell shares o
 
 ### 3.4 Enabled, stopped and failed strategies — and why
 
-**Enabled (3)** — the best 20-month records; AutoPilot trades only these:
+**Best 20-month records (3)** — these were the only ones enabled from 26–27 Nov:
 | Strategy | 20 months | Why it is kept |
 |---|---|---|
 | `GAP_AND_GO` | +0.003R, 75 trades | the only strategy at break-even or better; trades the opening gap with volume |
 | `PDH_PDL_CPR` | −0.005R, 22 trades | about break-even; the one strategy approved for LIVE |
 | `PDH_PDL_CPR_15M` | −0.089R, 260 trades | the smallest loss of the rest, and enough signals to keep trades coming |
 
-**Stopped (9)** — not run by AutoPilot (no entries, no votes):
-| Strategy | 20 months | Why it was stopped |
+**Re-enabled on 27 Nov (9)** — trade in PAPER again, although they lost money over 20 months:
+| Strategy | 20 months | Why it loses |
 |---|---|---|
 | `ORB_SUPERTREND` (5m) | −0.476R, 85 trades | the biggest loser: needs Supertrend, EMA and ADX to agree *after* the breakout, so it enters late, near the top of the move |
 | `EMA_CROSS_9_21` (5m) | −0.424R, 77 trades | moving-average crosses on 5-minute bars lag; they fire after the move and whipsaw in chop |
@@ -154,7 +154,9 @@ A swing SELL is never automated — on a delivery product it would sell shares o
 | `OI_WALL_REVERSAL` (fade) | no trades | needs the F&O option chain; the F&O desk is off |
 
 At about ₹100 of risk per trade, these cost roughly ₹20–48 a trade on average,
-and they would use up the 5 daily entries the enabled strategies need.
+and they compete with the three best strategies for the 5 daily entries. To trade
+only the best three again, set AutoPilot → strategies to `GAP_AND_GO`,
+`PDH_PDL_CPR`, `PDH_PDL_CPR_15M`.
 
 **Failed (7)** — failed validation; blocked in every mode:
 | Strategy | Result | Why it failed |
@@ -236,7 +238,7 @@ every rule blocking each setup. Production values:
 ### Strategy gating
 | Rule | Value |
 |---|---|
-| **Enabled strategies** | **`GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M` only** — the three best 20-month records (+0.003R, −0.005R, −0.089R a trade). The others are not run by AutoPilot at all — no entries and no votes in the quality score (they lost 0.2–0.5R a trade). Change it under AutoPilot → strategies |
+| **Enabled strategies** | **all** (AutoPilot's list is empty = every strategy), re-enabled 27 Nov 2026 at the owner's request. The 7 failed ones stay blocked by "Skip failed strategies". The best three 20-month records are `GAP_AND_GO`, `PDH_PDL_CPR`, `PDH_PDL_CPR_15M`; the rest lost 0.2–0.5R a trade (§3.4) |
 | LIVE | the lead must have a human-**APPROVED** version |
 | Failed validation | blocked in every mode (Skip failed strategies: on) |
 | Losing strategy | paused after **20+** of its own trades in this mode with negative expectancy (Pause losing strategies: on) |

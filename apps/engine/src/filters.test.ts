@@ -12,7 +12,7 @@ import { decide, AutoConfigSchema, type DecisionContext, type Target } from './l
 const PRODUCTION = AutoConfigSchema.parse({
   enabled: true, targetMode: 'ALL_SCANNED', targetSymbol: 'RELIANCE', minPrice: 50, maxPrice: 3000,
   segments: { intraday: true, swing: false, fno: false }, minQuality: 70, minRewardRisk: 1.5, minNetRewardRisk: 1.25,
-  confirmSeconds: 2, strategies: ['GAP_AND_GO', 'PDH_PDL_CPR', 'PDH_PDL_CPR_15M'], maxEntriesPerDay: 5, maxEntriesMorning: 5, maxEntriesAfternoon: 3, maxPerSector: 2,
+  confirmSeconds: 2, strategies: [], maxEntriesPerDay: 5, maxEntriesMorning: 5, maxEntriesAfternoon: 3, maxPerSector: 2,
   reentryCooldownMin: 5, closedBarEntries: true, htfBias: true, htfBiasStrict: false, maxVwapStretchAtr: 5, maxSetupAgeMin: 10,
   minStopPct: 0.65, stopClusterGuard: true, marketFilter: true, marketAboveOpen: true, relativeStrength: true, targetR: 2.5, maxTargetDailyAtr: 1.5,
   minRoomDailyAtr: 0.5, maxEntryChaseAtr: 0.5, stagedTrail: true, maxCostPctOfRisk: 20, maxOpenPositions: 5, maxPerStrategy: 2,
@@ -66,7 +66,7 @@ describe('production AutoPilot filters', () => {
     ['re-entry cooldown', () => blockers({}, { reentryWaitSec: () => 120 }), /re-entry cooldown: X closed recently, 120s left/],
     ['5 positions open', () => blockers({}, { open: { total: 5, byStrategy: {}, bySide: { BUY: 2, SELL: 3 }, bySector: {} } }), /5 positions open \(max 5\)/],
     ['2 from the same strategy', () => blockers({}, { open: { total: 2, byStrategy: { GAP_AND_GO: 2 }, bySide: { BUY: 2, SELL: 0 }, bySector: {} } }), /2 open from GAP_AND_GO \(max 2\)/],
-    ['strategy outside the enabled list', () => blockers({ primaryStrategyId: 'GMMA_TREND' }), /GMMA_TREND not enabled/],
+    ['strategy outside an enabled list', () => blockers({ primaryStrategyId: 'GMMA_TREND' }, {}, { strategies: ['GAP_AND_GO'] }), /GMMA_TREND not enabled/],
     ['3 longs open', () => blockers({}, { open: { total: 3, byStrategy: {}, bySide: { BUY: 3, SELL: 0 }, bySector: {} } }), /3 long positions open \(max 3\)/],
     ['2 in the same sector', () => blockers({}, { open: { total: 2, byStrategy: {}, bySide: { BUY: 2, SELL: 0 }, bySector: { Banks: 2 } } }), /2 open in Banks \(max 2 per sector\)/],
     ['failed validation', () => blockers({}, { verdict: () => ({ status: 'REJECTED', oosExpectancyR: -0.2 }) }), /failed validation/],
