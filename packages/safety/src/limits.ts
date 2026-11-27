@@ -26,6 +26,8 @@ export interface Limits {
   readonly feedStalenessMs: number;
   /** Margin utilisation above this rejects new entries. */
   readonly maxMarginUtilisationPct: number;
+  /** Allow entries across all continuous market hours before 15:05 square-off (PAPER mode). */
+  readonly allowAnyMarketHour?: boolean;
 }
 
 export const DEFAULT_LIMITS: Limits = {

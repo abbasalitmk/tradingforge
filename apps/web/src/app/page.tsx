@@ -1660,7 +1660,7 @@ export default function Dashboard() {
             {s.sizing.mode === 'FIXED_BUDGET' ? `₹${s.sizing.budget.toLocaleString('en-IN')}` : s.sizing.mode}
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-            Ceiling: ₹{s.limits.maxSpendPerTrade.toLocaleString('en-IN')} max per trade
+            {s.mode !== 'LIVE' ? 'Uncapped (PAPER mode)' : `Ceiling: ₹${s.limits.maxSpendPerTrade.toLocaleString('en-IN')} max per trade`}
           </div>
         </div>
 
@@ -2918,8 +2918,8 @@ export default function Dashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
           {[
             { label: 'Daily Loss Limit', val: `${s.limits.dailyLossLimitPct}% capital` },
-            { label: 'Max Spend per Trade', val: `₹${s.limits.maxSpendPerTrade.toLocaleString('en-IN')}` },
-            { label: 'Max Deployed Capital', val: `₹${s.limits.maxDeployed.toLocaleString('en-IN')}` },
+            { label: 'Max Spend per Trade', val: s.mode !== 'LIVE' ? 'Uncapped (PAPER)' : `₹${s.limits.maxSpendPerTrade.toLocaleString('en-IN')}` },
+            { label: 'Max Deployed Capital', val: s.mode !== 'LIVE' ? 'Uncapped (PAPER)' : `₹${s.limits.maxDeployed.toLocaleString('en-IN')}` },
             { label: 'Open Positions', val: `${s.positions.length}` },
             { label: 'Orders Today', val: `${s.telemetry.ordersCount}` },
             { label: 'Feed Staleness', val: s.telemetry.feedStaleness !== null ? `${s.telemetry.feedStaleness}ms` : 'no data' },

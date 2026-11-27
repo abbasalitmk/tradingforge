@@ -452,4 +452,11 @@ describe('session discipline', () => {
     const ticks = new Map([['A', 99_500], ['B', 90_000]]);
     expect(staleInstruments(['A', 'B', 'C'], ticks, 100_000, 3000)).toEqual(['B', 'C']);
   });
+
+  it('defaults paperCapital to 2 lakh (200,000) even for older persisted configs', () => {
+    const { paperCapital: _omit, ...legacy } = DEFAULT_AUTO;
+    expect(DEFAULT_AUTO.paperCapital).toBe(200_000);
+    expect(AutoConfigSchema.parse(legacy).paperCapital).toBe(200_000);
+    expect(AutoConfigSchema.parse({ ...legacy, paperCapital: 500_000 }).paperCapital).toBe(500_000);
+  });
 });

@@ -391,10 +391,11 @@ async function refreshAccount(): Promise<void> {
   account.error = null;
 }
 
-/** Capital the risk rules work from: in LIVE, the smaller of the configured ceiling and the account. */
+/** Capital the risk rules work from: in PAPER uses configurable paperCapital; in LIVE, smaller of ceiling and account. */
 function capitalPaise(): Paise {
+  if (currentMode() !== 'LIVE') return rupeesToPaise(state.auto.paperCapital);
   const ceiling = rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL);
-  return currentMode() === 'LIVE' && account.capitalPaise !== null && account.capitalPaise > 0
+  return account.capitalPaise !== null && account.capitalPaise > 0
     ? Math.min(ceiling, account.capitalPaise) as Paise
     : ceiling;
 }
@@ -405,15 +406,16 @@ function marginUtilisationPct(): number {
   return Math.round((account.usedPaise / account.capitalPaise) * 1000) / 10;
 }
 
+const UNBOUNDED_PAISE = 1_000_000_000_000 as Paise; // ₹1000 Cr — removes capital/spend ceilings in PAPER
+
 /**
  * Notional the account may still put on: capital × leverage for intraday,
  * capital alone for delivery, less what open positions already hold — and
- * never past the configured deployed-capital ceiling.
+ * never past the configured deployed-capital ceiling (uncapped in PAPER).
  */
 function exposureRoomPaise(product: Product): Paise {
+  if (trader.activeBroker === 'PAPER') return UNBOUNDED_PAISE;
   const deployed = trader.deployed();
-  // Paper money: room is the paper position ceiling, not the account's leverage.
-  if (trader.activeBroker === 'PAPER') return Math.max(0, limitsNow().maxDeployedCapitalPaise - deployed) as Paise;
   const ceiling = rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed;
   const leverage = product === 'I' ? state.auto.maxLeverage : 1;
   return Math.max(0, Math.min(ceiling, capitalPaise() * leverage - deployed)) as Paise;
@@ -488,12 +490,15 @@ function limitsNow(): typeof cfg.limits {
   const open = state.auto.paperMaxOpenPositions;
   return {
     ...cfg.limits,
-    maxDeployedCapitalPaise: (cfg.limits.maxSpendPerTradePaise * open) as Paise,
+    maxSpendPerTradePaise: UNBOUNDED_PAISE,
+    maxDeployedCapitalPaise: UNBOUNDED_PAISE,
     maxConcurrentPositions: open,
     maxConsecutiveLosses: 1_000,
     dailyLossPct: 100,
+    perTradeLossPct: 100,
     maxOrdersPerDay: Math.max(cfg.limits.maxOrdersPerDay, state.auto.paperMaxEntriesPerDay * 3),
     maxOrdersPerMinute: Math.max(cfg.limits.maxOrdersPerMinute, 30),
+    allowAnyMarketHour: true,
   };
 }
 
@@ -836,7 +841,7 @@ async function sizeFno(plan: FnoPlan, volume: number, aiMultiplier: number): Pro
     budget: rupeesToPaise(state.budget),
     riskPct: state.riskPct,
     capital: capitalPaise(),
-    availableMargin: (rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed) as Paise,
+    availableMargin: trader.activeBroker === 'PAPER' ? UNBOUNDED_PAISE : (rupeesToPaise(cfg.TF_MAX_DEPLOYED_CAPITAL) - deployed) as Paise,
     lotSize: c.lotSize,
     avgDailyVolume: volume > 0 ? volume : Number.MAX_SAFE_INTEGER,
     deployedCapital: deployed,
@@ -1262,8 +1267,10 @@ async function refreshAutoUniverse(): Promise<void> {
       }
     }
 
-    // A stock whose one share the per-trade ceiling (or the budget) cannot buy is not a candidate.
-    const affordable = Math.min(cfg.TF_MAX_SPEND_PER_TRADE, state.sizingMode === 'FIXED_BUDGET' ? state.budget : Infinity);
+    // A stock whose one share the per-trade ceiling (or the budget) cannot buy is not a candidate; PAPER has no spend cap.
+    const affordable = currentMode() === 'LIVE'
+      ? Math.min(cfg.TF_MAX_SPEND_PER_TRADE, state.sizingMode === 'FIXED_BUDGET' ? state.budget : Infinity)
+      : Infinity;
     const size = state.auto.autoUniverseSize;
     const ranked = pickUniverse(quotes, {
       size: size * 2,
@@ -1597,11 +1604,14 @@ function startLoops(): void {
     void liveCycle().catch((e) => console.error('[live]', e));
   }, cfg.TF_ANALYSIS_INTERVAL_MS);
 
-  // The day's movers, from 09:20 (the open's quotes settled) to the last entry.
+  // The day's movers, from 09:20–14:45 in LIVE, or all intraday market hours (09:15–15:05) in PAPER.
   setInterval(() => {
     const mins = istMinutes(clock.now());
     const due = clock.ms() - autoUniverse.attemptedAt >= AUTO_UNIVERSE_REFRESH_MS;
-    if (!state.auto.autoUniverse || (due && mins >= SESSION.ENTRY_START && mins < SESSION.ENTRY_END)) {
+    const inWin = currentMode() !== 'LIVE'
+      ? mins >= SESSION.OPEN && mins < SESSION.SQUARE_OFF
+      : mins >= SESSION.ENTRY_START && mins < SESSION.ENTRY_END;
+    if (!state.auto.autoUniverse || (due && inWin)) {
       void refreshAutoUniverse();
     }
   }, 30_000);
@@ -2671,8 +2681,10 @@ async function main(): Promise<void> {
     broker: live ? ensureUpstoxBroker() : paperBroker,
     brokerId: live ? 'UPSTOX' : 'PAPER',
     machine: positionMachine,
-    // Never tighter than the risk sizing allows a trade, or it cuts every position before its stop.
-    perTradeLossPaise: () => pctOf(capitalPaise(), Math.max(cfg.limits.perTradeLossPct, state.riskPct)),
+    // Never tighter than the risk sizing allows a trade, or it cuts every position before its stop (uncapped in PAPER).
+    perTradeLossPaise: () => trader.activeBroker === 'PAPER'
+      ? UNBOUNDED_PAISE
+      : pctOf(capitalPaise(), Math.max(cfg.limits.perTradeLossPct, state.riskPct)),
     onClosed: onPositionClosed,
   });
 

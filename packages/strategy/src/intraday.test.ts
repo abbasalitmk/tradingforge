@@ -70,6 +70,14 @@ describe('session windows are enforced before any computation', () => {
     const p = new IntradayProfile();
     expect(p.evaluate(ctx(candles, new FixedClock(new Date(iso))))).toBeNull();
   });
+
+  it('allows full market session (09:15–15:05 IST) when marketHoursEntry is enabled for PAPER', () => {
+    const p = new IntradayProfile();
+    expect(p.evaluate({ ...ctx(candles, new FixedClock(new Date('2026-09-14T06:20:00Z'))), marketHoursEntry: true })).not.toBeNull(); // 11:50 IST
+    expect(p.evaluate({ ...ctx(candles, new FixedClock(new Date('2026-09-14T09:25:00Z'))), marketHoursEntry: true })).not.toBeNull(); // 14:55 IST
+    expect(p.evaluate({ ...ctx(candles, new FixedClock(new Date('2026-09-14T03:44:00Z'))), marketHoursEntry: true })).toBeNull();     // 09:14 IST
+    expect(p.evaluate({ ...ctx(candles, new FixedClock(new Date('2026-09-14T09:35:00Z'))), marketHoursEntry: true })).toBeNull();     // 15:05 IST
+  });
 });
 
 describe('opening range gating', () => {

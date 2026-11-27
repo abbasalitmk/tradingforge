@@ -78,6 +78,8 @@ export interface HybridOptions {
    * confirmation of anything. Default: every vote counts.
    */
   readonly canVote?: (vote: StrategyVote) => boolean;
+  /** Allow intraday strategies across 09:15–15:05 IST (used in PAPER mode). */
+  readonly marketHoursEntry?: boolean;
 }
 
 /** Each additional strategy on the same side adds this, up to AGREE_CAP. */
@@ -160,6 +162,7 @@ export function analyzeHybrid(
         higherTf: def.timeframe !== '1d' ? input.daily : [],
         clock: input.clock,
         ...(def.timeframe !== '1d' && input.options ? { options: input.options } : {}),
+        ...(def.timeframe !== '1d' && opts.marketHoursEntry ? { marketHoursEntry: true } : {}),
       });
     }
     return {

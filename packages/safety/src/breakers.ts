@@ -156,9 +156,12 @@ export function evaluate(snap: RiskSnapshot, limits: Limits, clock: Clock): Verd
     trips.push({ id: 'MAINTENANCE_WINDOW', detail: 'Upstox maintenance 00:00-05:30 IST', allowExits: false });
   }
 
-  const outside = entryBlockReason(now);
+  const outside = limits.allowAnyMarketHour
+    ? (mins < SESSION.OPEN ? 'before market open' : mins >= SESSION.SQUARE_OFF ? 'after 15:05 square-off' : null)
+    : entryBlockReason(now);
   if (outside) {
-    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} — ${outside}; entries 09:30–11:30 and 13:30–14:45`, allowExits: true });
+    const windowNote = limits.allowAnyMarketHour ? 'entries 09:15–15:05' : 'entries 09:30–11:30 and 13:30–14:45';
+    trips.push({ id: 'OUTSIDE_WINDOW', detail: `IST ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')} — ${outside}; ${windowNote}`, allowExits: true });
   }
 
   return {

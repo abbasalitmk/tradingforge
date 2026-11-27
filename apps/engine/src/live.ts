@@ -231,6 +231,8 @@ export const AutoConfigSchema = z.object({
    */
   paperMaxEntriesPerDay: z.number().int().min(1).max(500).default(100),
   paperMaxOpenPositions: z.number().int().min(1).max(50).default(20),
+  /** Virtual capital (₹) for PAPER sizing; PAPER also skips spend-per-trade and deployed ceilings. */
+  paperCapital: z.number().min(10_000).max(10_000_000).default(200_000),
   liveTopStrategies: z.number().int().min(1).max(24).default(3),
   liveMinPaperTrades: z.number().int().min(5).max(500).default(30),
   liveMinPaperExpectancyR: z.number().min(0).max(2).default(0.1),
@@ -291,6 +293,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   liveFromPaper: true,
   paperMaxEntriesPerDay: 100,
   paperMaxOpenPositions: 20,
+  paperCapital: 200_000,
   liveTopStrategies: 3,
   liveMinPaperTrades: 30,
   liveMinPaperExpectancyR: 0.1,
@@ -886,6 +889,7 @@ export class LiveAnalyzer {
         },
         {
           params, ...(strategies && strategies.length ? { strategies } : {}),
+          marketHoursEntry: ctx.mode !== 'LIVE',
           canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch, closed),
           canVote: (v) => !(cfg.skipFailedStrategies && ctx.verdict?.(v.strategyId)?.status === 'REJECTED'),
         },

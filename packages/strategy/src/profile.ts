@@ -10,6 +10,8 @@ export interface StrategyContext {
   readonly clock: Clock;
   /** Option-chain positioning, for an F&O underlying whose chain is loaded. */
   readonly options?: OptionWalls | null;
+  /** When true (PAPER mode), intraday strategies may signal across 09:15–15:05 IST rather than stopping at 14:45. */
+  readonly marketHoursEntry?: boolean;
 }
 
 /**

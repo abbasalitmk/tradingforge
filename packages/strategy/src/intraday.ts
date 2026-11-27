@@ -11,6 +11,7 @@ import {
   scoreConfluence, passedNames,
 } from './profile.ts';
 import { type StrategyDefinition, type Params, tagged, clampParams } from './definition.ts';
+import { inEntryWindow } from './strategies/common.ts';
 
 export interface IntradayParams {
   readonly orbMinutes: number;
@@ -76,8 +77,7 @@ export class IntradayProfile implements StrategyProfile {
     if (candles.length < this.warmupBars) return null;
 
     const now = ctx.clock.now();
-    const mins = istMinutes(now);
-    if (mins < SESSION.ENTRY_START || mins >= SESSION.ENTRY_END) return null;
+    if (!inEntryWindow(now, Boolean(ctx.marketHoursEntry))) return null;
 
     const last = candles[candles.length - 1]!;
     const todayKey = istDateKey(now);

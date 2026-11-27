@@ -26,10 +26,12 @@ export function visibleCandles(candles: readonly Candle[], nowMs: number): reado
   return end === candles.length ? candles : candles.slice(0, end);
 }
 
-/** Inside the window in which new intraday entries are allowed. */
-export function inEntryWindow(now: Date): boolean {
+/** Inside the window in which new intraday entries are allowed (full 09:15–15:05 when `marketHours` is true). */
+export function inEntryWindow(now: Date, marketHours = false): boolean {
   const m = istMinutes(now);
-  return m >= SESSION.ENTRY_START && m < SESSION.ENTRY_END;
+  return marketHours
+    ? m >= SESSION.OPEN && m < SESSION.SQUARE_OFF
+    : m >= SESSION.ENTRY_START && m < SESSION.ENTRY_END;
 }
 
 /**
@@ -142,7 +144,7 @@ export interface IntradayFrame {
  */
 export function intradayFrame(ctx: StrategyContext, warmupBars: number): IntradayFrame | null {
   const now = ctx.clock.now();
-  if (!inEntryWindow(now)) return null;
+  if (!inEntryWindow(now, Boolean(ctx.marketHoursEntry))) return null;
   const candles = visibleCandles(ctx.candles, now.getTime());
   if (candles.length < warmupBars) return null;
   const last = candles[candles.length - 1]!;

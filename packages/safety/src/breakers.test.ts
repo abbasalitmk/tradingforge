@@ -171,6 +171,16 @@ describe('session windows', () => {
     const v = evaluate(snapshot({ lastTickMs: new Date(iso).getTime() }), DEFAULT_LIMITS, new FixedClock(new Date(iso)));
     expect(ids(v).includes('OUTSIDE_WINDOW')).toBe(expectTrip);
   });
+
+  it('allows entries across 09:15–15:05 IST when allowAnyMarketHour is enabled (PAPER mode)', () => {
+    const anyHour = { ...DEFAULT_LIMITS, allowAnyMarketHour: true };
+    const at = (iso: string) => evaluate(snapshot({ lastTickMs: new Date(iso).getTime() }), anyHour, new FixedClock(new Date(iso)));
+    expect(ids(at('2026-09-14T03:46:00Z'))).not.toContain('OUTSIDE_WINDOW'); // 09:16 IST
+    expect(ids(at('2026-09-14T06:20:00Z'))).not.toContain('OUTSIDE_WINDOW'); // 11:50 IST (midday chop)
+    expect(ids(at('2026-09-14T09:25:00Z'))).not.toContain('OUTSIDE_WINDOW'); // 14:55 IST
+    expect(ids(at('2026-09-14T03:44:00Z'))).toContain('OUTSIDE_WINDOW');     // 09:14 IST (before open)
+    expect(ids(at('2026-09-14T09:35:00Z'))).toContain('OUTSIDE_WINDOW');     // 15:05 IST (square-off)
+  });
 });
 
 describe('square-off', () => {
