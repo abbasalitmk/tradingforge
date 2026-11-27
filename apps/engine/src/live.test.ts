@@ -4,8 +4,9 @@ import { getStrategy } from '@tradeforger/strategy';
 import { intraday, closeOf } from '../../../packages/strategy/src/fixtures.ts';
 import {
   decide, canLead, signalAgeMs, guardSetupStop, restateTarget, mergeCandles, segmentsForMode, modeForSegments, repriceToMarket,
-  staleInstruments, chaseBlocker, paperLiveRanking, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
+  staleInstruments, chaseBlocker, paperLiveRanking, strategyRankScore, DEFAULT_AUTO, AutoConfigSchema, type AutoConfig, type Target,
 } from './live.ts';
+import { analyzeClosedTrade, type TradeLogEntry } from './memory.ts';
 
 const upBias = { side: 'BUY' as const, vwapSide: 'BUY' as const, emaSide: 'BUY' as const, close: 101, vwap: 100, ema20: 100.5, ema50: 99, adx: 28, reason: '15-min up' };
 const downBias = { ...upBias, side: 'SELL' as const, vwapSide: 'SELL' as const, emaSide: 'SELL' as const, close: 99, reason: '15-min down' };
@@ -143,23 +144,37 @@ describe('autonomous entry decision', () => {
 
   it('ranks strategies by paper results and lets only the qualified top N trade LIVE', () => {
     const records = new Map([
-      ['A', { trades: 40, expectancyR: 0.30 }],
-      ['B', { trades: 35, expectancyR: 0.12 }],
-      ['C', { trades: 10, expectancyR: 0.90 }], // too few trades
-      ['D', { trades: 60, expectancyR: 0.05 }], // below the bar
-      ['E', { trades: 31, expectancyR: 0.20 }],
+      ['A', { trades: 40, expectancyR: 0.30, profitFactor: 1.6, winRatePct: 55 }],
+      ['B', { trades: 35, expectancyR: 0.12, profitFactor: 1.2, winRatePct: 45 }],
+      ['C', { trades: 10, expectancyR: 0.90, profitFactor: 2.5, winRatePct: 70 }], // too few trades
+      ['D', { trades: 60, expectancyR: 0.05, profitFactor: 1.05, winRatePct: 40 }], // below the bar
+      ['E', { trades: 31, expectancyR: 0.20, profitFactor: 1.4, winRatePct: 52 }],
     ]);
     const rank = paperLiveRanking(records, { liveTopStrategies: 2, liveMinPaperTrades: 30, liveMinPaperExpectancyR: 0.1 });
-    expect(rank.map((r) => r.strategyId)).toEqual(['C', 'A', 'E', 'B', 'D']);
     expect(rank.filter((r) => r.live).map((r) => r.strategyId)).toEqual(['A', 'E']);
     expect(rank.find((r) => r.strategyId === 'B')!.qualified).toBe(true);
     expect(rank.find((r) => r.strategyId === 'C')!.live).toBe(false);
+    expect(rank.find((r) => r.strategyId === 'A')!.score).toBeGreaterThan(rank.find((r) => r.strategyId === 'E')!.score);
+
+    // Default top-5 promotion cleanly picks 5 qualified strategies and excludes the 6th.
+    expect(DEFAULT_AUTO.liveTopStrategies).toBe(5);
+    const six = new Map([
+      ['S1', { trades: 35, expectancyR: 0.45, profitFactor: 2.0, winRatePct: 60 }],
+      ['S2', { trades: 35, expectancyR: 0.35, profitFactor: 1.8, winRatePct: 55 }],
+      ['S3', { trades: 35, expectancyR: 0.25, profitFactor: 1.5, winRatePct: 52 }],
+      ['S4', { trades: 35, expectancyR: 0.18, profitFactor: 1.3, winRatePct: 48 }],
+      ['S5', { trades: 35, expectancyR: 0.12, profitFactor: 1.15, winRatePct: 45 }],
+      ['S6', { trades: 35, expectancyR: 0.11, profitFactor: 1.1, winRatePct: 42 }],
+    ]);
+    const top5 = paperLiveRanking(six, DEFAULT_AUTO);
+    expect(top5.filter((r) => r.live).map((r) => r.strategyId)).toEqual(['S1', 'S2', 'S3', 'S4', 'S5']);
+    expect(top5.find((r) => r.strategyId === 'S6')!.live).toBe(false);
   });
 
   it('in LIVE, a paper-ranked strategy may lead without approval; others still need it', () => {
     const live = { ...paper, mode: 'LIVE' as const, paperLive: (id: string) => id === 'GAP_AND_GO' };
     expect(decide(setup({ primaryStrategyId: 'GAP_AND_GO' }), equity, on, live).blockers).toEqual([]);
-    expect(decide(setup({ primaryStrategyId: 'GMMA_TREND' }), equity, on, live).blockers.join()).toMatch(/not in the top 3 paper strategies/);
+    expect(decide(setup({ primaryStrategyId: 'GMMA_TREND' }), equity, on, live).blockers.join()).toMatch(/not in the top 5 paper strategies/);
     expect(decide(setup({ primaryStrategyId: 'GAP_AND_GO' }), equity, { ...on, liveFromPaper: false }, live).blockers.join())
       .toMatch(/has no APPROVED version \(required in LIVE\)$/);
   });
@@ -242,13 +257,13 @@ describe('portfolio limits and strategy gating', () => {
     expect(AutoConfigSchema.parse(older)).toMatchObject({ tradeSide: 'BUY', autoUniverse: true, autoUniverseSize: 15 });
   });
 
-  it('keeps a strategy that failed validation from leading entries, in paper too', () => {
-    const failed = { ...paper, verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.37 }) };
-    expect(decide(setup(), equity, on, failed).blockers.join()).toContain('ORB_SUPERTREND failed validation (-0.37R out-of-sample)');
-    expect(decide(setup(), equity, { ...on, skipFailedStrategies: false }, failed).blockers).toEqual([]);
-    // Never validated is not the same as failed: paper is where it earns a record.
-    expect(decide(setup(), equity, on, { ...paper, verdict: () => null }).blockers).toEqual([]);
-    expect(decide(setup(), equity, on, { ...paper, verdict: () => ({ status: 'VALIDATED' as const, oosExpectancyR: 0.2 }) }).blockers).toEqual([]);
+  it('includes every strategy in PAPER even if validation REJECTED, while LIVE enforces skipFailedStrategies', () => {
+    const failedPaper = { ...paper, verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.37 }) };
+    expect(decide(setup(), equity, on, failedPaper).blockers).toEqual([]);
+
+    const failedLive = { ...liveOk, verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.37 }) };
+    expect(decide(setup(), equity, on, failedLive).blockers.join()).toContain('ORB_SUPERTREND failed validation (-0.37R out-of-sample)');
+    expect(decide(setup(), equity, { ...on, skipFailedStrategies: false }, failedLive).blockers).toEqual([]);
   });
 });
 
@@ -453,10 +468,45 @@ describe('session discipline', () => {
     expect(staleInstruments(['A', 'B', 'C'], ticks, 100_000, 3000)).toEqual(['B', 'C']);
   });
 
-  it('defaults paperCapital to 2 lakh (200,000) even for older persisted configs', () => {
+  it('defaults paperCapital to 2 lakh (200,000) and achievable targetR / top-5 ranking even for older persisted configs', () => {
     const { paperCapital: _omit, ...legacy } = DEFAULT_AUTO;
     expect(DEFAULT_AUTO.paperCapital).toBe(200_000);
+    expect(DEFAULT_AUTO.targetR).toBe(1.8);
+    expect(DEFAULT_AUTO.liveTopStrategies).toBe(5);
     expect(AutoConfigSchema.parse(legacy).paperCapital).toBe(200_000);
     expect(AutoConfigSchema.parse({ ...legacy, paperCapital: 500_000 }).paperCapital).toBe(500_000);
+  });
+
+  it('deeply analyses closed trades for target reach, profit giveback, and cost drag', () => {
+    const sample = (over: Partial<TradeLogEntry> = {}): TradeLogEntry => ({
+      positionId: 'pos1', strategyId: 'VWAP_PULLBACK', strategyVersion: null, mode: 'PAPER', segment: 'EQ',
+      style: 'INTRADAY', symbol: 'ACMESOLAR', side: 'BUY', quantity: 23, entryTime: 0, entryPrice: 428.26,
+      plannedEntry: 428.05, stopLoss: 425.15, target: 435.30, exitTime: 3600_000, exitPrice: 428.79,
+      exitReason: 'TRAILING_STOP', slippage: 0.21, charges: 17.45, grossPnl: 12.19, netPnl: -5.26,
+      rMultiple: -0.079, maeR: 0, mfeR: 1.393, quality: 88, ...over,
+    });
+    const gaveBack = analyzeClosedTrade(sample());
+    expect(gaveBack.successful).toBe(false);
+    expect(gaveBack.verdict).toBe('SCRATCH');
+    expect(gaveBack.findings).toEqual(expect.arrayContaining(['PROFIT_GAVE_BACK', 'GROSS_WIN_NET_LOSS', 'HIGH_COST_DRAG']));
+
+    const tgtHit = analyzeClosedTrade(sample({ exitReason: 'TARGET', grossPnl: 120, netPnl: 103, rMultiple: 1.55, mfeR: 1.6 }));
+    expect(tgtHit.successful).toBe(true);
+    expect(tgtHit.verdict).toBe('WIN');
+    expect(tgtHit.findings).toContain('CLEAN_TARGET_HIT');
+
+    expect(strategyRankScore({ trades: 40, expectancyR: 0.4, profitFactor: 2.0, winRatePct: 58, avgCaptureRatio: 0.8 })).toBeGreaterThan(60);
+  });
+
+  it('scales afternoon ADR target cap down by remaining session time', () => {
+    const signal = { id: 'sig' as SignalId, instrumentKey: 'K', symbol: 'S', style: 'INTRADAY' as const, side: 'BUY' as const,
+      entry: 10_500 as Paise, stopLoss: 10_300 as Paise, target: 11_500 as Paise, atr: 1, confidence: 80, reasons: [], indicators: {}, generatedAt: 0 };
+    const vote = { strategyId: 'ORB_SUPERTREND', name: 'ORB_SUPERTREND', style: 'INTRADAY' as const, side: 'BUY' as const, confidence: 80, signal, reasons: [] };
+    // Afternoon sessionMinutesLeft=90 -> timeScale=0.5 -> effective cap 100 + 0.5*2*10 = 110 (capped from 111)
+    const late = restateTarget(setup({ entry: 105, stopLoss: 103, target: 115, votes: [vote] }), 3, {
+      dayOpen: 100, dailyAtr: 10, maxDailyAtrMultiple: 2.0, sessionMinutesLeft: 90,
+    });
+    expect(late.target).toBe(110);
+    expect(late.rewardRisk).toBe(2.5);
   });
 });

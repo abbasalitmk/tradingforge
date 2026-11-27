@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FixedClock, istDateKey, paiseToRupees, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
+import { FixedClock, istDateKey, istMinutes, paiseToRupees, SESSION, type Candle, type Clock, type EntrySession, type Mode, type Side } from '@tradeforger/core';
 import { atr, latest, vwap } from '@tradeforger/indicators';
 import {
   analyzeHybrid, completeBars15, dayChangePct, getStrategy, guardSignalStop, marketDirection, trendBias15,
@@ -113,12 +113,13 @@ export const AutoConfigSchema = z.object({
    * winners more than they add wins. The cap, not a lower multiple, is what
    * keeps a target realistic for the day.
    */
-  targetR: z.number().min(0).max(6).default(3),
+  targetR: z.number().min(0).max(6).default(1.8),
   /**
    * Cap intraday targets at this multiple of prior-day 14d Daily ATR from
-   * today's open (0 turns off). Prevents demanding +6% from a stock whose daily ATR is 2%.
+   * today's open (0 turns off). Scaled down cleanly by remaining session time
+   * in the afternoon so targets stay realistic inside one day's move.
    */
-  maxTargetDailyAtr: z.number().min(0).max(5).default(1.5),
+  maxTargetDailyAtr: z.number().min(0).max(5).default(1.25),
   /**
    * Room the day still has: between the entry and that cap there must be at
    * least this many daily ATRs, or the day's normal move is already spent.
@@ -233,7 +234,7 @@ export const AutoConfigSchema = z.object({
   paperMaxOpenPositions: z.number().int().min(1).max(50).default(20),
   /** Virtual capital (₹) for PAPER sizing; PAPER also skips spend-per-trade and deployed ceilings. */
   paperCapital: z.number().min(10_000).max(10_000_000).default(200_000),
-  liveTopStrategies: z.number().int().min(1).max(24).default(3),
+  liveTopStrategies: z.number().int().min(1).max(24).default(5),
   liveMinPaperTrades: z.number().int().min(5).max(500).default(30),
   liveMinPaperExpectancyR: z.number().min(0).max(2).default(0.1),
 });
@@ -266,8 +267,8 @@ export const DEFAULT_AUTO: AutoConfig = {
   marketFilter: true,
   marketAboveOpen: true,
   relativeStrength: true,
-  targetR: 3,
-  maxTargetDailyAtr: 1.5,
+  targetR: 1.8,
+  maxTargetDailyAtr: 1.25,
   minRoomDailyAtr: 0.5,
   maxEntryChaseAtr: 0.5,
   stagedTrail: false,
@@ -294,7 +295,7 @@ export const DEFAULT_AUTO: AutoConfig = {
   paperMaxEntriesPerDay: 100,
   paperMaxOpenPositions: 20,
   paperCapital: 200_000,
-  liveTopStrategies: 3,
+  liveTopStrategies: 5,
   liveMinPaperTrades: 30,
   liveMinPaperExpectancyR: 0.1,
 };
@@ -302,40 +303,111 @@ export const DEFAULT_AUTO: AutoConfig = {
 export interface PaperRank {
   readonly strategyId: string;
   readonly trades: number;
+  readonly wins: number;
+  readonly winRatePct: number;
   readonly expectancyR: number;
-  /** Enough paper trades at a good enough average to be considered for LIVE. */
+  readonly profitFactor: number;
+  readonly maxDrawdownR: number;
+  readonly avgMfeR: number;
+  readonly avgCaptureRatio: number | null;
+  readonly targetHitRatePct: number;
+  readonly score: number;
+  readonly topFinding: string | null;
+  /** Enough paper trades at a positive expectancy and profit factor to qualify for LIVE. */
   readonly qualified: boolean;
-  /** Qualified and inside the top `liveTopStrategies`: may lead LIVE entries. */
+  /** Qualified and inside the top `liveTopStrategies` (top 5): may lead LIVE entries. */
   readonly live: boolean;
 }
 
 /**
- * Strategies ranked by their own recent PAPER results, best first. The top
- * qualified ones may trade LIVE (see `liveFromPaper`); ties go to the one
- * with more trades on record.
+ * Composite ranking score (0–100) from closed PAPER trade diagnostics:
+ * net expectancy (45 pts), profit factor (20 pts), win rate (15 pts),
+ * MFE/target capture efficiency (10 pts), and low drawdown (10 pts),
+ * damped when sample size is below `minTrades`.
+ */
+export function strategyRankScore(r: StrategyRecord, minTrades = 30): number {
+  if (r.trades <= 0) return 0;
+  const expPts = Math.max(0, Math.min(45, ((r.expectancyR + 0.5) / 1.5) * 45));
+  const pf = r.profitFactor ?? (r.expectancyR > 0 ? 1.5 : 0.7);
+  const pfPts = Math.max(0, Math.min(20, ((pf - 0.5) / 2.0) * 20));
+  const wr = r.winRatePct ?? (r.expectancyR > 0 ? 50 : 30);
+  const wrPts = Math.max(0, Math.min(15, (wr / 70) * 15));
+  const cap = r.avgCaptureRatio !== undefined && r.avgCaptureRatio !== null ? Math.max(0, r.avgCaptureRatio) : 0.5;
+  const hit = r.targetHitRatePct ?? 0;
+  const execPts = Math.max(0, Math.min(10, cap * 6 + (hit / 100) * 4));
+  const dd = r.maxDrawdownR ?? 0;
+  const ddPts = Math.max(0, Math.min(10, 10 * (1 - dd / 6)));
+  const maturity = Math.min(1, r.trades / Math.max(5, minTrades));
+  const raw = (expPts + pfPts + wrPts + execPts + ddPts) * (0.55 + 0.45 * maturity);
+  return Math.round(raw * 10) / 10;
+}
+
+/**
+ * Automated ranking from deeply analysed closed PAPER trades.
+ * Qualified strategies (enough trades, positive expectancy, profit factor ≥ 1.0)
+ * rank first by composite score, and the top `liveTopStrategies` (default 5)
+ * are promoted to LIVE.
  */
 export function paperLiveRanking(
   records: ReadonlyMap<string, StrategyRecord>,
   cfg: Pick<AutoConfig, 'liveTopStrategies' | 'liveMinPaperTrades' | 'liveMinPaperExpectancyR'>,
 ): PaperRank[] {
-  const ranked = [...records].map(([strategyId, r]) => ({ strategyId, ...r }))
-    .sort((a, b) => b.expectancyR - a.expectancyR || b.trades - a.trades);
+  const enriched = [...records].map(([strategyId, r]) => {
+    const wins = r.wins ?? Math.round((r.winRatePct ?? (r.expectancyR > 0 ? 50 : 25)) * r.trades / 100);
+    const winRatePct = r.winRatePct ?? (r.trades > 0 ? Math.round((wins / r.trades) * 1000) / 10 : 0);
+    const profitFactor = r.profitFactor ?? (r.expectancyR > 0 ? 1.5 : r.expectancyR === 0 ? 1 : 0.5);
+    const maxDrawdownR = r.maxDrawdownR ?? 0;
+    const avgMfeR = r.avgMfeR ?? 0;
+    const avgCaptureRatio = r.avgCaptureRatio ?? null;
+    const targetHitRatePct = r.targetHitRatePct ?? 0;
+    const score = strategyRankScore(r, cfg.liveMinPaperTrades);
+    const qualified = r.trades >= cfg.liveMinPaperTrades
+      && r.expectancyR >= cfg.liveMinPaperExpectancyR
+      && profitFactor >= 1.0;
+    return {
+      strategyId,
+      trades: r.trades,
+      wins,
+      winRatePct,
+      expectancyR: r.expectancyR,
+      profitFactor,
+      maxDrawdownR,
+      avgMfeR,
+      avgCaptureRatio,
+      targetHitRatePct,
+      score,
+      topFinding: r.topFinding ?? null,
+      qualified,
+    };
+  }).sort((a, b) =>
+    Number(b.qualified) - Number(a.qualified)
+    || b.score - a.score
+    || b.expectancyR - a.expectancyR
+    || b.trades - a.trades,
+  );
   let liveSlots = cfg.liveTopStrategies;
-  return ranked.map((r) => {
-    const qualified = r.trades >= cfg.liveMinPaperTrades && r.expectancyR >= cfg.liveMinPaperExpectancyR;
-    const live = qualified && liveSlots > 0;
+  return enriched.map((r) => {
+    const live = r.qualified && liveSlots > 0;
     if (live) liveSlots--;
-    return { ...r, qualified, live };
+    return { ...r, live };
   });
 }
 
 /** Trades a strategy needs on record before its expectancy is trusted enough to pause it. */
 export const MIN_TRADES_TO_JUDGE = 20;
 
-/** A strategy's own recorded result in the current mode, operator exits excluded. */
+/** A strategy's deeply analysed record in the current mode, operator exits excluded. */
 export interface StrategyRecord {
   readonly trades: number;
   readonly expectancyR: number;
+  readonly wins?: number;
+  readonly winRatePct?: number;
+  readonly profitFactor?: number;
+  readonly maxDrawdownR?: number;
+  readonly avgMfeR?: number;
+  readonly avgCaptureRatio?: number | null;
+  readonly targetHitRatePct?: number;
+  readonly topFinding?: string | null;
 }
 
 /**
@@ -566,7 +638,8 @@ function strategyBlockers(strategyId: string, cfg: AutoConfig, ctx: DecisionCont
       : `${strategyId} has no APPROVED version (required in LIVE)`);
   }
   const verdict = ctx.verdict?.(strategyId) ?? null;
-  if (cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {
+  // PAPER includes every strategy unconditionally ("no reject anyone") so forward data decides; LIVE filters REJECTED ones.
+  if (ctx.mode === 'LIVE' && cfg.skipFailedStrategies && verdict?.status === 'REJECTED') {
     const oos = verdict.oosExpectancyR;
     blockers.push(`${strategyId} failed validation${oos !== null ? ` (${oos.toFixed(2)}R out-of-sample)` : ''} — improve it in Strategy Lab`);
   }
@@ -703,11 +776,13 @@ export interface TargetRestateOptions {
   readonly maxDailyAtrMultiple?: number;
   /** Least distance from entry to the cap, in daily ATRs; less invalidates the setup. */
   readonly minRoomDailyAtr?: number;
+  /** Minutes left until intraday square-off; shrinks max ADR cap smoothly in the afternoon. */
+  readonly sessionMinutesLeft?: number | null;
 }
 
 /**
  * The setup with its lead's target restated at `r` times the risk, for a
- * trend strategy, optionally capped at `dayOpen ± maxDailyAtrMultiple × DailyATR`.
+ * trend strategy, optionally capped at `dayOpen ± effectiveMaxAdr × DailyATR`.
  * Counter-trend targets (VWAP, the far OI wall) are levels, not multiples, and
  * stay as the strategy set them.
  */
@@ -722,7 +797,11 @@ export function restateTarget(s: HybridSetup, r: number, opts?: TargetRestateOpt
   let adrCapped = false;
   let adrExhausted = false;
   if (opts?.maxDailyAtrMultiple && opts.maxDailyAtrMultiple > 0 && opts.dailyAtr && opts.dailyAtr > 0 && opts.dayOpen && opts.dayOpen > 0) {
-    const capPaise = Math.round((opts.dayOpen + dir * opts.maxDailyAtrMultiple * opts.dailyAtr) * 100);
+    const timeScale = opts.sessionMinutesLeft != null && opts.sessionMinutesLeft > 0 && opts.sessionMinutesLeft < 225
+      ? Math.max(0.5, opts.sessionMinutesLeft / 225)
+      : 1;
+    const effectiveAdrCap = opts.maxDailyAtrMultiple * timeScale;
+    const capPaise = Math.round((opts.dayOpen + dir * effectiveAdrCap * opts.dailyAtr) * 100);
     if (dir === 1 ? target > capPaise : target < capPaise) {
       if (dir === 1 ? capPaise <= lead.signal.entry : capPaise >= lead.signal.entry) {
         adrExhausted = true;
@@ -891,7 +970,7 @@ export class LiveAnalyzer {
           params, ...(strategies && strategies.length ? { strategies } : {}),
           marketHoursEntry: ctx.mode !== 'LIVE',
           canLead: (v) => canLead(v, t, cfg, ctx, bias, stretch, closed),
-          canVote: (v) => !(cfg.skipFailedStrategies && ctx.verdict?.(v.strategyId)?.status === 'REJECTED'),
+          canVote: (v) => ctx.mode !== 'LIVE' || !(cfg.skipFailedStrategies && ctx.verdict?.(v.strategyId)?.status === 'REJECTED'),
         },
       );
 
@@ -900,6 +979,7 @@ export class LiveAnalyzer {
       const todayKey = istDateKey(this.clock.now());
       const todayOpen = closed.find((c) => istDateKey(new Date(c.ts)) === todayKey)?.open ?? null;
       const dAtr = priorDailyAtr(daily, todayKey);
+      const sessionMinutesLeft = Math.max(0, SESSION.SQUARE_OFF - istMinutes(this.clock.now()));
       for (const found of [r.best.INTRADAY, r.best.SWING]) {
         if (!found) continue;
         // Guard stop cluster FIRST, then compute targetR & ADR cap from final stop distance.
@@ -907,6 +987,7 @@ export class LiveAnalyzer {
         const s = guarded.style === 'INTRADAY'
           ? restateTarget(guarded, cfg.targetR, {
             dailyAtr: dAtr, dayOpen: todayOpen, maxDailyAtrMultiple: cfg.maxTargetDailyAtr, minRoomDailyAtr: cfg.minRoomDailyAtr,
+            sessionMinutesLeft,
           })
           : guarded;
         const def = getStrategy(s.primaryStrategyId);

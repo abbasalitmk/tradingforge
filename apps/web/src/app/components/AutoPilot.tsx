@@ -64,7 +64,57 @@ interface AutoConfig {
   liveMinPaperExpectancyR: number;
 }
 
-interface PaperRank { strategyId: string; trades: number; expectancyR: number; qualified: boolean; live: boolean }
+interface PaperRank {
+  strategyId: string;
+  trades: number;
+  wins?: number;
+  winRatePct?: number;
+  expectancyR: number;
+  profitFactor?: number;
+  maxDrawdownR?: number;
+  avgMfeR?: number;
+  avgCaptureRatio?: number | null;
+  targetHitRatePct?: number;
+  score?: number;
+  topFinding?: string | null;
+  qualified: boolean;
+  live: boolean;
+}
+
+interface ClosedTradeAnalysisView {
+  verdict: 'WIN' | 'SCRATCH' | 'LOSS';
+  successful: boolean;
+  holdMinutes: number | null;
+  plannedRiskRs: number;
+  plannedRR: number;
+  entrySlippagePct: number;
+  costDragPct: number;
+  captureRatio: number | null;
+  targetReachedPct: number | null;
+  findings: string[];
+  diagnosis: string;
+}
+
+interface RecentTradeAnalysis {
+  positionId: string;
+  strategyId: string | null;
+  mode: string;
+  symbol: string;
+  side: Side;
+  quantity: number;
+  entryPrice: number | null;
+  plannedEntry: number;
+  stopLoss: number;
+  target: number;
+  exitPrice: number | null;
+  exitReason: string | null;
+  netPnl: number;
+  rMultiple: number | null;
+  maeR: number | null;
+  mfeR: number | null;
+  exitTime: number | null;
+  analysis?: ClosedTradeAnalysisView;
+}
 
 interface AutoUniverseView {
   enabled: boolean;
@@ -125,6 +175,7 @@ interface LiveAnalysisResponse {
   feedIssue?: string | null;
   breakers?: Array<{ id: string; detail: string }>;
   paperRanking?: PaperRank[];
+  recentTradeAnalyses?: RecentTradeAnalysis[];
   fno?: {
     deskEnabled: boolean;
     instrument: 'OPTIONS' | 'FUTURES';
@@ -182,7 +233,7 @@ const draftOf = (a: AutoConfig): Draft => ({
   paperMaxEntriesPerDay: a.paperMaxEntriesPerDay ?? 100,
   paperMaxOpenPositions: a.paperMaxOpenPositions ?? 20,
   paperCapital: a.paperCapital ?? 200_000,
-  liveTopStrategies: a.liveTopStrategies ?? 3,
+  liveTopStrategies: a.liveTopStrategies ?? 5,
   liveMinPaperTrades: a.liveMinPaperTrades ?? 30,
   liveMinPaperExpectancyR: a.liveMinPaperExpectancyR ?? 0.1,
 });
@@ -728,27 +779,82 @@ export default function AutoPilot({ onToast }: { onToast: (msg: string, kind?: '
       </div>
 
       <Panel
-        title="Paper ranking → LIVE"
+        title="Automated Paper Ranking → LIVE Top 5"
         subtitle={live.auto.liveFromPaper
-          ? `PAPER trades up to ${live.auto.paperMaxEntriesPerDay} entries a day with ${live.auto.paperMaxOpenPositions} open, every strategy included, to build this ranking. Strategies ranked by their last 50 paper trades. The top ${live.auto.liveTopStrategies} with ${live.auto.liveMinPaperTrades}+ trades averaging ≥ ${live.auto.liveMinPaperExpectancyR}R trade LIVE (approved ones always may).`
+          ? `PAPER runs every strategy unconditionally (up to ${live.auto.paperMaxEntriesPerDay}/day, ${live.auto.paperMaxOpenPositions} open). Every closed trade is deeply analysed and scored (0–100); only the top ${live.auto.liveTopStrategies} qualified strategies (${live.auto.liveMinPaperTrades}+ trades, avg ≥ ${live.auto.liveMinPaperExpectancyR}R, PF ≥ 1.0) promote to LIVE.`
           : 'LIVE from paper ranking is off — only approved strategies trade LIVE.'}
       >
         {(live.paperRanking ?? []).length === 0
-          ? <Note>No closed paper trades yet — the ranking fills in as AutoPilot trades in paper.</Note>
+          ? <Note>No closed paper trades yet — the ranking fills in automatically as AutoPilot closes PAPER trades.</Note>
           : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead><tr><th style={th}>#</th><th style={th}>Strategy</th><th style={th}>Paper trades</th><th style={th}>Avg R</th><th style={th}>LIVE</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th style={th}>#</th><th style={th}>Strategy</th><th style={th}>Score</th><th style={th}>Trades (Win%)</th>
+                    <th style={th}>Avg R</th><th style={th}>PF</th><th style={th}>Avg MFE / Hit%</th><th style={th}>Max DD</th><th style={th}>Primary Finding</th><th style={th}>LIVE</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {(live.paperRanking ?? []).map((r, i) => (
                     <tr key={r.strategyId} style={{ borderTop: '1px solid var(--border)' }}>
                       <td style={{ padding: '6px 10px' }}>{i + 1}</td>
                       <td style={{ padding: '6px 10px', fontWeight: 600 }}>{r.strategyId}</td>
-                      <td style={{ padding: '6px 10px' }}>{r.trades}</td>
-                      <td style={{ padding: '6px 10px', color: r.expectancyR >= 0 ? 'var(--ok)' : 'var(--danger)' }}>{r.expectancyR >= 0 ? '+' : ''}{r.expectancyR.toFixed(2)}R</td>
-                      <td style={{ padding: '6px 10px' }}>{r.live ? <Pill color="var(--ok)">LIVE</Pill> : r.qualified ? 'qualified' : `needs ${Math.max(0, live.auto.liveMinPaperTrades - r.trades)} more trades${r.expectancyR < live.auto.liveMinPaperExpectancyR ? ` & ≥ ${live.auto.liveMinPaperExpectancyR}R` : ''}`}</td>
+                      <td style={{ padding: '6px 10px', fontWeight: 700, color: (r.score ?? 0) >= 60 ? 'var(--ok)' : (r.score ?? 0) >= 40 ? 'var(--warn)' : 'var(--muted)' }}>{r.score != null ? r.score.toFixed(1) : '—'}</td>
+                      <td style={{ padding: '6px 10px' }}>{r.trades}{r.winRatePct != null ? ` (${r.winRatePct.toFixed(0)}%)` : ''}</td>
+                      <td style={{ padding: '6px 10px', color: r.expectancyR >= 0 ? 'var(--ok)' : 'var(--danger)', fontWeight: 600 }}>{r.expectancyR >= 0 ? '+' : ''}{r.expectancyR.toFixed(2)}R</td>
+                      <td style={{ padding: '6px 10px' }}>{r.profitFactor != null ? r.profitFactor.toFixed(2) : '—'}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--muted)' }}>{r.avgMfeR != null ? `${r.avgMfeR.toFixed(2)}R` : '—'}{r.targetHitRatePct != null ? ` · ${r.targetHitRatePct.toFixed(0)}% tgt` : ''}</td>
+                      <td style={{ padding: '6px 10px', color: 'var(--muted)' }}>{r.maxDrawdownR != null ? `${r.maxDrawdownR.toFixed(2)}R` : '—'}</td>
+                      <td style={{ padding: '6px 10px', fontSize: 11, color: 'var(--muted)' }}>{r.topFinding ?? '—'}</td>
+                      <td style={{ padding: '6px 10px' }}>{r.live ? <Pill color="var(--ok)">TOP {live.auto.liveTopStrategies} LIVE</Pill> : r.qualified ? 'qualified (outside top)' : `needs ${Math.max(0, live.auto.liveMinPaperTrades - r.trades)} more${r.expectancyR < live.auto.liveMinPaperExpectancyR ? ` & ≥ ${live.auto.liveMinPaperExpectancyR}R` : ''}`}</td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </Panel>
+
+      <Panel
+        title="Closed-Trade Deep Analysis"
+        subtitle="Automatic post-close inspection of execution slippage, charges as % of 1R risk, MFE capture, and target distance."
+      >
+        {(live.recentTradeAnalyses ?? []).length === 0
+          ? <Note>No closed trades analysed yet.</Note>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Symbol</th><th style={th}>Strategy</th><th style={th}>Mode</th><th style={th}>Verdict</th>
+                    <th style={th}>Net P&L (R)</th><th style={th}>MFE / Tgt%</th><th style={th}>Fees %1R</th><th style={th}>Exit</th><th style={th}>Deep Finding</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(live.recentTradeAnalyses ?? []).map((t) => {
+                    const a = t.analysis;
+                    const color = a?.verdict === 'WIN' ? 'var(--ok)' : a?.verdict === 'SCRATCH' ? 'var(--warn)' : 'var(--danger)';
+                    return (
+                      <tr key={t.positionId} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '6px 10px', fontWeight: 600 }}>{t.symbol} <span style={{ fontSize: 10, color: sideColor(t.side) }}>{t.side}</span></td>
+                        <td style={{ padding: '6px 10px' }}>{t.strategyId ?? '—'}</td>
+                        <td style={{ padding: '6px 10px', color: 'var(--muted)' }}>{t.mode}</td>
+                        <td style={{ padding: '6px 10px' }}><Pill color={color}>{a?.verdict ?? '—'}</Pill></td>
+                        <td style={{ padding: '6px 10px', color: t.netPnl >= 0 ? 'var(--ok)' : 'var(--danger)' }}>
+                          {t.netPnl >= 0 ? '+' : ''}₹{t.netPnl.toFixed(0)} ({t.rMultiple != null ? `${t.rMultiple >= 0 ? '+' : ''}${t.rMultiple.toFixed(2)}R` : '—'})
+                        </td>
+                        <td style={{ padding: '6px 10px', color: 'var(--muted)' }}>
+                          {t.mfeR != null ? `${t.mfeR.toFixed(2)}R` : '—'}{a?.targetReachedPct != null ? ` (${a.targetReachedPct}%)` : ''}
+                        </td>
+                        <td style={{ padding: '6px 10px', color: (a?.costDragPct ?? 0) >= 25 ? 'var(--warn)' : 'var(--muted)' }}>
+                          {a ? `${a.costDragPct.toFixed(0)}%` : '—'}
+                        </td>
+                        <td style={{ padding: '6px 10px', color: 'var(--muted)' }}>{t.exitReason ?? '—'}</td>
+                        <td style={{ padding: '6px 10px', fontSize: 11, color: 'var(--muted)', maxWidth: 320 }}>{a?.diagnosis ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

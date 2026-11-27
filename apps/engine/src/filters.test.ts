@@ -46,7 +46,7 @@ describe('production AutoPilot filters', () => {
   it('trades a failed strategy in PAPER (skip failed is off) but not in LIVE unless paper-ranked', () => {
     const failed = { verdict: () => ({ status: 'REJECTED' as const, oosExpectancyR: -0.2 }) };
     expect(blockers({}, failed)).toEqual([]);
-    expect(blockers({}, { ...failed, mode: 'LIVE' }).join()).toMatch(/not in the top 3 paper strategies/);
+    expect(blockers({}, { ...failed, mode: 'LIVE' }).join()).toMatch(/not in the top 5 paper strategies/);
     expect(blockers({}, { ...failed, mode: 'LIVE', paperLive: () => true })).toEqual([]);
   });
 
@@ -78,7 +78,7 @@ describe('production AutoPilot filters', () => {
     ['strategy outside an enabled list', () => blockers({ primaryStrategyId: 'GMMA_TREND' }, {}, { strategies: ['GAP_AND_GO'] }), /GMMA_TREND not enabled/],
     ['LIVE: 3 longs open', () => blockers({}, { mode: 'LIVE' as const, paperLive: () => true, open: { total: 3, byStrategy: {}, bySide: { BUY: 3, SELL: 0 }, bySector: {} } }), /3 long positions open \(max 3\)/],
     ['LIVE: 2 in the same sector', () => blockers({}, { mode: 'LIVE' as const, paperLive: () => true, open: { total: 2, byStrategy: {}, bySide: { BUY: 2, SELL: 0 }, bySector: { Banks: 2 } } }), /2 open in Banks \(max 2 per sector\)/],
-    ['failed validation, when skipping failed', () => blockers({}, { verdict: () => ({ status: 'REJECTED', oosExpectancyR: -0.2 }) }, { skipFailedStrategies: true }), /failed validation/],
+    ['failed validation, when skipping failed (LIVE)', () => blockers({}, { mode: 'LIVE' as const, approved: () => true, verdict: () => ({ status: 'REJECTED', oosExpectancyR: -0.2 }) }, { skipFailedStrategies: true }), /failed validation/],
     ['LIVE: losing record paused', () => blockers({}, { mode: 'LIVE' as const, paperLive: () => true, record: () => ({ trades: 25, expectancyR: -0.1 }) }), /paused: -0\.10R expectancy over its last 25 live trades/],
     ['LIVE needs an approved strategy', () => blockers({}, { mode: 'LIVE' }), /has no APPROVED version \(required in LIVE\)/],
   ];

@@ -1,5 +1,5 @@
 import type { Signal, Side, TradingStyle } from '@tradeforger/core';
-import { closes, latest, ema, atr, rsi } from '@tradeforger/indicators';
+import { closes, latest, ema, atr, rsi, adx } from '@tradeforger/indicators';
 import {
   type StrategyProfile, type StrategyContext, type Confluence, scoreConfluence,
 } from '../profile.ts';
@@ -40,10 +40,10 @@ export const DEFAULT_VWAP_PULLBACK: VwapPullbackParams = {
   maxPierceAtr: 0.5,
   minTrendShare: 0.7,
   minWickRatio: 0.3,
-  stopBufferAtr: 0.2,
-  minStopAtr: 0.5,
+  stopBufferAtr: 0.25,
+  minStopAtr: 0.75,
   maxStopAtr: 2.5,
-  targetRR: 2,
+  targetRR: 1.8,
   minSessionBars: 8,
   minConfidence: 60,
 };
@@ -85,6 +85,8 @@ export class VwapPullbackProfile implements StrategyProfile {
 
     const atrNow = latest(atr(candles, p.atrPeriod));
     if (atrNow === null || atrNow <= 0) return null;
+    const adxNow = latest(adx(candles, 14).adx);
+    if (adxNow === null || adxNow < 18) return null;
 
     const vw = sessionVwap(session);
     const vwNow = vw[n - 1]!;
@@ -134,10 +136,16 @@ export class VwapPullbackProfile implements StrategyProfile {
     const wick = rejectionWick(last, side);
     const vwBefore = vw[Math.max(0, windowStart - 1)]!;
     const rsiNow = latest(rsi(c, 14));
+    const prev = candles[n - 2]!;
     const pullbackVols = session.slice(windowStart, n - 1).map((b) => b.volume);
     const avgPullbackVol = pullbackVols.length
       ? pullbackVols.reduce((a, b) => a + b, 0) / pullbackVols.length
       : last.volume;
+    // Confirmation: either break the pullback bar's extreme OR reject cleanly off VWAP with strong close + volume.
+    const brokePullback = long ? last.close > prev.high : last.close < prev.low;
+    const strongRejection = wick >= p.minWickRatio && closeLocation(last, side) >= 0.6 && last.volume >= avgPullbackVol;
+    if (!brokePullback && !strongRejection) return null;
+    if (rsiNow === null || (long ? rsiNow < 45 || rsiNow >= 72 : rsiNow > 55 || rsiNow <= 28)) return null;
 
     const checks: Confluence[] = [
       {

@@ -21,6 +21,9 @@ export interface StagedTrailRule {
   readonly breakevenLockR: number;
   readonly trailFromR: number;
   readonly trailGapPaise: Paise;
+  /** Once MFE reaches `trailLockAtR`, never give back below `trailLockMinR` (even if ATR gap is wider). */
+  readonly trailLockAtR?: number;
+  readonly trailLockMinR?: number;
 }
 
 /**
@@ -614,6 +617,10 @@ export class Trader {
           if (bestR >= p.stagedTrail.breakevenR) {
             const lockStop = Math.round(entry + dir * initialRisk * p.stagedTrail.breakevenLockR) as Paise;
             candidate = (long ? Math.max(candidate, lockStop) : Math.min(candidate, lockStop)) as Paise;
+          }
+          if (p.stagedTrail.trailLockAtR !== undefined && p.stagedTrail.trailLockMinR !== undefined && bestR >= p.stagedTrail.trailLockAtR) {
+            const profitFloor = Math.round(entry + dir * initialRisk * p.stagedTrail.trailLockMinR) as Paise;
+            candidate = (long ? Math.max(candidate, profitFloor) : Math.min(candidate, profitFloor)) as Paise;
           }
           if (bestR >= p.stagedTrail.trailFromR && p.stagedTrail.trailGapPaise > 0) {
             const atrStop = Math.round(bestPx - dir * p.stagedTrail.trailGapPaise) as Paise;

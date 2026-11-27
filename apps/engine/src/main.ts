@@ -32,7 +32,7 @@ import { Trader, isOperatorExit, type ManagedPosition } from './trader.ts';
 import { PositionStore, EngineStateStore } from './journal.ts';
 import { planRecovery, type UpstoxView } from './recovery.ts';
 import { StrategyRegistry } from './registry.ts';
-import { TradeMemory } from './memory.ts';
+import { TradeMemory, analyzeClosedTrade, type TradeLogEntry } from './memory.ts';
 import {
   LiveAnalyzer, AutoConfigSchema, DEFAULT_AUTO, mergeCandles, segmentsForMode, modeForSegments, sideAllowed,
   staleInstruments, paperLiveRanking,
@@ -637,7 +637,15 @@ function onPositionClosed(p: ManagedPosition): void {
   // The strategy's record must include this trade before its next entry is judged.
   // Filed under the broker that held it, not the dashboard's mode at exit: a
   // paper position closed while LIVE is armed is still a paper trade.
-  void memory.record(p, p.broker === 'UPSTOX' ? 'LIVE' : 'PAPER').then(() => refreshStrategyRecords()).catch(() => undefined);
+  const closedMode = p.broker === 'UPSTOX' ? 'LIVE' : 'PAPER';
+  void memory.record(p, closedMode).then((analysis) => {
+    if (analysis) {
+      console.log(
+        `[trade-analysis] ${p.symbol} ${p.strategyId ?? 'manual'} (${closedMode}) ${analysis.verdict} [${analysis.findings.join(',')}] — ${analysis.diagnosis}`,
+      );
+    }
+    return refreshStrategyRecords();
+  }).catch(() => undefined);
   void audit(sql, {
     kind: 'POSITION_CLOSED',
     actor: 'engine',
@@ -770,12 +778,16 @@ async function enterEquity(signal: Signal, product: Product, ai: AiDecision, met
   }
 
   if (lastLtp.get(key) === undefined) await primePrice(key);
+  const estSlippageRs = entryRs * qty * 0.001; // 5 bps entry + 5 bps exit
+  const costR = riskRupees > 0 ? (costAtStop + estSlippageRs) / riskRupees : 0.2;
   const stagedTrail = signal.style === 'INTRADAY' && state.auto.stagedTrail && signal.atr > 0
     ? {
-        breakevenR: 1.2,
-        breakevenLockR: 0.35,
-        trailFromR: 1.6,
-        trailGapPaise: rupeesToPaise(signal.atr * 1.25),
+        breakevenR: 1.0,
+        breakevenLockR: Math.round(Math.max(0.4, costR + 0.1) * 100) / 100,
+        trailLockAtR: 1.4,
+        trailLockMinR: Math.round(Math.max(0.75, costR + 0.5) * 100) / 100,
+        trailFromR: 1.4,
+        trailGapPaise: rupeesToPaise(signal.atr * 0.85),
       }
     : null;
   const r = await trader.open({
@@ -1318,21 +1330,76 @@ async function refreshAutoUniverse(): Promise<void> {
 let strategyRecords = new Map<string, StrategyRecord>();
 /** Each strategy's PAPER record whatever the mode: the ranking LIVE eligibility is drawn from. */
 let paperRecords = new Map<string, StrategyRecord>();
+let recentTradeAnalyses: TradeLogEntry[] = [];
 /** Rolling window per strategy: recent behaviour matters more than last quarter's. */
 const RECORD_WINDOW = 50;
 
+function summarizeStrategyTrades(entries: readonly TradeLogEntry[]): StrategyRecord {
+  const n = entries.length;
+  const rs = entries.map((t) => t.rMultiple!);
+  const expectancyR = Math.round((rs.reduce((a, r) => a + r, 0) / n) * 1000) / 1000;
+  let wins = 0;
+  let grossWinR = 0;
+  let grossLossR = 0;
+  let targetHits = 0;
+  const mfes: number[] = [];
+  const captures: number[] = [];
+  const findingCounts = new Map<string, number>();
+
+  for (const t of entries) {
+    const a = t.analysis ?? analyzeClosedTrade(t);
+    if (a.successful) wins++;
+    const r = t.rMultiple!;
+    if (r > 0) grossWinR += r;
+    else if (r < 0) grossLossR += Math.abs(r);
+    if (t.exitReason === 'TARGET') targetHits++;
+    if (t.mfeR !== null) mfes.push(t.mfeR);
+    if (a.captureRatio !== null) captures.push(a.captureRatio);
+    for (const f of a.findings) {
+      if (f === 'CLEAN_WIN' || f === 'CLEAN_TARGET_HIT') continue;
+      findingCounts.set(f, (findingCounts.get(f) ?? 0) + 1);
+    }
+  }
+
+  let equityR = 0;
+  let peakR = 0;
+  let maxDrawdownR = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    equityR += entries[i]!.rMultiple!;
+    if (equityR > peakR) peakR = equityR;
+    maxDrawdownR = Math.max(maxDrawdownR, peakR - equityR);
+  }
+
+  const profitFactor = grossLossR > 0 ? Math.round((grossWinR / grossLossR) * 100) / 100 : grossWinR > 0 ? 3 : 1;
+  const topFinding = [...findingCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+  return {
+    trades: n,
+    wins,
+    winRatePct: Math.round((wins / n) * 1000) / 10,
+    expectancyR,
+    profitFactor,
+    maxDrawdownR: Math.round(maxDrawdownR * 100) / 100,
+    avgMfeR: mfes.length ? Math.round((mfes.reduce((a, x) => a + x, 0) / mfes.length) * 100) / 100 : 0,
+    avgCaptureRatio: captures.length ? Math.round((captures.reduce((a, x) => a + x, 0) / captures.length) * 100) / 100 : null,
+    targetHitRatePct: Math.round((targetHits / n) * 1000) / 10,
+    topFinding,
+  };
+}
+
 async function refreshStrategyRecords(): Promise<void> {
-  const all = (await memory.recent(1000))
-    .filter((t) => t.strategyId && t.rMultiple !== null && !isOperatorExit(t.exitReason));
+  const recent = await memory.recent(1000);
+  const all = recent.filter((t) => t.strategyId && t.rMultiple !== null && !isOperatorExit(t.exitReason));
+  recentTradeAnalyses = recent.slice(0, 25);
   const recordsOf = (live: boolean): Map<string, StrategyRecord> => {
-    const by = new Map<string, number[]>();
+    const by = new Map<string, TradeLogEntry[]>();
     for (const t of all) {
       if ((t.mode === 'LIVE') !== live) continue;
       const list = by.get(t.strategyId!) ?? [];
-      if (list.length < RECORD_WINDOW) list.push(t.rMultiple!); // newest first
+      if (list.length < RECORD_WINDOW) list.push(t); // newest first
       by.set(t.strategyId!, list);
     }
-    return new Map([...by].map(([id, rs]) => [id, { trades: rs.length, expectancyR: rs.reduce((a, r) => a + r, 0) / rs.length }]));
+    return new Map([...by].map(([id, list]) => [id, summarizeStrategyTrades(list)]));
   };
   strategyRecords = recordsOf(currentMode() === 'LIVE');
   paperRecords = recordsOf(false);
@@ -1425,7 +1492,7 @@ async function act(a: LiveAnalysis, s: LiveSetup): Promise<void> {
 async function liveCycle(): Promise<void> {
   rollAutoDay();
   const results = analyzer.analyze(
-    targets(), registry.activeParams(), state.auto.strategies, state.auto,
+    targets(), registry.activeParams(), currentMode() !== 'LIVE' ? undefined : state.auto.strategies, state.auto,
     decisionContext(),
   );
   void refreshFocusAi();
@@ -2128,8 +2195,9 @@ const server = createServer(async (req, res) => {
         record: strategyRecords.get(d.id) ?? null,
         verdict: registry.activeVerdict(d.id),
       })),
-      // Paper results ranked best first; `live` marks the ones allowed to trade LIVE from it.
+      // Paper results ranked best first; top 5 qualified are promoted to LIVE (`live`).
       paperRanking: paperLiveRanking(paperRecords, state.auto),
+      recentTradeAnalyses,
     });
   }
 
