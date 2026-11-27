@@ -426,6 +426,10 @@ describe('session discipline', () => {
 
     const okEntry = setup({ entry: 101, barCloseEntry: 100.5, signalEntry: 100, atr: 2 }); // 0.25 bar / 0.50 trig
     expect(decide(okEntry, equity, on, paper).blockers).toEqual([]);
+
+    // Wide breakout bar that closed > 0.75 ATR beyond trigger, now pulling back below barCloseEntry: not chasing.
+    const pullback = setup({ entry: 102.8, barCloseEntry: 103.0, signalEntry: 101, atr: 2 });
+    expect(decide(pullback, equity, on, paper).blockers).toEqual([]);
   });
 
   it('caps trend target inside maxDailyAtrMultiple and flags exhausted daily room', () => {

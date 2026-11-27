@@ -469,7 +469,8 @@ export function chaseBlocker(
       return `entry chased ${slipAtr.toFixed(2)} ATR past bar close (max ${cfg.maxEntryChaseAtr})`;
     }
   }
-  if (!getStrategy(setup.primaryStrategyId)?.counterTrend && setup.signalEntry !== undefined) {
+  const ranPastClose = setup.barCloseEntry === undefined || (setup.entry - setup.barCloseEntry) * dir > 0;
+  if (ranPastClose && !getStrategy(setup.primaryStrategyId)?.counterTrend && setup.signalEntry !== undefined) {
     const trigCap = cfg.maxEntryChaseAtr * 1.5;
     const chaseAtr = ((setup.entry - setup.signalEntry) * dir) / setup.atr;
     if (chaseAtr > trigCap) {
@@ -862,7 +863,10 @@ export class LiveAnalyzer {
     const out: LiveAnalysis[] = [];
     const seen = new Set<string>();
     const market = this.src.market ? this.src.market().filter((c) => c.ts + BAR_MS <= now) : null;
-    const marketSide = market && market.length > 0 ? marketDirection(market, { requireAboveOpen: cfg.marketAboveOpen }) : undefined;
+    // PAPER collects forward records across all regimes; enforce the strict day-open check in LIVE only.
+    const marketSide = market && market.length > 0
+      ? marketDirection(market, { requireAboveOpen: ctx.mode === 'LIVE' && cfg.marketAboveOpen })
+      : undefined;
     const marketChange = market && market.length > 0 ? dayChangePct(market) : null;
 
     for (const t of targets) {
